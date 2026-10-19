@@ -1,0 +1,494 @@
+{% extends base_template|default:"base.html" %}
+{% block title %}{{ roster.name }}{% endblock %}
+
+{% block content %}
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+.cr{
+  --cr-bg:var(--bg); --cr-card:var(--surface); --cr-border:var(--border);
+  --cr-text:var(--text); --cr-dim:var(--text-dim); --cr-faint:var(--text-faint);
+  --cr-purple:var(--purple); --cr-purple-tint:var(--purple-dim);
+  --cr-green:var(--green); --cr-green-tint:var(--green-dim);
+  --cr-blue:var(--blue); --cr-blue-tint:var(--blue-dim);
+  --cr-orange:var(--amber); --cr-orange-tint:var(--amber-dim);
+  --cr-red:var(--red); --cr-red-tint:var(--red-dim);
+  font-family:'Inter',sans-serif; background:var(--cr-bg); color:var(--cr-text);
+  margin:-20px; padding:20px; min-height:100%; max-width:100%; box-sizing:border-box;
+  container-type: inline-size;
+  container-name: cr;
+}
+.cr *{box-sizing:border-box; min-width:0;}
+.cr-table-wrap{width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch;}
+.cr h1,.cr h2,.cr h3{font-family:'Space Grotesk',sans-serif;}
+.cr a{color:var(--cr-blue); text-decoration:none;}
+.cr a:hover{text-decoration:underline;}
+.cr-card{background:var(--cr-card); border:1px solid var(--cr-border); border-radius:14px; padding:18px 20px; box-shadow:0 1px 2px rgba(0,0,0,.2);}
+
+.cr-btn{display:inline-flex; align-items:center; gap:6px; padding:9px 16px; border-radius:8px; border:1px solid var(--cr-border); background:var(--cr-card); color:var(--cr-text); font-size:13px; font-weight:500; cursor:pointer; white-space:nowrap;}
+.cr-btn.primary{background:var(--cr-green); border-color:var(--cr-green); color:#0a0e12; font-weight:600;}
+.cr-btn.danger{background:var(--cr-red-tint); border-color:var(--cr-red); color:var(--cr-red); font-weight:600;}
+.cr-btn.danger:hover{background:var(--cr-red); color:#fff;}
+.cr-btn:hover{border-color:var(--cr-faint);}
+.cr-icon-btn{width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:7px; border:1px solid var(--cr-border); background:var(--cr-card); color:var(--cr-dim); cursor:pointer; flex-shrink:0;}
+.cr-icon-btn svg{width:14px; height:14px;}
+.cr-icon-btn:hover{border-color:var(--cr-faint); color:var(--cr-text);}
+.cr-icon-btn.danger:hover{border-color:var(--cr-red); color:var(--cr-red);}
+
+.cr-badge{display:inline-block; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:600;}
+.cr-badge.active{background:var(--cr-green-tint); color:var(--cr-green);}
+.cr-badge.inactive{background:var(--cr-red-tint); color:var(--cr-red);}
+.cr-badge.completed{background:var(--cr-green-tint); color:var(--cr-green);}
+.cr-badge.scheduled{background:var(--cr-blue-tint); color:var(--cr-blue);}
+.cr-badge.ongoing{background:var(--cr-orange-tint); color:var(--cr-orange);}
+.cr-badge.pending{background:var(--cr-orange-tint); color:var(--cr-orange);}
+.cr-badge.approved{background:var(--cr-green-tint); color:var(--cr-green);}
+.cr-badge.rejected{background:var(--cr-red-tint); color:var(--cr-red);}
+
+.cr-info-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:16px;}
+.cr-info{display:flex; align-items:center; gap:12px;}
+.cr-info-icon{width:38px; height:38px; border-radius:10px; display:flex; align-items:center; justify-content:center; flex-shrink:0;}
+.cr-info-icon svg{width:18px; height:18px;}
+.cr-info-label{font-size:11px; color:var(--cr-dim); font-weight:600; text-transform:uppercase; letter-spacing:.03em;}
+.cr-info-val{font-size:14.5px; font-weight:600; color:var(--cr-text); margin-top:2px;}
+.ic-purple{background:linear-gradient(160deg, color-mix(in srgb, var(--cr-purple) 30%, white) 0%, color-mix(in srgb, var(--cr-purple) 60%, white) 55%, color-mix(in srgb, var(--cr-purple) 85%, black 10%) 100%); box-shadow:inset 0 -3px 0 color-mix(in srgb, var(--cr-purple) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color:color-mix(in srgb, var(--cr-purple) 55%, black 35%);}
+.ic-green{background:linear-gradient(160deg, color-mix(in srgb, var(--cr-green) 30%, white) 0%, color-mix(in srgb, var(--cr-green) 60%, white) 55%, color-mix(in srgb, var(--cr-green) 85%, black 10%) 100%); box-shadow:inset 0 -3px 0 color-mix(in srgb, var(--cr-green) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color:color-mix(in srgb, var(--cr-green) 55%, black 35%);}
+.ic-blue{background:linear-gradient(160deg, color-mix(in srgb, var(--cr-blue) 30%, white) 0%, color-mix(in srgb, var(--cr-blue) 60%, white) 55%, color-mix(in srgb, var(--cr-blue) 85%, black 10%) 100%); box-shadow:inset 0 -3px 0 color-mix(in srgb, var(--cr-blue) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color:color-mix(in srgb, var(--cr-blue) 55%, black 35%);}
+.ic-orange{background:linear-gradient(160deg, color-mix(in srgb, var(--cr-orange) 30%, white) 0%, color-mix(in srgb, var(--cr-orange) 60%, white) 55%, color-mix(in srgb, var(--cr-orange) 85%, black 10%) 100%); box-shadow:inset 0 -3px 0 color-mix(in srgb, var(--cr-orange) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color:color-mix(in srgb, var(--cr-orange) 55%, black 35%);}
+
+.cr-two-col{display:grid; grid-template-columns:1.3fr 1fr; gap:16px; margin-bottom:16px; align-items:start;}
+.cr-card-head{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:14px;}
+.cr-section-title{font-size:13px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--cr-text); margin-bottom:14px; display:flex; align-items:center; gap:8px;}
+.cr-section-title .count{font-size:11px; font-weight:600; color:var(--cr-dim); background:var(--cr-bg); border:1px solid var(--cr-border); border-radius:20px; padding:1px 9px;}
+
+.cr-input{width:100%; padding:9px 12px; border:1px solid var(--cr-border); border-radius:8px; font-size:13px; background:var(--cr-bg); color:var(--cr-text); font-family:inherit;}
+.cr-search-wrap{position:relative; margin-bottom:10px;}
+.cr-search-wrap svg{position:absolute; left:11px; top:50%; transform:translateY(-50%); width:14px; height:14px; color:var(--cr-faint);}
+.cr-search-wrap input{padding-left:32px;}
+
+.cr-table{width:100%; border-collapse:collapse;}
+.cr-table th{text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; color:var(--cr-faint); padding:9px 10px; border-bottom:1px solid var(--cr-border);}
+.cr-table td{padding:10px; font-size:13px; border-bottom:1px solid var(--cr-border); vertical-align:middle;}
+.cr-table tr:last-child td{border-bottom:none;}
+.cr-empty{color:var(--cr-faint); font-size:13px; text-align:center; padding:20px 0;}
+
+.cr-pagination{display:flex; align-items:center; justify-content:space-between; margin-top:14px; font-size:12.5px; color:var(--cr-dim); flex-wrap:wrap; gap:10px;}
+.cr-pagination .cr-pages{display:flex; gap:6px; align-items:center;}
+.cr-pagination a, .cr-pagination span.cr-page{display:flex; align-items:center; justify-content:center; min-width:28px; height:28px; border-radius:7px; border:1px solid var(--cr-border); color:var(--cr-text); font-size:12.5px;}
+.cr-pagination a:hover{border-color:var(--cr-faint); text-decoration:none;}
+.cr-pagination span.cr-page.current{background:var(--cr-blue); border-color:var(--cr-blue); color:#fff; font-weight:700;}
+.cr-pagination span.cr-page.disabled{opacity:.35; pointer-events:none;}
+.cr-per-page{padding:5px 10px; border:1px solid var(--cr-border); border-radius:6px; background:var(--cr-bg); color:var(--cr-text); font-size:12px; font-family:inherit;}
+
+.cr-result-row{display:flex; justify-content:space-between; align-items:center; padding:8px 10px; border:1px solid var(--cr-border); border-radius:8px; margin-bottom:6px;}
+.cr-result-row:last-child{margin-bottom:0;}
+.cr-result-info{font-size:13px;}
+.cr-result-id{color:var(--cr-faint); font-size:11.5px;}
+.cr-add-btn{padding:4px 12px; font-size:12px; border-radius:6px; background:var(--cr-green); color:#0a0e12; font-weight:600; border:none; cursor:pointer;}
+html[data-theme="light"] .cr-btn.primary,
+html[data-theme="light"] .cr-add-btn{ color:#fff; }
+
+.cr-view-attendance{display:inline-flex; align-items:center; gap:5px; padding:5px 12px; border-radius:7px; background:var(--cr-blue-tint); color:var(--cr-blue); font-weight:600; font-size:12px;}
+.cr-view-attendance:hover{text-decoration:none; background:var(--cr-blue); color:#fff;}
+
+@media (max-width:1100px){
+  .cr-info-grid{grid-template-columns:repeat(2,1fr);}
+  .cr-two-col{grid-template-columns:1fr;}
+}
+@media (max-width:480px){
+  .cr-info-grid{grid-template-columns:repeat(2,1fr); gap:8px;}
+}
+
+@container cr (max-width:900px){
+  .cr-info-grid{grid-template-columns:repeat(2,1fr);}
+}
+@container cr (max-width:640px){
+  .cr-two-col{grid-template-columns:1fr;}
+}
+@container cr (max-width:480px){
+  .cr-info-grid{grid-template-columns:repeat(2,1fr); gap:8px;}
+}
+</style>
+
+<div class="cr" data-modal-wide>
+
+  <div class="page-header" style="margin-bottom:16px; align-items:flex-start;">
+    <div>
+      <a href="{% url 'roster_list' %}" class="cr-btn" style="padding:6px 12px; font-size:12px; margin-bottom:10px;">Back</a>
+      <h1 style="font-size:20px; font-weight:600; margin:0; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        Manage Class Roster
+        <span class="cr-badge" style="font-size:12px; background:var(--cr-purple-tint); color:var(--cr-purple);">{{ roster.course_code|default:roster.name }}</span>
+        <span class="cr-badge {{ roster.approval_status }}" style="font-size:12px;">{{ roster.get_approval_status_display }}</span>
+        {% if roster.status == 'inactive' %}<span class="cr-badge inactive" style="font-size:12px;">Archived</span>{% endif %}
+      </h1>
+    </div>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      {% if roster.approval_status == 'pending' and can_review_roster %}
+      <form method="post" action="{% url 'roster_approve' roster.pk %}"
+            onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Approve this roster?', text: 'The schedule will be checked once more for conflicts and, if clear, added to the official calendar.', icon: 'question', confirmButtonText: 'Yes, approve', confirmButtonColor: getComputedStyle(document.documentElement).getPropertyValue('--green').trim()}); return false;"
+            style="display:inline">
+        {% csrf_token %}
+        <button type="submit" class="cr-btn primary">&#10003; Approve</button>
+      </form>
+      <form method="post" action="{% url 'roster_reject' roster.pk %}" id="roster-reject-form" style="display:inline">
+        {% csrf_token %}
+        <input type="hidden" name="reason" id="roster-reject-reason">
+        <button type="button" class="cr-btn danger" onclick="rosterReject()">&#10005; Reject</button>
+      </form>
+      {% endif %}
+      <a href="{% url 'roster_import_students' roster.pk %}" class="cr-btn">&#8593; Import Students</a>
+      <a href="{% url 'roster_edit' roster.pk %}" class="cr-btn js-modal-link">&#9998; Edit Roster</a>
+      {% if roster.has_full_schedule and roster.status == 'active' %}
+      <form method="post" action="{% url 'roster_generate_sessions' roster.pk %}"
+            onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Generate scheduled sessions?', text: 'Creates a reservation-coded session for every date in the validity period that doesn\'t already have one. Safe to run more than once.', icon: 'question', confirmButtonText: 'Yes, generate'}); return false;"
+            style="display:inline">
+        {% csrf_token %}
+        <button type="submit" class="cr-btn">&#128197; Generate Sessions</button>
+      </form>
+      {% endif %}
+      <form method="post" action="{% url 'roster_archive' roster.pk %}"
+            onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: '{% if roster.status == "active" %}Archive{% else %}Reactivate{% endif %} this roster?', text: '{% if roster.status == "active" %}{{ roster.name|escapejs }} will be marked inactive. You can reactivate it anytime.{% else %}{{ roster.name|escapejs }} will be marked active again.{% endif %}', icon: 'question', confirmButtonText: 'Yes, continue'}); return false;"
+            style="display:inline">
+        {% csrf_token %}
+        <button type="submit" class="cr-btn danger">
+          {% if roster.status == 'active' %}&#128230; Archive Roster{% else %}&#8635; Reactivate Roster{% endif %}
+        </button>
+      </form>
+
+      {% if can_review_roster %}
+      <form method="post" action="{% url 'roster_delete' roster.pk %}"
+            onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Delete this roster?', text: 'This action cannot be undone. {{ roster.name|escapejs }}{% with n=roster.students.count %}{% if n %} and its {{ n }} student{{ n|pluralize }}{% endif %}{% endwith %} will be removed.', confirmButtonText: 'Yes, delete roster'}); return false;"
+            style="display:inline">
+        {% csrf_token %}
+        <button type="submit" class="cr-icon-btn danger" title="Delete roster permanently"><svg viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><line x1="10" y1="11" x2="10" y2="17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><line x1="14" y1="11" x2="14" y2="17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if roster.approval_status == 'pending' %}
+    <div class="cr-card" style="margin-bottom:16px; border-color:var(--cr-orange); background:var(--cr-orange-tint);">
+      <strong style="color:var(--cr-orange);">Pending approval</strong> — this roster's schedule won't
+      appear on the official calendar until an Admin or Lab In-Charge approves it.
+    </div>
+  {% elif roster.approval_status == 'rejected' %}
+    <div class="cr-card" style="margin-bottom:16px; border-color:var(--cr-red); background:var(--cr-red-tint);">
+      <strong style="color:var(--cr-red);">Rejected</strong>{% if roster.rejection_reason %} — {{ roster.rejection_reason }}{% endif %}
+      <div style="margin-top:6px;">Edit this roster to fix the issue — saving will automatically resubmit it for review.</div>
+    </div>
+  {% endif %}
+
+  <div class="cr-info-grid">
+    <div class="cr-card cr-info">
+      <div class="cr-info-icon ic-purple"><svg viewBox="0 0 24 24" fill="none"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="7" r="4" stroke="currentColor" stroke-width="1.8"/></svg></div>
+      <div>
+        <div class="cr-info-label">Instructor</div>
+        <div class="cr-info-val">{{ roster.instructor.get_full_name|default:"Not assigned" }}</div>
+      </div>
+    </div>
+    <div class="cr-card cr-info">
+      <div class="cr-info-icon ic-blue"><svg viewBox="0 0 24 24" fill="none"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div>
+        <div class="cr-info-label">Course & Section</div>
+        <div class="cr-info-val">{{ roster.subject|default:"—" }}{% if roster.section %} - {{ roster.section }}{% endif %}</div>
+      </div>
+    </div>
+    <div class="cr-card cr-info">
+      <div class="cr-info-icon ic-green"><svg viewBox="0 0 24 24" fill="none"><path d="M17 20v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2M10 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM21 20v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div>
+        <div class="cr-info-label">Total Students</div>
+        <div class="cr-info-val">{{ students|length }}</div>
+      </div>
+    </div>
+    <div class="cr-card cr-info">
+      <div class="cr-info-icon ic-orange"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.8"/><line x1="3" y1="10" x2="21" y2="10" stroke="currentColor" stroke-width="1.8"/><line x1="8" y1="3" x2="8" y2="7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><line x1="16" y1="3" x2="16" y2="7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></div>
+      <div>
+        <div class="cr-info-label">Schedule</div>
+        <div class="cr-info-val">{{ roster.schedule|default:"Not set" }}</div>
+      </div>
+    </div>
+    <div class="cr-card cr-info">
+      <div class="cr-info-icon ic-blue"><svg viewBox="0 0 24 24" fill="none"><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v15H6.5A2.5 2.5 0 0 0 4 19.5v-15Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div>
+        <div class="cr-info-label">Semester / A.Y.</div>
+        <div class="cr-info-val">{% if roster.semester %}{{ roster.get_semester_display }}{% else %}—{% endif %}{% if roster.academic_year %} {{ roster.academic_year }}{% endif %}</div>
+      </div>
+    </div>
+    <div class="cr-card cr-info">
+      <div class="cr-info-icon ic-purple"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="18" rx="2" stroke="currentColor" stroke-width="1.8"/><line x1="16" y1="2" x2="16" y2="6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><line x1="8" y1="2" x2="8" y2="6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><line x1="3" y1="10" x2="21" y2="10" stroke="currentColor" stroke-width="1.8"/></svg></div>
+      <div>
+        <div class="cr-info-label">Created</div>
+        <div class="cr-info-val">{{ roster.created_at|date:"F j, Y" }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-bottom:16px;">
+    <div class="cr-card">
+      <div class="cr-card-head">
+        <div class="cr-section-title" style="margin-bottom:0;">Students List<span class="count">{{ students|length }}</span></div>
+        <button type="button" class="cr-btn primary" id="cr-open-add-student">
+          <svg viewBox="0 0 24 24" fill="none" width="14" height="14"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          Add Student
+        </button>
+      </div>
+      <div class="cr-search-wrap">
+        <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.8"/><line x1="21" y1="21" x2="16.65" y2="16.65" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <input type="text" id="cr-roster-search" class="cr-input" placeholder="Search student…" autocomplete="off">
+      </div>
+      <div class="cr-table-wrap">
+      <table class="cr-table" id="cr-students-table">
+        <thead><tr><th>Student ID</th><th>Full Name</th><th>Department</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>
+          {% for s in students %}
+            <tr data-search="{{ s.id_number|lower }} {{ s.full_name|lower }}">
+              <td>{{ s.id_number }}</td>
+              <td>{{ s.full_name }}{% if not s.student_id %} <span class="helptext" title="This account was removed/renamed since being added.">(unlinked)</span>{% endif %}</td>
+              <td>{{ s.student.department_display|default:"—" }}</td>
+              <td><span class="cr-badge {% if s.student_id and s.student.is_active %}active{% else %}inactive{% endif %}">{% if s.student_id and s.student.is_active %}Active{% else %}Inactive{% endif %}</span></td>
+              <td>
+                <form method="post" action="{% url 'roster_remove_student' roster.pk s.pk %}"
+                      onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Remove student?', text: 'Remove {{ s.full_name|escapejs }} from this roster?', confirmButtonText: 'Yes, remove'}); return false;"
+                      style="display:inline">
+                  {% csrf_token %}
+                  <button type="submit" class="cr-icon-btn danger" title="Remove student"><svg viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                </form>
+              </td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="5"><p class="cr-empty">No students added yet.</p></td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+
+  {# Add Student modal (opened from the Students List header) #}
+  <div class="app-modal-backdrop" id="cr-add-student-modal">
+    <div class="app-modal" role="dialog" aria-modal="true" aria-labelledby="cr-add-student-title" tabindex="-1">
+      <button type="button" class="app-modal-close" id="cr-close-add-student" aria-label="Close">&times;</button>
+      <div class="cr-section-title" id="cr-add-student-title">Add Student</div>
+      <p class="helptext" style="font-size:12px; color:var(--cr-dim); margin-top:-6px; margin-bottom:12px;">Search by ID or name. Only students registered by an Admin (under Users) will appear.</p>
+      <div class="cr-search-wrap">
+        <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.8"/><line x1="21" y1="21" x2="16.65" y2="16.65" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <input type="text" id="roster-student-search" class="cr-input" placeholder="Search by ID or name…" autocomplete="off">
+      </div>
+      <div id="roster-student-results"></div>
+
+      <form method="post" action="{% url 'roster_add_student' roster.pk %}" id="roster-add-student-form">
+        {% csrf_token %}
+        <input type="hidden" name="student_id" id="roster-add-student-id">
+      </form>
+    </div>
+  </div>
+
+  <div class="cr-card">
+    <div class="cr-section-title">Reservation History<span class="count">{{ sessions_paginator.count }}</span></div>
+    <div class="cr-table-wrap">
+    <table class="cr-table">
+      <thead><tr><th>Date</th><th>Laboratory</th><th>Subject / Activity</th><th>Time</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody>
+        {% for s in sessions_page_obj %}
+          <tr>
+            <td>{{ s.date|date:"F j, Y" }}</td>
+            <td>{{ s.lab.name|default:"—" }}</td>
+            <td>{{ s.subject }}</td>
+            <td>{{ s.start_time|time:"g:i A" }} – {{ s.end_time|time:"g:i A" }}</td>
+            <td>
+              {% if s.reservation_status == 'completed' %}
+                <span class="cr-badge completed">Completed</span>
+              {% elif s.reservation_status == 'ongoing' %}
+                <span class="cr-badge ongoing">Ongoing</span>
+              {% else %}
+                <span class="cr-badge scheduled">Scheduled</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if s.instructor_id == request.user.id or roster.instructor_id == request.user.id %}
+                <a href="{% url 'session_attendance_mark' s.pk %}" class="cr-view-attendance">View Attendance</a>
+              {% else %}
+                <span class="cr-empty">—</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="6"><p class="cr-empty">Not linked to any session yet — attach this roster when scheduling or editing a session.</p></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+
+    {% if sessions_is_paginated %}
+      <div class="cr-pagination">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span>Showing {{ sessions_page_obj.start_index }} to {{ sessions_page_obj.end_index }} of {{ sessions_paginator.count }} entries</span>
+          <select class="cr-per-page" onchange="crChangeSessionsPerPage(this.value)">
+            <option value="10" {% if sessions_selected_per_page == 10 %}selected{% endif %}>10 per page</option>
+            <option value="15" {% if sessions_selected_per_page == 15 %}selected{% endif %}>15 per page</option>
+            <option value="25" {% if sessions_selected_per_page == 25 %}selected{% endif %}>25 per page</option>
+            <option value="50" {% if sessions_selected_per_page == 50 %}selected{% endif %}>50 per page</option>
+          </select>
+        </div>
+        <div class="cr-pages">
+          {% if sessions_page_obj.has_previous %}
+            <a href="?page=1" class="js-modal-link">&laquo;</a>
+            <a href="?page={{ sessions_page_obj.previous_page_number }}" class="js-modal-link">&lsaquo;</a>
+          {% else %}
+            <span class="cr-page disabled">&laquo;</span>
+            <span class="cr-page disabled">&lsaquo;</span>
+          {% endif %}
+          {% for num in sessions_paginator.page_range %}
+            {% if num == sessions_page_obj.number %}
+              <span class="cr-page current">{{ num }}</span>
+            {% else %}
+              <a href="?page={{ num }}" class="js-modal-link">{{ num }}</a>
+            {% endif %}
+          {% endfor %}
+          {% if sessions_page_obj.has_next %}
+            <a href="?page={{ sessions_page_obj.next_page_number }}" class="js-modal-link">&rsaquo;</a>
+            <a href="?page={{ sessions_paginator.num_pages }}" class="js-modal-link">&raquo;</a>
+          {% else %}
+            <span class="cr-page disabled">&rsaquo;</span>
+            <span class="cr-page disabled">&raquo;</span>
+          {% endif %}
+        </div>
+      </div>
+    {% endif %}
+  </div>
+
+</div>
+
+<script>
+(function () {
+  window.rosterReject = function () {
+    var reason = window.prompt('Reason for rejecting this roster? (optional — the instructor will see this)', '');
+    if (reason === null) return; // cancelled
+    var form = document.getElementById('roster-reject-form');
+    document.getElementById('roster-reject-reason').value = reason;
+    compulabConfirmSubmit(form, {
+      title: 'Reject this roster?',
+      text: 'The instructor will be notified and can edit and resubmit it.',
+      confirmButtonText: 'Yes, reject',
+    });
+  };
+
+  // The "per page" dropdown for the Reservation History list — a plain
+  // <select onchange> like users.html uses on its own full page won't
+  // work here, since this template is only ever loaded INSIDE the
+  // app-wide modal (see accounts/mixins.py: ModalDetailMixin) and a
+  // normal form submit would navigate the whole browser window away
+  // from the roster instead of refreshing the modal's content.
+  window.crChangeSessionsPerPage = function (value) {
+    var base = (typeof appModalSourceUrl !== 'undefined' && appModalSourceUrl) || window.location.href;
+    var url = new URL('?per_page=' + encodeURIComponent(value), base);
+    openAppModal(url.href, null);
+  };
+})();
+</script>
+
+<script>
+(function () {
+  const rows = document.querySelectorAll('#cr-students-table tbody tr[data-search]');
+  const filterInput = document.getElementById('cr-roster-search');
+  if (filterInput) {
+    filterInput.addEventListener('input', function () {
+      const q = filterInput.value.trim().toLowerCase();
+      rows.forEach(function (row) {
+        row.style.display = row.dataset.search.includes(q) ? '' : 'none';
+      });
+    });
+  }
+
+  // ---- Add Student modal ----
+  const addModal = document.getElementById('cr-add-student-modal');
+  const openAddBtn = document.getElementById('cr-open-add-student');
+  function openAddModal() {
+    addModal.classList.add('open');
+    setTimeout(function () { document.getElementById('roster-student-search').focus(); }, 50);
+  }
+  function closeAddModal() {
+    addModal.classList.remove('open');
+    document.getElementById('roster-student-search').value = '';
+    document.getElementById('roster-student-results').innerHTML = '';
+  }
+  if (openAddBtn && addModal) {
+    // park the modal on <body> so no page container can clip or offset it
+    document.body.appendChild(addModal);
+    openAddBtn.addEventListener('click', openAddModal);
+    document.getElementById('cr-close-add-student').addEventListener('click', closeAddModal);
+    addModal.addEventListener('mousedown', function (e) { if (e.target === addModal) closeAddModal(); });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && addModal.classList.contains('open') && !document.querySelector('.swal2-container')) closeAddModal();
+    });
+  }
+
+  const input = document.getElementById('roster-student-search');
+  const results = document.getElementById('roster-student-results');
+  const hiddenId = document.getElementById('roster-add-student-id');
+  const addForm = document.getElementById('roster-add-student-form');
+  const searchUrl = "{% url 'roster_search_students' roster.pk %}";
+  let debounceTimer = null;
+
+  function renderResults(items) {
+    results.innerHTML = '';
+    if (!items.length) {
+      if (input.value.trim()) {
+        results.innerHTML = '<p class="helptext" style="font-size:12px; color:var(--cr-dim);">No matching registered students found.</p>';
+      }
+      return;
+    }
+    items.forEach(function (s) {
+      const row = document.createElement('div');
+      row.className = 'cr-result-row';
+      const info = document.createElement('span');
+      info.className = 'cr-result-info';
+      info.appendChild(document.createTextNode(s.id_number + '  '));
+      const nameEl = document.createElement('span');
+      nameEl.style.color = 'var(--cr-text)';
+      nameEl.textContent = s.full_name;
+      info.appendChild(nameEl);
+      if (s.department) {
+        const deptEl = document.createElement('span');
+        deptEl.className = 'cr-result-id';
+        deptEl.textContent = ' — ' + s.department + (s.year_level ? ' ' + s.year_level : '');
+        info.appendChild(document.createTextNode(' '));
+        info.appendChild(deptEl);
+      }
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'cr-add-btn';
+      btn.textContent = 'Add';
+      btn.onclick = function () {
+        hiddenId.value = s.id;
+        compulabConfirmSubmit(addForm, {
+          title: 'Add this student?',
+          text: s.full_name + ' will be added to the roster.',
+          icon: 'question',
+          confirmButtonText: 'Yes, add',
+          confirmButtonColor: getComputedStyle(document.documentElement).getPropertyValue('--green').trim(),
+        });
+      };
+      row.appendChild(info);
+      row.appendChild(btn);
+      results.appendChild(row);
+    });
+  }
+
+  input.addEventListener('input', function () {
+    clearTimeout(debounceTimer);
+    const q = input.value.trim();
+    if (!q) { results.innerHTML = ''; return; }
+    debounceTimer = setTimeout(function () {
+      fetch(searchUrl + '?q=' + encodeURIComponent(q))
+        .then(function (r) { return r.json(); })
+        .then(function (data) { renderResults(data.results || []); })
+        .catch(function () { results.innerHTML = '<p class="helptext">Search failed — try again.</p>'; });
+    }, 250);
+  });
+})();
+</script>
+
+{% endblock %}

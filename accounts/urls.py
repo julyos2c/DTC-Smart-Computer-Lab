@@ -1,0 +1,31 @@
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('redirect/', views.role_redirect, name='role_redirect'),
+    path('profile/', views.ProfileView.as_view(), name='profile'),
+    path('dashboard/incharge/', views.InchargeDashboardView.as_view(), name='incharge_dashboard'),
+    path('dashboard/instructor/', views.InstructorDashboardView.as_view(), name='instructor_dashboard'),
+    path('users/', views.UsersListView.as_view(), name='users'),
+    path('users/export/', views.export_users, name='user_export'),
+    path('users/import/', views.StudentImportView.as_view(), name='user_import'),
+    path('users/import/template/', views.user_import_template, name='user_import_template'),
+    path('users/add/', views.UserCreateView.as_view(), name='user_create'),
+    path('users/<int:pk>/', views.UserDetailView.as_view(), name='user_detail'),
+    path('users/<int:pk>/edit/', views.UserUpdateView.as_view(), name='user_update'),
+    path('users/<int:pk>/activate/', views.user_activate, name='user_activate'),
+    path('users/<int:pk>/deactivate/', views.user_deactivate, name='user_deactivate'),
+    path('users/<int:pk>/delete/', views.UserDeleteView.as_view(), name='user_delete'),
+    path('users/bulk-delete/', views.users_bulk_delete, name='users_bulk_delete'),
+    path('users/<int:pk>/resend-verification/', views.user_resend_verification, name='user_resend_verification'),
+    path('users/<int:pk>/reset-password/', views.UserResetPasswordView.as_view(), name='user_reset_password'),
+    path('logs/', views.LogHistoryView.as_view(), name='log_history'),
+    path('logs/export/', views.export_logs_pdf, name='log_export_pdf'),
+    path('attendance/', views.AttendanceView.as_view(), name='attendance'),
+    path('attendance/class/<str:roster_key>/', views.AttendanceView.as_view(), name='attendance_class_log'),
+    path('attendance/summary/export/', views.attendance_summary_export, name='attendance_summary_export'),
+    path('attendance/session/<int:pk>/mark/', views.session_attendance_mark, name='session_attendance_mark'),
+    path('api/search-requesters/', views.search_requesters, name='search_requesters'),
+    path('set-theme/', views.set_theme, name='set_theme'),
+    path('verify-email/<uidb64>/<token>/', views.verify_email, name='verify_email'),
+]

@@ -1,0 +1,998 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SCLAMS — {% block title %}Dashboard{% endblock %}</title>
+  <script>
+    (function() {
+      try {
+        if (localStorage.getItem('compulabSidebarCollapsed') === '1') {
+          document.documentElement.classList.add('sidebar-collapsed');
+        }
+      } catch (e) {}
+    })();
+  </script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: 'Inter', -apple-system, system-ui, sans-serif;
+      background:
+        radial-gradient(1200px 700px at 85% -10%, rgba(62,214,196,0.05), transparent 60%),
+        radial-gradient(900px 500px at 0% 100%, rgba(91,157,255,0.045), transparent 55%),
+        #0a0e12;
+      color: #e7ebee;
+    }
+
+    :root{
+      --topbar-accent: #3ed6c4;
+      --topbar-accent-tint: rgba(62,214,196,0.12);
+      --topbar-ink-1: #12171d;
+      --topbar-text-1: #4d5761;
+      --topbar-text-2: #8b98a3;
+      --shell-ink-0: #0a0e12;
+      --shell-ink-1: #12171d;
+      --shell-line: rgba(255,255,255,0.08);
+
+      /* shared design system (matches dashboard pages) */
+      --bg: #0a0e12;
+      --surface: #12171d;
+      --surface-raised: #171d24;
+      --border: #232b34;
+      --border-soft: rgba(35,43,52,0.6);
+      --text: #e7ebee;
+      --text-dim: #8b98a3;
+      --text-faint: #4d5761;
+      --green: #3ed6c4;
+      --green-dim: rgba(62,214,196,0.14);
+      --red: #ff5d5d;
+      --red-soft: #ff8080;
+      --red-dim: rgba(255,93,93,0.14);
+      --amber: #f2a93b;
+      --amber-dim: rgba(242,169,59,0.14);
+      --blue: #5b9dff;
+      --blue-dim: rgba(91,157,255,0.14);
+      --purple: #a78bfa;
+      --purple-dim: rgba(167,139,250,0.14);
+      --gold: #facc15;
+      --gold-dim: rgba(250,204,21,0.14);
+      /* Dedicated "Under Maintenance" status color — intentionally NOT
+         re-themed in light mode like the other status colors below.
+         It's always rendered on its own pale tint background (never
+         directly on the page background), so it doesn't need muting for
+         contrast, and staying constant keeps it visually matching the
+         original reference design in both themes. Kept separate from
+         --gold, which lightens to a muted brown in light mode for the
+         "Student" role pill's own contrast needs. */
+      --maintenance: #facc15;
+      --maintenance-dim: rgba(250,204,21,0.14);
+      --font-display: 'Space Grotesk', sans-serif;
+      --font-body: 'Inter', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+
+      /* dedicated sidebar palette — defaults simply mirror the shell tokens
+         above so dark mode is pixel-identical to before; light mode
+         overrides these below to keep the sidebar dark-navy while the rest
+         of the app switches to a light surface. */
+      --sidebar-bg: var(--shell-ink-0);
+      --sidebar-bg-hover: var(--shell-ink-1);
+      --sidebar-line: var(--shell-line);
+      --sidebar-text: var(--text);
+      --sidebar-text-dim: var(--text-dim);
+      --sidebar-text-faint: var(--text-faint);
+    }
+
+    /* Light theme overrides — applied when <html data-theme="light">.
+       Every rule above is written against these same CSS variables, so
+       switching the values here re-themes the entire app with no other
+       changes needed. */
+    html[data-theme="light"] {
+      --topbar-accent: #3b5bfd;
+      --topbar-accent-tint: rgba(59,91,253,0.10);
+      --topbar-ink-1: #ffffff;
+      --topbar-text-1: #111827;
+      --topbar-text-2: #5b6572;
+      --shell-ink-0: #eef1f4;
+      --shell-ink-1: #ffffff;
+      --shell-line: rgba(15,23,42,0.09);
+
+      /* higher-contrast text + surfaces for readability */
+      --bg: #f2f5f7;
+      --surface: #ffffff;
+      --surface-raised: #f6f9fb;
+      --border: #e2e6eb;
+      --border-soft: rgba(15,23,42,0.08);
+      --text: #111827;
+      --text-dim: #4b5563;
+      --text-faint: #6b7280;
+      --green: #0f766e;
+      --green-dim: rgba(15,118,110,0.12);
+      --red: #dc2626;
+      --red-soft: #dc2626;
+      --red-dim: rgba(220,38,38,0.10);
+      --amber: #f59e0b;
+      --amber-dim: rgba(245,158,11,0.14);
+      --blue: #1d4ed8;
+      --blue-dim: rgba(29,78,216,0.12);
+      --purple: #6d28d9;
+      --purple-dim: rgba(109,40,217,0.10);
+      --gold: #b45309;
+      --gold-dim: rgba(180,83,9,0.12);
+
+      /* sidebar goes white in light mode — kept independent from
+         --shell-ink-0/1 so the topbar/user-chip hovers (which still use
+         those) are unaffected */
+      --sidebar-bg: #ffffff;
+      --sidebar-bg-hover: #f3f4f6;
+      --sidebar-line: #e5e7eb;
+      --sidebar-text: #111827;
+      --sidebar-text-dim: #4b5563;
+      --sidebar-text-faint: #6b7280;
+    }
+    html[data-theme="light"] body {
+      background:
+        radial-gradient(1200px 700px at 85% -10%, rgba(15,118,110,0.05), transparent 60%),
+        radial-gradient(900px 500px at 0% 100%, rgba(29,78,216,0.04), transparent 55%),
+        #f2f5f7;
+      color: #111827;
+    }
+
+    .app { display: flex; height: 100vh; }
+
+    .sidebar { flex-shrink: 0; display: flex; flex-direction: column; height: 100%; min-height: 0; }
+
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* Mobile sidebar — hidden off-canvas by default, slides in when toggled */
+    @media (max-width: 768px) {
+      .sidebar {
+        position: fixed;
+        top: 0; left: 0;
+        height: 100vh;
+        z-index: 1500;
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+      }
+      html.sidebar-mobile-open .sidebar { transform: translateX(0); }
+      .main { width: 100%; }
+      .sidebar-backdrop {
+        display: none;
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 1400;
+      }
+      html.sidebar-mobile-open .sidebar-backdrop { display: block; }
+      .content { padding: 14px; }
+
+      /* Shared grid/table components (base.html classes used across many
+         pages) — collapse to fewer columns / stack so nothing gets
+         squeezed into unreadable slivers on a phone screen. Page-specific
+         style blocks (e.g. .ld-metrics, .cr-filter-form) already carry
+         their own breakpoints; these are the shared ones in base.html. */
+      /* !important here is intentional: a handful of pages set an inline
+         style="grid-template-columns:..." directly on a .metrics/.form-row
+         element (e.g. filter bars with 4-5 fields), which otherwise beats
+         any stylesheet rule — including this media query — regardless of
+         viewport width and never stacks on a phone. */
+      .metrics { grid-template-columns: repeat(2, 1fr) !important; gap: 8px; }
+      .two-col { grid-template-columns: 1fr; }
+      .form-row { grid-template-columns: 1fr !important; gap: 10px; }
+      /* Tables: let the table itself scroll horizontally instead of
+         forcing the whole page to overflow sideways. */
+      .table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      .table thead, .table tbody, .table tr { width: 100%; }
+    }
+
+    @media (max-width: 480px) {
+      .metrics { grid-template-columns: 1fr 1fr; gap: 6px; }
+      .metric { padding: 10px; }
+      .metric-val { font-size: 19px; }
+    }
+
+    .content { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 20px; min-width: 0; }
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; min-width: 0; }
+    .metrics > * { min-width: 0; }
+    .metric {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 1px 2px rgba(0,0,0,0.28), 0 8px 16px -10px rgba(0,0,0,0.5);
+      transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.15s ease, z-index 0s;
+    }
+    .metric:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 4px 8px rgba(0,0,0,0.32), 0 14px 24px -10px rgba(0,0,0,0.55);
+      z-index: 2;
+    }
+    .metric::before { content: ''; position: absolute; top: 0; left: 0; width: 3px; height: 100%; background: var(--bar-color, var(--text-faint)); }
+    .metric-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+    .metric-val { font-family: var(--font-display); font-size: 24px; font-weight: 600; color: var(--text); }
+    .metric-val.green { color: var(--green); }
+    .metric-val.red { color: var(--red); }
+    .metric-val.amber { color: var(--amber); }
+    .metric.green { --bar-color: var(--green); }
+    .metric.red { --bar-color: var(--red); }
+    .metric.amber { --bar-color: var(--amber); }
+    /* icon-badge metric layout — matches the PC Power Status page's card
+       design (colored rounded icon square + label/value stack) so any
+       page can opt into the same look by adding a .metric-icon element
+       instead of relying on the plain left-bar style above. */
+    .metric.with-icon { display: flex; align-items: center; gap: 12px; }
+    .metric.with-icon::before { display: none; }
+    .metric-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,0,0,.18); }
+    .metric-icon svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .metric-icon.ic-green { background: linear-gradient(160deg, color-mix(in srgb, var(--green) 30%, white) 0%, color-mix(in srgb, var(--green) 60%, white) 55%, color-mix(in srgb, var(--green) 85%, black 10%) 100%); box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--green) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color: color-mix(in srgb, var(--green) 55%, black 35%); }
+    .metric-icon.ic-blue { background: linear-gradient(160deg, color-mix(in srgb, var(--blue) 30%, white) 0%, color-mix(in srgb, var(--blue) 60%, white) 55%, color-mix(in srgb, var(--blue) 85%, black 10%) 100%); box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--blue) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color: color-mix(in srgb, var(--blue) 55%, black 35%); }
+    .metric-icon.ic-amber { background: linear-gradient(160deg, color-mix(in srgb, var(--amber) 30%, white) 0%, color-mix(in srgb, var(--amber) 60%, white) 55%, color-mix(in srgb, var(--amber) 85%, black 10%) 100%); box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--amber) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color: color-mix(in srgb, var(--amber) 55%, black 35%); }
+    .metric-icon.ic-red { background: linear-gradient(160deg, color-mix(in srgb, var(--red) 30%, white) 0%, color-mix(in srgb, var(--red) 60%, white) 55%, color-mix(in srgb, var(--red) 85%, black 10%) 100%); box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--red) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color: color-mix(in srgb, var(--red) 55%, black 35%); }
+    .metric-icon.ic-purple { background: linear-gradient(160deg, color-mix(in srgb, var(--purple) 30%, white) 0%, color-mix(in srgb, var(--purple) 60%, white) 55%, color-mix(in srgb, var(--purple) 85%, black 10%) 100%); box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--purple) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color: color-mix(in srgb, var(--purple) 55%, black 35%); }
+    .metric-icon.ic-gold { background: linear-gradient(160deg, color-mix(in srgb, var(--gold) 30%, white) 0%, color-mix(in srgb, var(--gold) 60%, white) 55%, color-mix(in srgb, var(--gold) 85%, black 10%) 100%); box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--gold) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color: color-mix(in srgb, var(--gold) 55%, black 35%); }
+    .metric-icon.ic-teal { background: linear-gradient(160deg, color-mix(in srgb, #2dd4bf 30%, white) 0%, color-mix(in srgb, #2dd4bf 60%, white) 55%, color-mix(in srgb, #2dd4bf 85%, black 10%) 100%); box-shadow: inset 0 -3px 0 color-mix(in srgb, #2dd4bf 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color: color-mix(in srgb, #2dd4bf 55%, black 35%); }
+    .metric-sub { font-size: 11px; color: var(--text-faint); margin-top: 2px; }
+
+    /* System-wide: give any stat/metric card a colored left accent that
+       matches the color of its icon badge (ic-green, ic-blue, etc.), so
+       every "Total X" style card across the app looks consistent without
+       each page having to declare its own border rule. */
+    [class*="metric"]:not([class*="metrics"]):has(.ic-green) { border-left: 4px solid var(--green) !important; }
+    [class*="metric"]:not([class*="metrics"]):has(.ic-blue) { border-left: 4px solid var(--blue) !important; }
+    [class*="metric"]:not([class*="metrics"]):has(.ic-purple) { border-left: 4px solid var(--purple) !important; }
+    [class*="metric"]:not([class*="metrics"]):has(.ic-orange) { border-left: 4px solid var(--amber) !important; }
+    [class*="metric"]:not([class*="metrics"]):has(.ic-amber) { border-left: 4px solid var(--amber) !important; }
+    [class*="metric"]:not([class*="metrics"]):has(.ic-red) { border-left: 4px solid var(--red) !important; }
+    [class*="metric"]:not([class*="metrics"]):has(.ic-gold) { border-left: 4px solid var(--gold) !important; }
+    [class*="metric"]:not([class*="metrics"]):has(.ic-teal) { border-left: 4px solid #2dd4bf !important; }
+
+    /* Pages that color their metric card via a plain modifier class
+       (in-metric/is-metric + amber/blue/purple/green/teal) instead of an
+       ic-* icon class get the same left accent here. */
+    .in-metric.amber, .is-metric.amber { border-left: 4px solid var(--amber) !important; }
+    .in-metric.blue, .is-metric.blue { border-left: 4px solid var(--blue) !important; }
+    .in-metric.purple, .is-metric.purple { border-left: 4px solid var(--purple) !important; }
+    .in-metric.green, .is-metric.green { border-left: 4px solid var(--green) !important; }
+    .in-metric.teal, .is-metric.teal { border-left: 4px solid #2dd4bf !important; }
+    .in-metric.red, .is-metric.red { border-left: 4px solid var(--red) !important; }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 14px;
+      color: var(--text);
+      min-width: 0;
+      position: relative;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 1px 2px rgba(0,0,0,0.28), 0 8px 18px -12px rgba(0,0,0,0.5);
+      transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.15s ease, z-index 0s;
+    }
+    .card:hover {
+      border-color: var(--border-soft);
+      transform: translateY(-3px);
+      box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 4px 8px rgba(0,0,0,0.32), 0 14px 26px -12px rgba(0,0,0,0.55);
+      z-index: 2;
+    }
+    /* Light theme uses much softer, shorter shadows — dark-mode shadow
+       values would just look like dirty smudges on a white/light surface. */
+    html[data-theme="light"] .metric,
+    html[data-theme="light"] .card {
+      box-shadow: 0 1px 0 rgba(255,255,255,0.6) inset, 0 1px 2px rgba(15,23,42,0.06), 0 8px 16px -12px rgba(15,23,42,0.14);
+    }
+    html[data-theme="light"] .metric:hover,
+    html[data-theme="light"] .card:hover {
+      box-shadow: 0 1px 0 rgba(255,255,255,0.7) inset, 0 4px 10px rgba(15,23,42,0.08), 0 14px 22px -12px rgba(15,23,42,0.18);
+    }
+    .section-title { font-family: var(--font-display); font-size: 13px; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; min-width: 0; }
+    .two-col > * { min-width: 0; }
+    .table { width: 100%; border-collapse: collapse; font-size: 13px; color: var(--text); }
+    .table th { text-align: left; padding: 6px 8px; color: var(--text-dim); font-weight: 500; border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
+    .table td { padding: 8px; border-bottom: 1px solid var(--border-soft); color: var(--text); }
+    .table tr:last-child td { border-bottom: none; }
+    .table tr:hover td { background: var(--surface-raised); }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
+    .pill-green { background: var(--green-dim); color: var(--green); }
+    .pill-red { background: var(--red-dim); color: var(--red-soft); }
+    .pill-amber { background: var(--amber-dim); color: var(--amber); }
+    .pill-blue { background: var(--blue-dim); color: var(--blue); }
+    .btn-primary { background: var(--topbar-accent); color: var(--topbar-ink-1); border-color: var(--topbar-accent); font-weight: 600; }
+    .btn-primary:hover { background: var(--topbar-accent); opacity: 0.85; }
+    .schedule-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--border-soft); }
+    .schedule-row:last-child { border: none; }
+    .schedule-time { font-size: 11px; color: var(--text-dim); width: 80px; flex-shrink: 0; padding-top: 4px; font-family: var(--font-mono); }
+    .schedule-block { flex: 1; background: var(--topbar-accent-tint); border-left: 3px solid var(--topbar-accent); border-radius: 4px; padding: 6px 10px; }
+    .schedule-block.free { background: var(--surface-raised); border-left-color: var(--border); }
+    .s-title { font-size: 12px; font-weight: 500; color: var(--text); }
+    .s-sub { font-size: 11px; color: var(--text-dim); }
+    .messages { margin-bottom: 14px; }
+    .message { padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 6px; border: 1px solid transparent; }
+    .message.success { background: var(--green-dim); color: var(--green); border-color: rgba(62,214,196,0.3); }
+    .message.error { background: var(--red-dim); color: var(--red-soft); border-color: rgba(255,93,93,0.3); }
+    .message.warning { background: var(--amber-dim); color: var(--amber); border-color: rgba(242,169,59,0.3); }
+    a { color: inherit; }
+
+    /* shared components used across app pages */
+    .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+    .page-header h1 { font-family: var(--font-display); font-size: 20px; font-weight: 600; color: var(--text); letter-spacing: -0.01em; }
+    .page-header .sub { font-size: 13px; color: var(--text-dim); margin-top: 2px; }
+
+    .action-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 13px; font-weight: 500; text-decoration: none; cursor: pointer; transition: border-color 0.15s ease, background-color 0.15s ease; }
+    .action-btn:hover { border-color: var(--text-faint); background: var(--surface-raised); }
+    .action-btn.primary { background: var(--topbar-accent); border-color: var(--topbar-accent); color: var(--topbar-ink-1); font-weight: 600; }
+    .action-btn.primary:hover { opacity: 0.85; }
+    .action-btn.danger { background: var(--red-dim); border-color: rgba(255,93,93,0.35); color: var(--red-soft); }
+    .action-btn.small { padding: 5px 12px; font-size: 12px; }
+    .action-btn.icon-only { padding: 6px; width: 30px; height: 30px; justify-content: center; }
+    .action-btn svg.btn-icon, .action-btn.icon-only svg { width: 15px; height: 15px; flex: none; stroke: currentColor; stroke-width: 1.8; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+
+    .status-pill { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 500; text-transform: capitalize; }
+    .pill-open, .pill-pending, .pill-offline, .pill-faulty, .pill-high, .pill-delete, .pill-rejected { background: var(--red-dim); color: var(--red-soft); }
+    .pill-in_progress, .pill-in_use, .pill-needs_check, .pill-medium, .pill-deactivate, .pill-under_repair { background: var(--amber-dim); color: var(--amber); }
+    .pill-issue { background: rgba(167,139,250,0.14); color: #a78bfa; }
+    .pill-maintenance { background: rgba(250,204,21,0.14); color: #facc15; }
+    .pill-assigned { background: var(--topbar-accent-tint); color: var(--topbar-accent); }
+    .pill-resolved, .pill-approved, .pill-online, .pill-good, .pill-low, .pill-activate, .pill-register, .pill-operational { background: var(--green-dim); color: var(--green); }
+    .pill-declined, .pill-retired { background: rgba(139,152,163,0.14); color: var(--text-dim); }
+    .pill-admin, .pill-incharge, .pill-instructor, .pill-student, .pill-fair, .pill-reset_password, .pill-change_password, .pill-pc_unlock { background: var(--topbar-accent-tint); color: var(--topbar-accent); }
+
+    .form-group { margin-bottom: 16px; }
+    .form-label { display: block; font-size: 12px; font-weight: 500; color: var(--text-dim); margin-bottom: 6px; }
+    .form-control { width: 100%; min-width: 0; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-family: inherit; background: var(--surface-raised); color: var(--text); }
+    .form-control:focus { outline: none; border-color: var(--topbar-accent); box-shadow: 0 0 0 3px rgba(62,214,196,0.15); }
+    /* read-only display of a value that can't be edited on this form (e.g. Role after account creation) */
+    .static-value { padding: 9px 12px; border: 1px dashed var(--border); border-radius: 8px; font-size: 13px; color: var(--text-dim); background: transparent; }
+    /* fallback: Django's auto-generated widgets don't carry the form-control class */
+    .card form input[type="text"], .card form input[type="email"], .card form input[type="password"],
+    .card form input[type="number"], .card form input[type="date"], .card form input[type="time"],
+    .card form select, .card form textarea {
+      width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px;
+      font-size: 13px; font-family: inherit; background: var(--surface-raised); color: var(--text);
+    }
+    .card form input:focus, .card form select:focus, .card form textarea:focus {
+      outline: none; border-color: var(--topbar-accent); box-shadow: 0 0 0 3px rgba(62,214,196,0.15);
+    }
+    .card form input[type="checkbox"] { margin-right: 6px; accent-color: var(--topbar-accent); }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; min-width: 0; }
+    .form-row > * { min-width: 0; }
+    .form-actions {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 12px;
+    margin-top: 20px;
+}
+
+.form-actions .action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 18px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+    transition: all .25s ease;
+    cursor: pointer;
+}
+
+.form-actions .action-btn.secondary {
+    background: var(--surface-raised);
+    color: var(--text);
+    border: 1px solid var(--border);
+}
+
+.form-actions .action-btn.secondary:hover {
+    background: var(--surface);
+    border-color: var(--topbar-accent);
+    color: var(--topbar-accent);
+}
+
+.form-actions .action-btn.primary {
+    box-shadow: 0 4px 12px rgba(62,214,196,.20);
+}
+
+.form-actions .action-btn.primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 18px rgba(62,214,196,.30);
+}
+
+.form-actions .action-btn:active {
+    transform: scale(.98);
+}
+    .form-errors { color: var(--red-soft); font-size: 12px; margin-top: 4px; }
+    .helptext { font-size: 11px; color: var(--text-faint); margin-top: 4px; display: block; }
+
+    .empty { color: var(--text-faint); font-size: 13px; text-align: center; padding: 24px 0; }
+    .toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; gap: 10px; flex-wrap: wrap; }
+    .toolbar-stats { display: flex; gap: 18px; font-size: 12px; color: var(--text-dim); }
+    .toolbar-stats b { color: var(--text); font-size: 14px; }
+  
+    /* =====================================================================
+       MOBILE FIX LAYER — keep this LAST in the main <style>.
+       The earlier phone rules in this file sit BEFORE the desktop rules for
+       the same classes (e.g. .two-col), so on equal specificity the desktop
+       rule won and the layout never collapsed on a phone. Rules here come
+       last and use !important where a page's own <style>/inline style would
+       otherwise win.
+    ===================================================================== */
+    @media (max-width: 768px) {
+      /* full-bleed page wrappers (.ld/.um/.ml/.cr) cancel the content padding with a negative margin — keep them equal to .content's 14px */
+      .content { padding: 14px !important; }
+      .ld, .um, .ml, .cr { margin: -14px !important; padding: 14px !important; max-width: none !important; }
+      .content > * { min-width: 0; max-width: 100%; }
+      .content img, .content canvas, .content video { max-width: 100%; height: auto; }
+
+      /* two-column / side-by-side layouts stack */
+      .two-col, .three-col { grid-template-columns: 1fr !important; }
+
+      /* page title + action buttons: stack, buttons left-aligned & wrapping */
+      .page-header { flex-direction: column; align-items: stretch !important; justify-content: flex-start !important; gap: 10px; }
+      .page-header > * { min-width: 0; max-width: 100%; }
+      .page-header > div:not(:first-child),
+      .page-header > a, .page-header > form {
+        display: flex !important; flex-wrap: wrap !important; gap: 8px !important;
+        justify-content: flex-start !important; width: 100%;
+      }
+      .page-header > div:not(:first-child) > * { max-width: 100%; }
+
+      /* every table scrolls inside its own box instead of pushing the page wide */
+      .content table { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+      /* known multi-column blocks that never collapsed */
+      .ic2-cols, .ml-row-main, .vs-filter-form, .pal-filters-grid { grid-template-columns: 1fr !important; }
+      .ic2-metrics { grid-template-columns: 1fr 1fr !important; gap: 8px !important; }
+      .ic2-panel { min-width: 0; overflow-x: auto; padding: 14px !important; }
+      .ml-grid { grid-template-columns: 1fr !important; }
+      .ra-row4 { grid-template-columns: 1fr !important; }
+      .ra-report-grid { grid-template-columns: 1fr 1fr !important; }
+
+      .is-metric-body { min-width: 0; }
+      .is-metric-label { font-size: 11px; overflow-wrap: break-word; }
+      .pal-layout { max-width: 100%; min-width: 0; }
+      .pal-layout > * { min-width: 0; max-width: 100%; }
+      .ld-filter-form, .ml-filter-form { grid-template-columns: 1fr !important; }
+
+      /* dashboard cards + activity/notification feeds: never wider than the screen,
+         and the "5 minutes ago" stamp drops under the text instead of being cut off */
+      .ld-row-2, .ld-row-3 { grid-template-columns: minmax(0, 1fr) !important; }
+      .ld-card { min-width: 0; max-width: 100%; overflow: hidden; }
+      .ld-feed-item { flex-wrap: wrap; }
+      .ld-feed-time { flex: 0 0 100%; margin-left: 40px !important; padding-top: 0 !important; white-space: normal !important; }
+      .ld-feed-title, .ld-feed-sub { overflow-wrap: anywhere; }
+      /* last card never sits flush against the footer */
+      .content { padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px)) !important; }
+      .ls-today-row, .ls-row { grid-template-columns: 1fr 1fr !important; }
+      .ra-bar-label { overflow-wrap: anywhere; }
+    }
+    @media (max-width: 480px) {
+      .ra-report-grid { grid-template-columns: 1fr !important; }
+    }
+  
+    /* Mobile browsers: 100vh is the height WITH the URL bar hidden, so the
+       bottom of the page (footer, sidebar Log out) sat behind the toolbar.
+       100dvh follows the visible area; a small script below sets exact px
+       for older Android browsers that don't know dvh. */
+    @supports (height: 100dvh) {
+      .app { height: 100dvh; }
+      @media (max-width: 768px) { .sidebar { height: 100dvh; } }
+    }
+    @media (max-width: 768px) {
+      .sidebar .nav { padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
+      .app-footer { padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+  <aside class="sidebar">
+    {% include "dashboard/sidebar.html" %}
+  </aside>
+
+  <div class="main">
+    {% include "dashboard/navbar.html" %}
+
+    <div class="content">
+      {% if messages %}
+        <div id="django-messages-data" style="display:none;"
+             data-messages='[{% for message in messages %}{"tags": "{{ message.tags|escapejs }}", "text": "{{ message|escapejs }}"}{% if not forloop.last %},{% endif %}{% endfor %}]'></div>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </div>
+
+    {% include "dashboard/footer.html" %}
+  </div>
+</div>
+
+<div class="app-modal-backdrop" id="appModalBackdrop">
+  <div class="app-modal" id="appModal" role="dialog" aria-modal="true" aria-labelledby="appModalTitle" tabindex="-1">
+    
+    <div class="app-modal-body" id="appModalBody">
+      <div class="app-modal-loading" id="appModalTitle">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<style>
+.app-modal-backdrop{position:fixed; inset:0; background:rgba(0,0,0,0.55); display:none; align-items:flex-start; justify-content:center; z-index:2000; overflow-y:auto; padding:40px 16px;}
+/* SweetAlert2's own container defaults to z-index:1060, which sits BEHIND
+   our app modal (z-index:2000) — so a confirm dialog opened from a form
+   inside the app modal (e.g. "Create this lab?") would render invisibly
+   behind it. Force it above our modal so it's actually visible/clickable. */
+div.swal2-container{z-index:2100 !important;}
+
+/* SweetAlert2 defaults to a 32em (~512px) popup with generous desktop-
+   sized padding/icon/title — comfortable on a monitor, but oversized on a
+   phone. --swal2-* are SweetAlert2's own supported CSS variables, so we
+   scale them down instead of fighting its internal layout. max-width:100%
+   is already part of SweetAlert2's own CSS, so this never overflows the
+   viewport width; the additions below are about making it feel right-
+   sized (not just non-overflowing) and giving it its own scroll if content
+   is ever taller than the screen. */
+:root{
+  --swal2-width: 400px;
+  --swal2-padding: 1.25em;
+}
+div:where(.swal2-container) div:where(.swal2-popup){
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+@media (max-width:640px){
+  :root{
+    --swal2-width: calc(100vw - 32px);
+    --swal2-padding: 1em;
+  }
+  /* Toasts (position:top-end, no confirm button — used for every Django
+     success/error/warning message) are NOT full dialogs and are already
+     intentionally small; :not(.swal2-toast) keeps every rule below scoped
+     to real confirm/alert popups only so toasts are left untouched. */
+  div:where(.swal2-container):not(.swal2-toast-shown){ padding: 12px !important; }
+  div:where(.swal2-popup):not(.swal2-toast){
+    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
+    border-radius: 10px;
+  }
+  div:where(.swal2-popup):not(.swal2-toast) div:where(.swal2-icon){ width: 3.5em !important; height: 3.5em !important; margin: 1em auto 0.6em !important; }
+  div:where(.swal2-popup):not(.swal2-toast) div:where(.swal2-title){ font-size: 1.2em !important; padding: 0.4em 0.4em 0 !important; }
+  div:where(.swal2-popup):not(.swal2-toast) div:where(.swal2-html-container){ font-size: 0.9em !important; margin: 0.6em 1em 0 !important; }
+  div:where(.swal2-popup):not(.swal2-toast) div:where(.swal2-actions){ width: 100% !important; margin-top: 1em !important; }
+  div:where(.swal2-popup):not(.swal2-toast) button:where(.swal2-styled){ font-size: 0.88em !important; padding: 0.5em 1.2em !important; }
+  /* Toasts still deserve to fit a narrow phone width so long messages wrap
+     instead of getting clipped, without touching their icon/font sizing. */
+  body.swal2-toast-shown div:where(.swal2-container){ width: calc(100vw - 24px) !important; max-width: 380px; }
+}
+@media (max-width:360px){
+  div:where(.swal2-popup):not(.swal2-toast) div:where(.swal2-icon){ width: 3em !important; height: 3em !important; margin: 0.8em auto 0.5em !important; }
+  div:where(.swal2-popup):not(.swal2-toast) div:where(.swal2-title){ font-size: 1.05em !important; }
+  div:where(.swal2-popup):not(.swal2-toast) div:where(.swal2-html-container){ font-size: 0.85em !important; }
+}
+.app-modal-backdrop.open{display:flex;}
+.app-modal{background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:22px; width:560px; max-width:100%; max-height:calc(100vh - 80px); overflow-y:auto; overflow-x:hidden; position:relative; margin:auto; box-sizing:border-box;}
+/* Opt-in for content too dense for the default width (data tables, multi-
+   column detail pages, etc.) — see openAppModal()/data-modal-wide below.
+   Still capped by max-width so it can never overflow the viewport. */
+.app-modal.app-modal--wide{width:920px;}
+.app-modal:focus{outline:none;}
+.app-modal-close{position:absolute; top:12px; right:14px; background:none; border:none; color:var(--text-faint); font-size:20px; cursor:pointer; line-height:1; z-index:1; width:28px; height:28px; border-radius:6px;}
+.app-modal-close:hover{color:var(--text); background:var(--border-soft);}
+.app-modal-close:focus-visible, .app-modal a:focus-visible, .app-modal button:focus-visible,
+.app-modal input:focus-visible, .app-modal select:focus-visible, .app-modal textarea:focus-visible{
+  outline:2px solid var(--blue); outline-offset:2px;
+}
+.app-modal-body .page-header{margin-top:0;}
+.app-modal-loading{padding:40px 0; text-align:center; color:var(--text-dim); font-size:13px;}
+@media (max-width:640px){
+  .app-modal-backdrop{padding:0; align-items:flex-end;}
+  .app-modal{
+    width:100%; max-width:100%;
+    max-height:90vh; max-height:90dvh;
+    border-radius:16px 16px 0 0;
+    padding:16px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+    margin:0;
+  }
+  .app-modal-close{top:10px; right:10px;}
+  .app-modal-body .page-header h1{font-size:17px;}
+  .app-modal-body .form-group{margin-bottom:12px;}
+}
+@media (max-width:360px){
+  .app-modal{padding:12px 12px calc(12px + env(safe-area-inset-bottom, 0px));}
+}
+
+/* ---------------------------------------------------------------------
+   Shared "Delete Selected" bulk-action toolbar + checkbox column, used by
+   every list dashboard (Users, Class Rosters, Labs, Inventory,
+   Notifications, ...). See static/js/bulk-delete.js for the behavior and
+   templates/partials/bulk_delete_toolbar.html for the drop-in markup.
+--------------------------------------------------------------------- */
+.bulk-toolbar{
+  display:none; align-items:center; gap:12px;
+  padding:10px 14px; margin-bottom:12px;
+  background:var(--red-dim); border:1px solid var(--red); border-radius:10px;
+  font-size:13px; color:var(--text);
+}
+.bulk-toolbar.is-visible{ display:flex; }
+.bulk-toolbar .js-bulk-count{ font-weight:700; }
+.bulk-toolbar .bulk-delete-btn{
+  margin-left:auto; display:inline-flex; align-items:center; gap:6px;
+  background:var(--red); color:#fff; border:none; border-radius:7px;
+  padding:7px 14px; font-size:13px; font-weight:600; cursor:pointer;
+}
+.bulk-toolbar .bulk-delete-btn:hover{ opacity:.9; }
+.bulk-toolbar .bulk-delete-btn svg{ width:14px; height:14px; }
+.bulk-select-col{ width:34px; }
+.js-bulk-delete[data-select-reveal]:not(.sel-active) .js-row-check,
+.js-bulk-delete[data-select-reveal]:not(.sel-active) .bulk-select-col{ display:none; }
+.bulk-select-col input[type="checkbox"],
+.js-row-check{ width:16px; height:16px; cursor:pointer; accent-color:var(--red); }
+</style>
+
+<script src="{% static 'vendor/sweetalert2/sweetalert2.all.min.js' %}"></script>
+<script>
+  // If the vendored copy above isn't present yet (fresh checkout before
+  // running the one-time `static/vendor/fetch_assets.sh` setup script),
+  // fall back to the CDN so the app still works while online.
+  if (typeof Swal === 'undefined') {
+    document.write('<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"><\/script>');
+  }
+</script>
+<script>
+// SweetAlert2 doesn't see our CSS variables, so pull the current theme's
+// surface/text colors at call time — this keeps every popup in sync with
+// whichever theme the light/dark toggle currently has active instead of
+// being stuck on dark colors.
+function compulabSwalTheme() {
+  var styles = getComputedStyle(document.documentElement);
+  return {
+    background: styles.getPropertyValue('--surface').trim() || '#12171d',
+    color: styles.getPropertyValue('--text').trim() || '#e7ebee',
+  };
+}
+
+(function() {
+  var dataEl = document.getElementById('django-messages-data');
+  if (!dataEl || typeof Swal === 'undefined') return;
+  var msgs;
+  try {
+    msgs = JSON.parse(dataEl.dataset.messages);
+  } catch (e) {
+    return;
+  }
+  var ICONS = {success: 'success', error: 'error', warning: 'warning', info: 'info', debug: 'info'};
+  msgs.forEach(function(m, i) {
+    setTimeout(function() {
+      var theme = compulabSwalTheme();
+      Swal.fire({
+        toast: true,
+        position: 'top-end',
+        icon: ICONS[m.tags] || 'info',
+        title: m.text,
+        showConfirmButton: false,
+        timer: 4500,
+        timerProgressBar: true,
+        background: theme.background,
+        color: theme.color,
+      });
+    }, i * 300);
+  });
+})();
+
+// Shared helper: SweetAlert2 confirm dialog that submits a given form only
+// if the user confirms. Used across the app for destructive/important
+// actions (delete, deactivate, remove, approve/reject, etc.).
+//
+// IMPORTANT: this is wired up via onsubmit="event.preventDefault(); ...",
+// which means the browser's normal required-field validation never runs on
+// its own — calling form.submit() from JS skips it entirely. So before
+// showing any confirmation, we explicitly check the form's validity first.
+// If something required is missing/invalid, we show the browser's native
+// validation message (the little "Please fill out this field" tooltip) and
+// stop — no confirmation dialog, nothing submitted. Only a form that's
+// actually valid gets as far as the "Are you sure?" prompt.
+function compulabConfirmSubmit(form, options) {
+  options = options || {};
+  if (typeof form.checkValidity === 'function' && !form.checkValidity()) {
+    form.reportValidity();
+    return;
+  }
+  // Forms opened inside the app-wide modal (see below) submit over AJAX
+  // instead of a normal navigation — do that here on confirm, instead of
+  // calling form.submit(), so there is exactly one submission path
+  // instead of two competing ones.
+  var doSubmit = function () {
+    if (form.closest && form.closest('#appModalBody')) {
+      submitAppModalForm(form);
+    } else {
+      form.submit();
+    }
+  };
+  if (typeof Swal === 'undefined') {
+    if (confirm(options.text || 'Are you sure?')) doSubmit();
+    return;
+  }
+  var theme = compulabSwalTheme();
+  Swal.fire({
+    title: options.title || 'Are you sure?',
+    text: options.text || '',
+    icon: options.icon || 'warning',
+    showCancelButton: true,
+    confirmButtonText: options.confirmButtonText || 'Yes, continue',
+    cancelButtonText: 'Cancel',
+    confirmButtonColor: options.confirmButtonColor || '#ff5d5d',
+    background: theme.background,
+    color: theme.color,
+  }).then(function(result) {
+    if (result.isConfirmed) doSubmit();
+  });
+}
+
+// ---------------------------------------------------------------------
+// App-wide modal: opens "add / edit / view" pages inside a popup instead
+// of navigating to a separate page. Any link with class "js-modal-link"
+// is intercepted; its href is fetched with the X-Requested-With header,
+// which the view mixins (see accounts/mixins.py: ModalFormMixin /
+// ModalDetailMixin) detect to render just the page's content block
+// (no sidebar/navbar) instead of the full page.
+// ---------------------------------------------------------------------
+var appModalBackdrop = document.getElementById('appModalBackdrop');
+var appModalBody = document.getElementById('appModalBody');
+// The URL the modal's current content was fetched from — forms inside the
+// modal don't have an <html><body> of their own, so there's no real page
+// URL for them to submit to. window.location.href would be wrong (it's
+// still whatever page the modal was opened FROM, e.g. the list page, not
+// the add/edit endpoint) — so we remember the fetch URL here and use that
+// as the submit target whenever the form itself has no action="".
+var appModalSourceUrl = null;
+// Remembers whatever had focus before the modal opened (e.g. the "Add PC"
+// link) so we can restore it on close, and used to build a simple focus
+// trap while the modal is open — both expected of an accessible dialog.
+var appModalPreviouslyFocused = null;
+
+function appModalFocusableEls() {
+  return Array.prototype.slice.call(
+    appModal.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')
+  ).filter(function (el) { return el.offsetParent !== null; });
+}
+
+// Point aria-labelledby at whatever heading the loaded form actually has
+// (e.g. "Add new PC") instead of the generic "Loading…" placeholder, so
+// screen readers announce a meaningful dialog title.
+function appModalSyncLabel() {
+  var heading = appModalBody.querySelector('h1, h2, .page-header h1');
+  if (heading) {
+    heading.id = 'appModalTitle';
+    appModal.setAttribute('aria-labelledby', 'appModalTitle');
+  }
+}
+
+function appModalTrapFocus(e) {
+  if (e.key !== 'Tab') return;
+  var focusable = appModalFocusableEls();
+  if (!focusable.length) {
+    e.preventDefault();
+    return;
+  }
+  var first = focusable[0];
+  var last = focusable[focusable.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
+// <script> tags inserted via innerHTML never auto-execute — the browser
+// parses them but won't run them. Form pages like roster_form.html,
+// session_edit.html, request_new/edit.html, etc. rely on their own inline
+// <script> for things like requester search, day-of-week pickers, and
+// availability checks, so we have to manually re-create + re-append each
+// injected <script> tag to actually trigger it.
+function runAppModalScripts() {
+  var scripts = appModalBody.querySelectorAll('script');
+  scripts.forEach(function (oldScript) {
+    var newScript = document.createElement('script');
+    for (var i = 0; i < oldScript.attributes.length; i++) {
+      var attr = oldScript.attributes[i];
+      newScript.setAttribute(attr.name, attr.value);
+    }
+    newScript.textContent = oldScript.textContent;
+    oldScript.parentNode.replaceChild(newScript, oldScript);
+  });
+}
+
+function openAppModal(url, triggerEl) {
+  appModalPreviouslyFocused = triggerEl || document.activeElement;
+  appModalBody.innerHTML = '<div class="app-modal-loading" id="appModalTitle">Loading…</div>';
+  appModal.setAttribute('aria-labelledby', 'appModalTitle');
+  appModal.classList.remove('app-modal--wide');
+  appModalBackdrop.classList.add('open');
+  appModalSourceUrl = url;
+  document.body.style.overflow = 'hidden';
+  fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    .then(function (r) { return r.text(); })
+    .then(function (html) {
+      appModalBody.innerHTML = html;
+      // Pages too data-dense for the default 560px (data tables,
+      // multi-column detail views) mark themselves with a
+      // [data-modal-wide] element to ask for the wider variant instead.
+      if (appModalBody.querySelector('[data-modal-wide]')) {
+        appModal.classList.add('app-modal--wide');
+      }
+      bindAppModalForm();
+      runAppModalScripts();
+      appModalSyncLabel();
+      // Move focus into the dialog once its real content has rendered —
+      // the first field if there is one, otherwise the dialog itself.
+      var focusable = appModalFocusableEls();
+      (focusable[0] || appModal).focus();
+    })
+    .catch(function () {
+      appModalBody.innerHTML = '<div class="app-modal-loading">Could not load this. Please try again.</div>';
+      appModal.focus();
+    });
+}
+
+function closeAppModal() {
+  appModalBackdrop.classList.remove('open');
+  appModalBody.innerHTML = '<div class="app-modal-loading">Loading…</div>';
+  appModalSourceUrl = null;
+  document.body.style.overflow = '';
+  if (appModalPreviouslyFocused && typeof appModalPreviouslyFocused.focus === 'function') {
+    appModalPreviouslyFocused.focus();
+  }
+  appModalPreviouslyFocused = null;
+}
+
+function appModalShowSubmitError(message) {
+  if (typeof Swal === 'undefined') {
+    alert(message);
+    return;
+  }
+  var theme = compulabSwalTheme();
+  Swal.fire({
+    toast: true,
+    position: 'top-end',
+    icon: 'error',
+    title: message,
+    showConfirmButton: false,
+    timer: 5000,
+    timerProgressBar: true,
+    background: theme.background,
+    color: theme.color,
+  });
+}
+
+function submitAppModalForm(form) {
+  var fd = new FormData(form);
+  // Disable the submit button(s) while in flight so a slow request can't
+  // be double-submitted by an extra click/tap.
+  var submitBtns = form.querySelectorAll('button[type="submit"]');
+  submitBtns.forEach(function (b) { b.disabled = true; });
+  var reEnable = function () { submitBtns.forEach(function (b) { b.disabled = false; }); };
+
+  fetch(form.getAttribute('action') || appModalSourceUrl || window.location.href, {
+    method: 'POST',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    body: fd,
+  })
+    .then(function (r) {
+      var ct = r.headers.get('content-type') || '';
+      if (ct.indexOf('application/json') !== -1) {
+        return r.json().then(function (data) { return { json: data, ok: r.ok }; });
+      }
+      if (!r.ok) {
+        // Something failed server-side (500, etc.) without returning our
+        // expected JSON — don't dump a raw error page into the modal;
+        // keep the form + whatever the user typed intact and just report it.
+        throw new Error('server error');
+      }
+      return r.text().then(function (html) { return { html: html, ok: r.ok }; });
+    })
+    .then(function (result) {
+      reEnable();
+      if (result.json && result.json.success) {
+        closeAppModal();
+        window.location.reload();
+      } else if (result.json && !result.json.success) {
+        appModalShowSubmitError(result.json.error || 'Something went wrong. Please try again.');
+      } else if (result.html) {
+        // Re-render form with validation errors — the modal itself stays
+        // open (per spec: failed/invalid submissions never close it), we
+        // just swap in the error state and move focus to the first
+        // invalid field so screen reader / keyboard users land on it.
+        appModalBody.innerHTML = result.html;
+        bindAppModalForm();
+        runAppModalScripts();
+        appModalSyncLabel();
+        var firstErrorGroup = appModalBody.querySelector('.form-errors');
+        var firstField = firstErrorGroup && firstErrorGroup.closest('.form-group')
+          ? firstErrorGroup.closest('.form-group').querySelector('input, select, textarea')
+          : appModalBody.querySelector('.is-invalid, [aria-invalid="true"]');
+        (firstField || appModalFocusableEls()[0] || appModal).focus();
+      }
+    })
+    .catch(function () {
+      // Network failure or unexpected server error — the spec calls for
+      // the modal to stay open (and the form's contents intact) so the
+      // user can just retry instead of losing what they typed.
+      reEnable();
+      appModalShowSubmitError('Could not save — check your connection and try again.');
+    });
+}
+
+function bindAppModalForm() {
+  var form = appModalBody.querySelector('form');
+  if (!form) return;
+  // Some forms (e.g. lab_form.html) already manage their own submission
+  // via an inline onsubmit="...compulabConfirmSubmit(...)" confirmation
+  // dialog. compulabConfirmSubmit() (above) already calls
+  // submitAppModalForm() itself once confirmed, when inside the modal —
+  // so attaching our own submit listener here too would fire a second,
+  // competing AJAX submission the moment the button is clicked, racing
+  // the confirmation dialog. Only attach our own listener on forms that
+  // don't already have their own onsubmit handler.
+  if (form.hasAttribute('onsubmit')) return;
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (typeof form.checkValidity === 'function' && !form.checkValidity()) {
+      form.reportValidity();
+      return;
+    }
+    submitAppModalForm(form);
+  });
+}
+
+document.addEventListener('click', function (e) {
+  var trigger = e.target.closest('.js-modal-link');
+  if (trigger) {
+    e.preventDefault();
+    var hrefAttr = trigger.getAttribute('href');
+    // Resolve relative hrefs (e.g. "?page=2" pagination links inside
+    // loaded modal content, like a roster detail's session-history
+    // pager) against the URL the CURRENT modal content was fetched
+    // from — not the outer page the modal was opened from — otherwise
+    // a relative link resolves against the wrong page (e.g. the roster
+    // LIST url instead of that specific roster's detail url) and hits
+    // an unrelated/mismatched view.
+    var resolvedUrl = (appModalBackdrop.classList.contains('open') && appModalSourceUrl)
+      ? new URL(hrefAttr, appModalSourceUrl).href
+      : hrefAttr;
+    openAppModal(resolvedUrl, trigger);
+  }
+});
+appModalBackdrop.addEventListener('click', function (e) {
+  if (e.target === appModalBackdrop) closeAppModal();
+});
+document.addEventListener('keydown', function (e) {
+  if (!appModalBackdrop.classList.contains('open')) return;
+  if (e.key === 'Escape') closeAppModal();
+  appModalTrapFocus(e);
+});
+
+</script>
+<script src="{% static 'js/bulk-delete.js' %}?v=2"></script>
+{% block extra_scripts %}{% endblock %}
+<script>
+  /* keep .app / .sidebar exactly as tall as the VISIBLE screen on phones */
+  (function () {
+    var mq = window.matchMedia('(max-width: 768px)');
+    function fit() {
+      var app = document.querySelector('.app'), sb = document.querySelector('.sidebar');
+      var h = window.innerHeight + 'px';
+      if (app) app.style.height = mq.matches ? h : '';
+      if (sb) sb.style.height = mq.matches ? h : '';
+    }
+    fit();
+    window.addEventListener('resize', fit);
+    window.addEventListener('orientationchange', fit);
+  })();
+</script>
+</body>
+</html>

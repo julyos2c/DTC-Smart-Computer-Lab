@@ -1,0 +1,261 @@
+{% extends base_template|default:"base.html" %}
+{% block title %}Class Rosters{% endblock %}
+
+{% block content %}
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+.cr{
+  --cr-bg:var(--bg); --cr-card:var(--surface); --cr-border:var(--border);
+  --cr-text:var(--text); --cr-dim:var(--text-dim); --cr-faint:var(--text-faint);
+  --cr-purple:var(--purple); --cr-purple-tint:var(--purple-dim);
+  --cr-green:var(--green); --cr-green-tint:var(--green-dim);
+  --cr-blue:var(--blue); --cr-blue-tint:var(--blue-dim);
+  --cr-orange:var(--amber); --cr-orange-tint:var(--amber-dim);
+  --cr-red:var(--red); --cr-red-tint:var(--red-dim);
+  font-family:'Inter',sans-serif; background:var(--cr-bg); color:var(--cr-text);
+  margin:-20px; padding:20px; min-height:100%;
+}
+.cr h1,.cr h2,.cr h3{font-family:'Space Grotesk',sans-serif;}
+.cr a{color:var(--cr-blue); text-decoration:none;}
+.cr a:hover{text-decoration:underline;}
+.cr-card{background:var(--cr-card); border:1px solid var(--cr-border); border-radius:14px; padding:18px 20px; box-shadow:0 1px 2px rgba(0,0,0,.2);}
+
+.cr-metrics{display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:14px; margin-bottom:16px; min-width:0;}
+.cr-metrics > *{min-width:0;}
+.cr-metric{display:flex; align-items:center; gap:12px;}
+.cr-metric-icon{width:40px; height:40px; border-radius:10px; display:flex; align-items:center; justify-content:center; flex-shrink:0;}
+.cr-metric-icon svg{width:19px; height:19px;}
+.cr-metric-label{font-size:11px; color:var(--cr-dim); font-weight:600; text-transform:uppercase; letter-spacing:.03em;}
+.cr-metric-val{font-size:22px; font-weight:700; letter-spacing:-0.01em; margin-top:2px;}
+.ic-purple{background:linear-gradient(160deg, color-mix(in srgb, var(--cr-purple) 30%, white) 0%, color-mix(in srgb, var(--cr-purple) 60%, white) 55%, color-mix(in srgb, var(--cr-purple) 85%, black 10%) 100%); box-shadow:inset 0 -3px 0 color-mix(in srgb, var(--cr-purple) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color:color-mix(in srgb, var(--cr-purple) 55%, black 35%);}
+.ic-green{background:linear-gradient(160deg, color-mix(in srgb, var(--cr-green) 30%, white) 0%, color-mix(in srgb, var(--cr-green) 60%, white) 55%, color-mix(in srgb, var(--cr-green) 85%, black 10%) 100%); box-shadow:inset 0 -3px 0 color-mix(in srgb, var(--cr-green) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color:color-mix(in srgb, var(--cr-green) 55%, black 35%);}
+.ic-blue{background:linear-gradient(160deg, color-mix(in srgb, var(--cr-blue) 30%, white) 0%, color-mix(in srgb, var(--cr-blue) 60%, white) 55%, color-mix(in srgb, var(--cr-blue) 85%, black 10%) 100%); box-shadow:inset 0 -3px 0 color-mix(in srgb, var(--cr-blue) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color:color-mix(in srgb, var(--cr-blue) 55%, black 35%);}
+.ic-orange{background:linear-gradient(160deg, color-mix(in srgb, var(--cr-orange) 30%, white) 0%, color-mix(in srgb, var(--cr-orange) 60%, white) 55%, color-mix(in srgb, var(--cr-orange) 85%, black 10%) 100%); box-shadow:inset 0 -3px 0 color-mix(in srgb, var(--cr-orange) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color:color-mix(in srgb, var(--cr-orange) 55%, black 35%);}
+
+.cr-filter-form{display:grid; grid-template-columns:1.4fr 1fr 1fr 1fr 1fr auto auto; gap:12px; align-items:end; min-width:0;}
+.cr-filter-form > *{min-width:0;}
+.cr-label{font-size:12px; font-weight:500; color:var(--cr-dim); margin-bottom:6px; display:block;}
+.cr-input, .cr-select{width:100%; padding:9px 12px; border:1px solid var(--cr-border); border-radius:8px; font-size:13px; background:var(--cr-bg); color:var(--cr-text); font-family:inherit;}
+.cr-btn{display:inline-flex; align-items:center; gap:6px; padding:9px 16px; border-radius:8px; border:1px solid var(--cr-border); background:var(--cr-card); color:var(--cr-text); font-size:13px; font-weight:500; cursor:pointer; white-space:nowrap;}
+.cr-btn.primary{background:var(--cr-green); border-color:var(--cr-green); color:#0a0e12; font-weight:600;}
+.cr-btn:hover{border-color:var(--cr-faint);}
+
+.cr-table{width:100%; border-collapse:collapse;}
+.cr-table th{text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; color:var(--cr-faint); padding:10px 12px; border-bottom:1px solid var(--cr-border);}
+.cr-table td{padding:12px; font-size:13px; border-bottom:1px solid var(--cr-border); vertical-align:middle;}
+.cr-table tr:last-child td{border-bottom:none;}
+.cr-table tr:hover td{background:rgba(255,255,255,0.015);}
+.cr-name{color:var(--cr-green); font-weight:600;}
+
+.cr-badge{display:inline-block; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:600;}
+.cr-badge.active{background:var(--cr-green-tint); color:var(--cr-green);}
+.cr-badge.inactive{background:var(--cr-red-tint); color:var(--cr-red);}
+.cr-badge.pending{background:var(--cr-orange-tint); color:var(--cr-orange);}
+.cr-badge.approved{background:var(--cr-green-tint); color:var(--cr-green);}
+.cr-badge.rejected{background:var(--cr-red-tint); color:var(--cr-red);}
+
+.cr-manage-btn{display:inline-flex; align-items:center; gap:5px; padding:6px 14px; border-radius:7px; background:var(--cr-green); color:#0a0e12; font-weight:600; font-size:12.5px;}
+.cr-manage-btn:hover{text-decoration:none; opacity:.9;}
+
+.cr-pagination{display:flex; align-items:center; justify-content:space-between; margin-top:14px; font-size:12.5px; color:var(--cr-dim);}
+.cr-pagination .cr-pages{display:flex; gap:6px;}
+.cr-pagination a, .cr-pagination span.cr-page{display:flex; align-items:center; justify-content:center; min-width:28px; height:28px; border-radius:7px; border:1px solid var(--cr-border); color:var(--cr-text); font-size:12.5px;}
+.cr-pagination a:hover{border-color:var(--cr-faint); text-decoration:none;}
+.cr-pagination span.cr-page.current{background:var(--cr-green); border-color:var(--cr-green); color:#0a0e12; font-weight:700;}
+html[data-theme="light"] .cr-btn.primary,
+html[data-theme="light"] .cr-manage-btn,
+html[data-theme="light"] .cr-pagination span.cr-page.current{ color:#fff; }
+.cr-pagination span.cr-page.disabled{color:var(--cr-faint); border-color:var(--cr-border);}
+
+.cr-empty{color:var(--cr-faint); font-size:13px; text-align:center; padding:24px 0;}
+
+@media (max-width:1100px){
+  .cr-filter-form{grid-template-columns:1fr 1fr;}
+}
+@media (max-width:640px){
+  .cr-filter-form{grid-template-columns:1fr; gap:10px;}
+  /* No scroll wrapper in the markup around this table, so let the table
+     itself scroll sideways rather than blowing out the page width. */
+  .cr-table{display:block; overflow-x:auto; -webkit-overflow-scrolling:touch;}
+}
+</style>
+
+<div class="cr">
+
+  <div class="page-header" style="margin-bottom:18px;">
+    <div>
+      <h1 style="font-size:20px; font-weight:600; margin:0;">Class Rosters</h1>
+      <div class="sub" style="color:var(--cr-dim); font-size:13px; margin-top:4px;">
+        Manage all class rosters used for laboratory reservations.
+      </div>
+    </div>
+    <a href="{% url 'roster_create' %}" class="cr-btn primary js-modal-link">+ New Roster</a>
+  </div>
+
+  <div class="cr-metrics">
+    <div class="cr-card cr-metric">
+      <div class="cr-metric-icon ic-purple"><svg viewBox="0 0 24 24" fill="none"><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v15H6.5A2.5 2.5 0 0 0 4 19.5v-15Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div>
+        <div class="cr-metric-label">Total Rosters</div>
+        <div class="cr-metric-val">{{ total_rosters }}</div>
+      </div>
+    </div>
+    <div class="cr-card cr-metric">
+      <div class="cr-metric-icon ic-blue"><svg viewBox="0 0 24 24" fill="none"><path d="M17 20v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2M10 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM21 20v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div>
+        <div class="cr-metric-label">Total Students</div>
+        <div class="cr-metric-val">{{ total_students }}</div>
+      </div>
+    </div>
+    <div class="cr-card cr-metric">
+      <div class="cr-metric-icon ic-green"><svg viewBox="0 0 24 24" fill="none"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M22 4 12 14.01l-3-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div>
+        <div class="cr-metric-label">Active Rosters</div>
+        <div class="cr-metric-val">{{ active_rosters }}</div>
+      </div>
+    </div>
+    <div class="cr-card cr-metric">
+      <div class="cr-metric-icon ic-orange"><svg viewBox="0 0 24 24" fill="none"><path d="M21 8v13H3V8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 3h22v5H1z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 12h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div>
+        <div class="cr-metric-label">Archived Rosters</div>
+        <div class="cr-metric-val">{{ archived_rosters }}</div>
+      </div>
+    </div>
+    <div class="cr-card cr-metric">
+      <div class="cr-metric-icon ic-orange"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.8"/><path d="M12 6v6l4 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div>
+        <div class="cr-metric-label">Pending Approval</div>
+        <div class="cr-metric-val">{{ pending_rosters }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cr-card" style="margin-bottom:16px;">
+    <form method="get" class="cr-filter-form">
+      <div>
+        <label class="cr-label" for="cr-q">Search</label>
+        <input type="text" id="cr-q" name="q" class="cr-input" placeholder="Search roster name, course or instructor…" value="{{ selected_q }}">
+      </div>
+      <div>
+        <label class="cr-label" for="cr-semester">Semester</label>
+        <select name="semester" id="cr-semester" class="cr-select">
+          <option value="">All</option>
+          {% for key, label in semester_choices %}
+            <option value="{{ key }}" {% if selected_semester == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="cr-label" for="cr-course">Course</label>
+        <select name="course" id="cr-course" class="cr-select">
+          <option value="">All</option>
+          {% for c in course_options %}
+            <option value="{{ c }}" {% if selected_course == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="cr-label" for="cr-status">Status</label>
+        <select name="status" id="cr-status" class="cr-select">
+          <option value="">All</option>
+          <option value="active" {% if selected_status == "active" %}selected{% endif %}>Active</option>
+          <option value="inactive" {% if selected_status == "inactive" %}selected{% endif %}>Inactive</option>
+        </select>
+      </div>
+      <div>
+        <label class="cr-label" for="cr-approval">Approval</label>
+        <select name="approval" id="cr-approval" class="cr-select">
+          <option value="">All</option>
+          {% for key, label in approval_choices %}
+            <option value="{{ key }}" {% if selected_approval == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <a href="{% url 'roster_list' %}" class="cr-btn">Clear</a>
+      <button type="submit" class="cr-btn primary">Search</button>
+    </form>
+  </div>
+
+  <div class="cr-card">
+    {% if request.user.role == 'admin' or request.user.role == 'incharge' %}
+    <div class="js-bulk-delete" data-select-reveal data-item-label="roster">
+    <form method="post" action="{% url 'rosters_bulk_delete' %}" class="js-bulk-delete-form">{% csrf_token %}</form>
+    {% include "partials/bulk_select_all.html" %}
+    {% include "partials/bulk_delete_toolbar.html" %}
+    {% endif %}
+    <table class="cr-table">
+      <thead>
+        <tr>
+          {% if request.user.role == 'admin' or request.user.role == 'incharge' %}
+          <th class="bulk-select-col"></th>
+          {% endif %}
+          <th>Roster Name</th><th>Course & Section</th><th>Instructor</th>
+          <th>Semester / A.Y.</th><th>Students</th><th>Status</th><th>Approval</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for roster in rosters %}
+          <tr>
+            {% if request.user.role == 'admin' or request.user.role == 'incharge' %}
+            <td class="bulk-select-col"><input type="checkbox" class="js-row-check" value="{{ roster.pk }}"></td>
+            {% endif %}
+            <td><span class="cr-name">{{ roster.course_code|default:roster.name }}</span></td>
+            <td>{{ roster.subject|default:"—" }}{% if roster.section %} · {{ roster.section }}{% endif %}</td>
+            <td>{{ roster.instructor.get_full_name|default:"—" }}</td>
+            <td>{% if roster.semester %}{{ roster.get_semester_display }}{% else %}—{% endif %}{% if roster.academic_year %} {{ roster.academic_year }}{% endif %}</td>
+            <td>{{ roster.students.count }}</td>
+            <td>
+              {% if roster.status == 'active' %}
+                <span class="cr-badge active">Active</span>
+              {% else %}
+                <span class="cr-badge inactive">Inactive</span>
+              {% endif %}
+            </td>
+            <td><span class="cr-badge {{ roster.approval_status }}">{{ roster.get_approval_status_display }}</span></td>
+            <td><a href="{% url 'roster_detail' roster.pk %}" class="cr-manage-btn">⚙ Manage</a></td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="9"><p class="cr-empty">No class rosters yet. Create one to enable real attendance names.</p></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if request.user.role == 'admin' or request.user.role == 'incharge' %}
+    </div>
+    {% endif %}
+
+    {% if paginator.count %}
+      <div class="cr-pagination">
+        <div>
+          Showing {{ page_obj.start_index }} to {{ page_obj.end_index }} of {{ paginator.count }} entries
+        </div>
+        {% if is_paginated %}
+        <div class="cr-pages">
+          {% if page_obj.has_previous %}
+            <a href="?{% if selected_q %}q={{ selected_q }}&{% endif %}{% if selected_semester %}semester={{ selected_semester }}&{% endif %}{% if selected_course %}course={{ selected_course }}&{% endif %}{% if selected_status %}status={{ selected_status }}&{% endif %}{% if selected_approval %}approval={{ selected_approval }}&{% endif %}page={{ page_obj.previous_page_number }}">&lsaquo;</a>
+          {% else %}
+            <span class="cr-page disabled">&lsaquo;</span>
+          {% endif %}
+          {% for num in paginator.page_range %}
+            {% if num == page_obj.number %}
+              <span class="cr-page current">{{ num }}</span>
+            {% else %}
+              <a href="?{% if selected_q %}q={{ selected_q }}&{% endif %}{% if selected_semester %}semester={{ selected_semester }}&{% endif %}{% if selected_course %}course={{ selected_course }}&{% endif %}{% if selected_status %}status={{ selected_status }}&{% endif %}{% if selected_approval %}approval={{ selected_approval }}&{% endif %}page={{ num }}">{{ num }}</a>
+            {% endif %}
+          {% endfor %}
+          {% if page_obj.has_next %}
+            <a href="?{% if selected_q %}q={{ selected_q }}&{% endif %}{% if selected_semester %}semester={{ selected_semester }}&{% endif %}{% if selected_course %}course={{ selected_course }}&{% endif %}{% if selected_status %}status={{ selected_status }}&{% endif %}{% if selected_approval %}approval={{ selected_approval }}&{% endif %}page={{ page_obj.next_page_number }}">&rsaquo;</a>
+          {% else %}
+            <span class="cr-page disabled">&rsaquo;</span>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+    {% endif %}
+  </div>
+
+</div>
+
+{% endblock %}

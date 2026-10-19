@@ -1,0 +1,88 @@
+{% extends base_template|default:"base.html" %}
+{% block title %}Request Details{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1>{{ req.subject }}</h1>
+    <div class="sub">Requested by {{ req.requester_name }} ({{ req.get_requester_type_display }})</div>
+  </div>
+  <a href="{% url 'manage_requests' %}" class="action-btn"><svg class="btn-icon"><use href="#icon-arrow-left"/></svg> ← Back to pending requests</a>
+</div>
+
+{% if req.status == 'approved' and req.reservation_code %}
+  <div class="card" style="max-width:560px; border-color:#3ed6c4; background:rgba(62,214,196,0.06);">
+    <div class="section-title" style="margin-bottom:6px">Reservation code</div>
+    <div style="font-family:monospace; font-size:28px; font-weight:700; letter-spacing:0.12em;">{{ req.reservation_code }}</div>
+    {% if req.roster %}
+      <p style="font-size:13px; color:#666; margin-top:8px;">
+        Linked to roster <strong>{{ req.roster.name }}</strong> ({{ req.roster.students.count }} student{{ req.roster.students.count|pluralize }}).
+        Anyone on that roster can log in at the lab PC with this code, using their own ID number —
+        not just {{ req.requester_name }}.
+      </p>
+    {% elif req.requester_type == 'group' %}
+      <p style="font-size:13px; color:#666; margin-top:8px;">
+        This is a <strong>Group of students</strong> request — any ID number will work with this code
+        at the lab PC, so the whole group can check in without needing a roster or name list.
+        Capped at <strong>{{ req.student_count }}</strong> distinct ID{{ req.student_count|pluralize }}
+        checking in, based on the number of students on this request.
+      </p>
+    {% elif req.requester_type == 'walk_in' or req.requester_type == 'override' %}
+      <p style="font-size:13px; color:#666; margin-top:8px;">
+        This is a <strong>{{ req.get_requester_type_display }}</strong> reservation for
+        <strong>{{ req.pcs_requested }}</strong> PC{{ req.pcs_requested|pluralize }}.
+        No roster is linked, so only {{ req.requester_name }}'s
+        {{ req.get_requester_type_display }} ID (<strong>{{ req.requester_id_number }}</strong>) will work with this code at the lab PC.
+      </p>
+    {% else %}
+      <p style="font-size:13px; color:#666; margin-top:8px;">
+        Give this code to {{ req.requester_name }}. At the lab PC, they'll enter their
+        {{ req.get_requester_type_display }} ID (<strong>{{ req.requester_id_number }}</strong>) together with this code to log in.
+        No roster is linked, so only this ID number will work with this code.
+      </p>
+    {% endif %}
+  </div>
+{% endif %}
+
+<div class="card" style="max-width:560px">
+  <table class="table">
+    <tr><td>Requester</td><td>{{ req.requester_name }}</td></tr>
+    <tr><td>Type</td><td>{{ req.get_requester_type_display }}</td></tr>
+    <tr><td>ID number</td><td>{{ req.requester_id_number }}</td></tr>
+    <tr><td>Roster</td><td>{% if req.roster %}{{ req.roster.name }} ({{ req.roster.students.count }} student{{ req.roster.students.count|pluralize }}){% else %}— (individual only){% endif %}</td></tr>
+    <tr><td>Lab</td><td>{{ req.lab.name }}</td></tr>
+    <tr><td>Subject</td><td>{{ req.subject }}</td></tr>
+    <tr><td>Date</td><td>{{ req.date|date:"M d, Y" }}</td></tr>
+    <tr><td>Time</td><td>{{ req.start_time|time:"H:i" }}–{{ req.end_time|time:"H:i" }}</td></tr>
+    <tr><td>{% if req.requester_type == 'walk_in' or req.requester_type == 'override' %}PCs requested{% else %}Students{% endif %}</td><td>{% if req.requester_type == 'walk_in' or req.requester_type == 'override' %}{{ req.pcs_requested }}{% else %}{{ req.student_count }}{% endif %}</td></tr>
+    <tr><td>Status</td><td><span class="status-pill pill-{{ req.status }}">{{ req.get_status_display }}</span></td></tr>
+  </table>
+
+  {% if req.notes %}
+    <div class="section-title" style="margin-top:18px">Notes</div>
+    <p style="font-size:13px; line-height:1.6; color:#444">{{ req.notes|linebreaks }}</p>
+  {% endif %}
+
+  {% if req.status == 'pending' %}
+    <div class="form-actions" style="margin-top:20px">
+      <form method="post" action="{% url 'approve_request' req.pk %}" style="display:inline"
+            onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Approve this reservation?', text: 'A reservation code will be generated and the lab PC will accept it.', icon: 'question', confirmButtonText: 'Yes, approve', confirmButtonColor: getComputedStyle(document.documentElement).getPropertyValue('--green').trim()}); return false;">
+        {% csrf_token %}
+        <button type="submit" class="action-btn primary"><svg class="btn-icon"><use href="#icon-check"/></svg> Approve</button>
+      </form>
+      <form method="post" action="{% url 'decline_request' req.pk %}" style="display:inline"
+            onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Reject this reservation?', text: 'The requester will be notified that this request was declined.', confirmButtonText: 'Yes, reject'}); return false;">
+        {% csrf_token %}
+        <button type="submit" class="action-btn danger"><svg class="btn-icon"><use href="#icon-x"/></svg> Reject</button>
+      </form>
+      <a href="{% url 'request_edit' req.pk %}" class="action-btn icon-only js-modal-link" title="Edit request"><svg><use href="#icon-edit"/></svg></a>
+    </div>
+  {% else %}
+    <div class="form-actions" style="margin-top:20px">
+      <a href="{% url 'request_export_pdf' req.pk %}" class="action-btn"><svg class="btn-icon"><use href="#icon-pdf-doc"/></svg> Export PDF</a>
+    </div>
+  {% endif %}
+</div>
+
+{% endblock %}

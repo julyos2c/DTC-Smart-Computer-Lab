@@ -1,0 +1,49 @@
+{% extends base_template|default:"base.html" %}
+{% block title %}Equipment Status{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1>Equipment status</h1>
+    <div class="sub">{{ items|length }} items</div>
+  </div>
+  <a href="{% url 'inventory' %}?status=retired" class="action-btn"><svg class="btn-icon"><use href="#icon-eye"/></svg> View all retired</a>
+  <a href="{% url 'inventory' %}" class="action-btn"><svg class="btn-icon"><use href="#icon-arrow-left"/></svg> Back</a>
+</div>
+
+<div class="card">
+  <table class="table">
+    <thead>
+      <tr><th>Item</th><th>Location (lab)</th><th>Current status</th>{% if request.user.role == 'admin' or request.user.role == 'incharge' %}<th>Set new status</th>{% endif %}</tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+        <tr>
+          <td><a href="{% url 'inventory_detail' item.pk %}" class="js-modal-link">{{ item.name }}</a></td>
+          <td>{{ item.lab.name }}</td>
+          <td><span class="status-pill pill-{{ item.status }}">{{ item.get_status_display }}</span></td>
+          {% if request.user.role == 'admin' or request.user.role == 'incharge' %}
+            <td style="white-space:nowrap">
+              <form method="post" action="{% url 'inventory_status_update' item.pk %}" style="display:flex; gap:6px; flex-wrap:wrap;"
+                    onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Update item status?', text: 'The status of this inventory item will be changed.', icon: 'question', confirmButtonText: 'Yes, update', confirmButtonColor: getComputedStyle(document.documentElement).getPropertyValue('--green').trim()}); return false;">
+                {% csrf_token %}
+                <select name="status" class="form-control" style="width:auto; padding:6px 10px; font-size:12.5px;">
+                  <option value="operational" {% if item.status == 'operational' %}selected{% endif %}>Operational</option>
+                  <option value="under_repair" {% if item.status == 'under_repair' %}selected{% endif %}>Under Repair</option>
+                  <option value="retired" {% if item.status == 'retired' %}selected{% endif %}>Retired</option>
+                </select>
+                <input type="text" name="reason" placeholder="Reason (if retiring)" class="form-control" style="width:150px; padding:6px 10px; font-size:12.5px;">
+                <button type="submit" class="action-btn small primary"><svg class="btn-icon"><use href="#icon-edit"/></svg> Update</button>
+              </form>
+            </td>
+          {% endif %}
+        </tr>
+      {% empty %}
+        <tr><td colspan="4"><p class="empty">No equipment recorded.</p></td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}

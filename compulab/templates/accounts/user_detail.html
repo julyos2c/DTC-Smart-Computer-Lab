@@ -1,0 +1,50 @@
+{% extends base_template|default:"base.html" %}
+{% block title %}{{ target_user.display_name }}{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div style="display:flex; align-items:center; gap:14px;">
+    <div style="width:56px; height:56px; border-radius:50%; overflow:hidden; flex-shrink:0; display:flex; align-items:center; justify-content:center; background:linear-gradient(135deg, var(--green), var(--blue)); box-shadow:0 0 0 3px var(--surface), 0 0 0 4px var(--border);">
+      {% if target_user.avatar %}
+        <img src="{{ target_user.avatar.url }}" alt="" style="width:100%; height:100%; object-fit:cover;">
+      {% else %}
+        <span style="font-family:var(--font-mono); font-size:20px; font-weight:700; color:var(--bg);">{{ target_user.first_name|first|default:target_user.display_name|first|upper }}</span>
+      {% endif %}
+    </div>
+    <div>
+      <h1 style="margin:0;">{{ target_user.display_name }}</h1>
+      <div class="sub">
+        <span class="status-pill pill-{{ target_user.role }}">{{ target_user.get_role_display }}</span>
+        {% if target_user.is_active %}
+          <span style="color:var(--green); margin-left:8px;">● Active</span>
+        {% else %}
+          <span style="color:var(--amber); margin-left:8px;">● Disabled</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% if request.user.role == 'admin' %}
+  <a href="{% url 'user_update' target_user.pk %}" class="action-btn js-modal-link"><svg class="btn-icon"><use href="#icon-edit"/></svg> Edit user</a>
+  {% endif %}
+</div>
+
+<div class="card">
+  <div class="section-title">Profile Information</div>
+  <table class="table">
+    <tr><td>Full name</td><td>{{ target_user.get_full_name|default:"—" }}</td></tr>
+    <tr><td>Email</td><td>{{ target_user.email|default:"—" }}</td></tr>
+    <tr><td>ID Number</td><td>{{ target_user.id_number|default:"—" }}</td></tr>
+    <tr><td>Role</td><td>{{ target_user.get_role_display }}</td></tr>
+    <tr><td>Department</td><td>{{ target_user.department_display|default:"—" }}</td></tr>
+    <tr><td>Assigned lab</td><td>{{ target_user.assigned_lab.name|default:"—" }}</td></tr>
+    <tr><td>Status</td><td>{% if target_user.is_active %}Active{% else %}Disabled{% endif %}</td></tr>
+    {% if target_user.email %}
+      <tr><td>Email verified</td><td>{% if target_user.email_verified %}Yes{% else %}No{% endif %}</td></tr>
+    {% endif %}
+    <tr><td>Date joined</td><td>{{ target_user.date_joined|date:"M d, Y H:i" }}</td></tr>
+    <tr><td>Last login</td><td>{{ target_user.last_login|date:"M d, Y H:i"|default:"Never" }}</td></tr>
+  </table>
+</div>
+
+{% endblock %}

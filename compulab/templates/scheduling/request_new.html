@@ -1,0 +1,228 @@
+{% extends base_template|default:"base.html" %}
+{% block title %}Log a Reservation{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1>Log a reservation</h1>
+  </div>
+</div>
+
+<div class="card" style="max-width:640px">
+  <form method="post" novalidate
+        onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Log this reservation?', text: 'A new reservation request will be submitted.', icon: 'question', confirmButtonText: 'Yes, log it', confirmButtonColor: getComputedStyle(document.documentElement).getPropertyValue('--green').trim()}); return false;">
+    {% csrf_token %}
+    {% if form.non_field_errors %}
+      <div class="form-errors">{{ form.non_field_errors }}</div>
+    {% endif %}
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="{{ form.requester_type.id_for_label }}">Requester type</label>
+        {{ form.requester_type }}
+        {% if form.requester_type.errors %}<div class="form-errors">{{ form.requester_type.errors|join:", " }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="form-group" style="position:relative;">
+      <label class="form-label" id="requester-search-label" for="requester-search">Search Student / Search Instructor</label>
+      <input type="text" id="requester-search" class="form-control" autocomplete="off"
+             placeholder="Type a name or ID number to find a registered account...">
+      <div id="requester-search-results" class="search-results"
+           style="display:none; position:absolute; z-index:10; background:var(--surface-raised); color:var(--text); border:1px solid var(--border); border-radius:6px; width:100%; max-height:220px; overflow-y:auto; box-shadow:0 4px 12px rgba(0,0,0,0.25);"></div>
+      <div id="requester-extra-info" class="helptext" style="display:none; font-weight:600; margin-top:4px;"></div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="{{ form.requester_id_number.id_for_label }}">Student / instructor ID</label>
+        {{ form.requester_id_number }}
+        {% if form.requester_id_number.errors %}<div class="form-errors">{{ form.requester_id_number.errors|join:", " }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="{{ form.requester_name.id_for_label }}">Requester name</label>
+      {{ form.requester_name }}
+      {% if form.requester_name.errors %}<div class="form-errors">{{ form.requester_name.errors|join:", " }}</div>{% endif %}
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="{{ form.lab.id_for_label }}">Lab</label>
+      {{ form.lab }}
+      {% if form.lab.errors %}<div class="form-errors">{{ form.lab.errors|join:", " }}</div>{% endif %}
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="{{ form.subject.id_for_label }}">Subject</label>
+      {{ form.subject }}
+      {% if form.subject.errors %}<div class="form-errors">{{ form.subject.errors|join:", " }}</div>{% endif %}
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="{{ form.date.id_for_label }}">Date</label>
+        {{ form.date }}
+        {% if form.date.errors %}<div class="form-errors">{{ form.date.errors|join:", " }}</div>{% endif %}
+      </div>
+      <div class="form-group" id="student-count-group">
+        <label class="form-label" for="{{ form.student_count.id_for_label }}">Number of students</label>
+        {{ form.student_count }}
+       
+        {% if form.student_count.errors %}<div class="form-errors">{{ form.student_count.errors|join:", " }}</div>{% endif %}
+      </div>
+      <div class="form-group" id="pcs-requested-group" style="display:none;">
+        <label class="form-label" for="{{ form.pcs_requested.id_for_label }}">Number of PCs needed</label>
+        {{ form.pcs_requested }}
+        <span class="helptext">
+          <strong>Walk-in:</strong> only approved if this many PCs are actually free in that time slot.
+          <strong>Override:</strong> can be approved even if the lab is fully booked, but can't exceed the lab's total PC count.
+        </span>
+        {% if form.pcs_requested.errors %}<div class="form-errors">{{ form.pcs_requested.errors|join:", " }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="{{ form.start_time.id_for_label }}">Start time</label>
+        {{ form.start_time }}
+        {% if form.start_time.errors %}<div class="form-errors">{{ form.start_time.errors|join:", " }}</div>{% endif %}
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="{{ form.end_time.id_for_label }}">End time</label>
+        {{ form.end_time }}
+        {% if form.end_time.errors %}<div class="form-errors">{{ form.end_time.errors|join:", " }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="{{ form.notes.id_for_label }}">Notes (optional)</label>
+      {{ form.notes }}
+      {% if form.notes.errors %}<div class="form-errors">{{ form.notes.errors|join:", " }}</div>{% endif %}
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="action-btn primary"><svg class="btn-icon"><use href="#icon-calendar"/></svg> Log reservation</button>
+      <a href="{% url 'manage_requests' %}" class="action-btn"><svg class="btn-icon"><use href="#icon-x"/></svg> Cancel</a>
+    </div>
+  </form>
+</div>
+
+<script>
+(function() {
+  var typeSelect = document.getElementById('{{ form.requester_type.id_for_label }}');
+  var searchLabel = document.getElementById('requester-search-label');
+  var searchInput = document.getElementById('requester-search');
+  var resultsBox = document.getElementById('requester-search-results');
+  var extraInfo = document.getElementById('requester-extra-info');
+  var idField = document.getElementById('{{ form.requester_id_number.id_for_label }}');
+  var nameField = document.getElementById('{{ form.requester_name.id_for_label }}');
+  var debounceTimer = null;
+
+  var LABELS = {
+    instructor: 'Search Instructor', student: 'Search Student', group: 'Search Student (group representative)',
+    walk_in: 'Search Student / Instructor (walk-in)', override: 'Search Student / Instructor (override)',
+  };
+  // 'group', 'walk_in', and 'override' aren't distinct account roles — they
+  // search across every registered student/instructor account (see the
+  // 'any' branch in accounts.views.search_requesters).
+  var SEARCH_ROLE = {group: 'any', walk_in: 'any', override: 'any'};
+
+  function rawType() {
+    return typeSelect ? typeSelect.value : 'student';
+  }
+
+  function currentRole() {
+    return SEARCH_ROLE[rawType()] || rawType();
+  }
+
+  function updateLabel() {
+    if (searchLabel) searchLabel.textContent = LABELS[rawType()] || 'Search Student / Search Instructor';
+  }
+
+  var studentCountGroup = document.getElementById('student-count-group');
+  var pcsRequestedGroup = document.getElementById('pcs-requested-group');
+  var studentCountInput = document.getElementById('{{ form.student_count.id_for_label }}');
+  var studentCountHelp = document.getElementById('student-count-help');
+
+  function updateFieldVisibility() {
+    var isCapacityType = (rawType() === 'walk_in' || rawType() === 'override');
+    if (studentCountGroup) studentCountGroup.style.display = isCapacityType ? 'none' : '';
+    if (pcsRequestedGroup) pcsRequestedGroup.style.display = isCapacityType ? '' : 'none';
+  }
+
+  function doSearch(q) {
+    var url = '{% url "search_requesters" %}?role=' + encodeURIComponent(currentRole()) + '&q=' + encodeURIComponent(q);
+    fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+      renderResults(data.results || []);
+    });
+  }
+
+  function renderResults(results) {
+    resultsBox.innerHTML = '';
+    if (!results.length) {
+      resultsBox.style.display = 'none';
+      return;
+    }
+    results.forEach(function(r) {
+      var item = document.createElement('div');
+      var extra = [r.department, r.year_level].filter(Boolean).join(' — ');
+      item.textContent = r.full_name + ' — ' + r.id_number + (extra ? ' (' + extra + ')' : '');
+      item.style.cursor = 'pointer';
+      item.style.padding = '8px 10px';
+      item.addEventListener('mouseenter', function() { item.style.background = 'var(--border-soft)'; });
+      item.addEventListener('mouseleave', function() { item.style.background = ''; });
+      item.addEventListener('click', function() { selectResult(r); });
+      resultsBox.appendChild(item);
+    });
+    resultsBox.style.display = 'block';
+  }
+
+  function selectResult(r) {
+    idField.value = r.id_number;
+    nameField.value = r.full_name;
+    searchInput.value = r.full_name;
+    resultsBox.style.display = 'none';
+    resultsBox.innerHTML = '';
+    if (r.department) {
+      extraInfo.textContent = 'Department: ' + r.department + (r.year_level ? ' — ' + r.year_level : '');
+      extraInfo.style.display = 'block';
+    } else {
+      extraInfo.style.display = 'none';
+    }
+  }
+
+  if (searchInput) {
+    searchInput.addEventListener('input', function() {
+      clearTimeout(debounceTimer);
+      var q = searchInput.value.trim();
+      extraInfo.style.display = 'none';
+      debounceTimer = setTimeout(function() { doSearch(q); }, 250);
+    });
+    searchInput.addEventListener('focus', function() {
+      if (searchInput.value.trim()) doSearch(searchInput.value.trim());
+    });
+    document.addEventListener('click', function(e) {
+      if (resultsBox && !resultsBox.contains(e.target) && e.target !== searchInput) {
+        resultsBox.style.display = 'none';
+      }
+    });
+  }
+
+  if (typeSelect) {
+    typeSelect.addEventListener('change', function() {
+      updateLabel();
+      updateFieldVisibility();
+      searchInput.value = '';
+      resultsBox.style.display = 'none';
+      extraInfo.style.display = 'none';
+    });
+  }
+
+  updateLabel();
+  updateFieldVisibility();
+})();
+</script>
+
+{% endblock %}

@@ -1,0 +1,28 @@
+{% extends base_template|default:"base.html" %}
+{% block title %}Delete User{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1>Delete user</h1>
+    <div class="sub">This action cannot be undone</div>
+  </div>
+</div>
+
+<div class="card" style="max-width:480px">
+  <p style="font-size:13px; margin-bottom:20px; line-height:1.6;">
+    Are you sure you want to delete
+    <strong>{{ target_user.display_name }}</strong>
+    ({{ target_user.get_role_display }})? All of their account data will be permanently removed.
+  </p>
+  <form method="post">
+    {% csrf_token %}
+    <div class="form-actions">
+      <button type="submit" class="action-btn danger"><svg class="btn-icon"><use href="#icon-trash"/></svg> Yes, delete user</button>
+      <a href="{% url 'users' %}" class="action-btn"><svg class="btn-icon"><use href="#icon-x"/></svg> Cancel</a>
+    </div>
+  </form>
+</div>
+
+{% endblock %}

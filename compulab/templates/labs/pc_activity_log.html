@@ -1,0 +1,552 @@
+{% extends base_template|default:"base.html" %}
+{% load static %}
+{% block title %}PC Activity Log{% endblock %}
+
+{% block content %}
+<script src="{% static 'vendor/chartjs/chart.umd.min.js' %}"></script>
+<script>
+  // Falls back to the CDN if the vendored copy hasn't been fetched yet
+  // (see static/vendor/fetch_assets.sh) so the page still works while online.
+  if (typeof Chart === 'undefined') {
+    document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"><\/script>');
+  }
+</script>
+
+<style>
+  /* Stat cards reuse the shared .metric/.metric-icon system from base.html
+     (same 3D gradient icon + auto colored left edge as every other page's
+     stat cards) instead of a page-only flat style — this grid class just
+     controls the column count/spacing for this page's 6-up layout. */
+  .pal-stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 16px; }
+  .pal-stats .metric-val { font-size: 19px; line-height: 1.15; }
+  .pal-stats .metric-label { line-height: 1.3; margin-top: 1px; }
+
+  .pal-filters-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; align-items: end; }
+  .pal-filters-actions { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+
+  .pal-layout { display: flex; gap: 14px; align-items: flex-start; }
+  .pal-main { flex: 1 1 66%; min-width: 0; }
+  .pal-side { flex: 1 1 34%; min-width: 300px; position: sticky; top: 0; max-height: 100vh; overflow-y: auto; }
+
+  .pal-timeline-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+  .pal-timeline-actions { display: flex; gap: 8px; }
+  .pal-pagination { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; flex-wrap: wrap; gap: 10px; }
+  .pal-page-links { display: flex; gap: 4px; align-items: center; }
+  .pal-page-link { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; height: 28px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--border); font-size: 12px; color: var(--text-dim); text-decoration: none; }
+  .pal-page-link.active { background: var(--topbar-accent); border-color: var(--topbar-accent); color: var(--topbar-ink-1); font-weight: 600; }
+  .pal-page-link.disabled { opacity: .4; pointer-events: none; }
+
+  .pal-activity-pill { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 500; }
+  .pal-activity-pill.active { background: var(--green-dim); color: var(--green); }
+  .pal-activity-pill.completed { background: var(--amber-dim); color: var(--amber); }
+
+  .pal-role-pill { display: inline-block; padding: 1px 8px; border-radius: 6px; font-size: 10px; font-weight: 700; margin-left: 6px; white-space: nowrap; vertical-align: middle; }
+  .pal-role-pill.admin { background: var(--blue); color: #fff; }
+  .pal-role-pill.incharge { background: var(--purple); color: #fff; }
+  .pal-role-pill.instructor { background: var(--amber); color: #0a0e12; }
+  .pal-role-pill.student { background: var(--gold); color: #0a0e12; }
+
+  .pal-detail-row { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border-soft); font-size: 12.5px; }
+  .pal-detail-row:last-child { border-bottom: none; }
+  .pal-detail-label { color: var(--text-dim); }
+  .pal-detail-val { color: var(--text); font-weight: 500; text-align: right; }
+
+  .pal-mini-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  .pal-mini-table th { text-align: left; padding: 5px 6px; color: var(--text-dim); font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: .03em; border-bottom: 1px solid var(--border); }
+  .pal-mini-table td { padding: 6px; border-bottom: 1px solid var(--border-soft); color: var(--text); }
+  .pal-mini-scroll { max-height: 220px; overflow-y: auto; }
+
+  .pal-bottom-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 14px; }
+
+  .pal-donut-wrap { display: flex; align-items: center; gap: 18px; }
+  .pal-donut-legend { flex: 1; display: flex; flex-direction: column; gap: 9px; }
+  .pal-donut-legend-item { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .pal-donut-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .pal-donut-legend-item .lbl { flex: 1; color: var(--text-dim); }
+  .pal-donut-legend-item .val { font-weight: 600; color: var(--text); }
+
+  .pal-bar-row { margin-bottom: 12px; }
+  .pal-bar-row:last-child { margin-bottom: 0; }
+  .pal-bar-label { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px; }
+  .pal-bar-label .name { color: var(--text); font-weight: 500; }
+  .pal-bar-label .dur { color: var(--text-dim); }
+  .pal-bar-track { height: 7px; border-radius: 4px; background: var(--surface-raised); overflow: hidden; }
+  .pal-bar-fill { height: 100%; border-radius: 4px; background: var(--topbar-accent); }
+
+  .pal-quick-actions { display: flex; flex-direction: column; gap: 8px; }
+  .pal-quick-actions .action-btn { justify-content: flex-start; width: 100%; }
+
+  @media (max-width: 1200px) and (min-width: 861px) {
+    .pal-stats { grid-template-columns: repeat(3, 1fr); }
+    .pal-filters-grid { grid-template-columns: repeat(3, 1fr); }
+  }
+  /* Below 860px there's no honest way to fit a 300px-min sidebar next to
+     the main timeline, so the two-column layout stacks — and below that,
+     the card grids need real column counts, not just smaller versions of
+     the same 6/3-column layout. */
+  @media (max-width: 860px) {
+    .pal-layout { flex-direction: column; }
+    .pal-side { position: static; width: 100%; min-width: 0; }
+    .pal-stats { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .pal-stats .metric.with-icon { padding: 9px; gap: 8px; border-radius: 10px; }
+    .pal-stats .metric-icon { width: 30px; height: 30px; }
+    .pal-stats .metric-icon svg { width: 15px; height: 15px; }
+    .pal-stats .metric-val { font-size: 14px; }
+    .pal-stats .metric-label { font-size: 9px; }
+    .pal-filters-grid { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .pal-bottom-grid { grid-template-columns: 1fr; gap: 8px; }
+  }
+  @media (max-width: 480px) {
+    .pal-stats { grid-template-columns: repeat(2, 1fr); }
+    .pal-filters-grid { grid-template-columns: 1fr 1fr; }
+    .pal-donut-wrap { flex-direction: column; align-items: stretch; }
+  }
+</style>
+
+<div class="page-header">
+  <div>
+    <h1>PC Activity Log</h1>
+    <div class="sub">Monitor all activities performed on PCs in the laboratory.</div>
+  </div>
+</div>
+
+<div id="palStatsRoot">
+<div class="pal-stats">
+  <div class="metric with-icon">
+    <div class="metric-icon ic-green">
+      <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="12" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M8 20h8M12 16v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </div>
+    <div>
+      <div class="metric-val">{{ stats.total_sessions_today }}</div>
+      <div class="metric-label">Sessions Today</div>
+    </div>
+  </div>
+  <div class="metric with-icon">
+    <div class="metric-icon ic-blue">
+      <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.8"/><path d="M4 21a8 8 0 0 1 16 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </div>
+    <div>
+      <div class="metric-val">{{ stats.active_students_now }}</div>
+      <div class="metric-label">Active Users Now</div>
+    </div>
+  </div>
+  <div class="metric with-icon">
+    <div class="metric-icon ic-purple">
+      <svg viewBox="0 0 24 24" fill="none"><path d="M6 3h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v5h5" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+    </div>
+    <div>
+      <div class="metric-val">{{ stats.total_logs_today }}</div>
+      <div class="metric-label">Total Logs Today</div>
+    </div>
+  </div>
+  <div class="metric with-icon">
+    <div class="metric-icon ic-amber">
+      <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5l3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+    <div>
+      <div class="metric-val">{{ stats.avg_session_duration }}</div>
+      <div class="metric-label">Avg Session Duration</div>
+    </div>
+  </div>
+  <div class="metric with-icon">
+    <div class="metric-icon ic-green">
+      <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="12" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M8 20h8M12 16v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </div>
+    <div>
+      <div class="metric-val">{{ stats.active_pcs_now }}</div>
+      <div class="metric-label">Active PCs Now</div>
+    </div>
+  </div>
+  <div class="metric with-icon">
+    <div class="metric-icon ic-red">
+      <svg viewBox="0 0 24 24" fill="none"><path d="M3 12h4l2 8 4-16 2 8h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+    <div>
+      <div class="metric-val">{{ stats.pc_utilization_pct }}%</div>
+      <div class="metric-label">PC Utilization Today</div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="card">
+  <form method="get" class="pal-filters-grid">
+    <div class="form-group" style="margin-bottom:0">
+      <label class="form-label" for="lab">Laboratory</label>
+      <select name="lab" id="lab" class="form-control">
+        <option value="">All Laboratories</option>
+        {% for lab in all_labs %}
+          <option value="{{ lab.pk }}" {% if selected_lab == lab.pk|stringformat:"s" %}selected{% endif %}>{{ lab.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label class="form-label" for="pc">PC</label>
+      <select name="pc" id="pc" class="form-control">
+        <option value="">All PCs</option>
+        {% for pc in all_pcs %}
+          <option value="{{ pc.pk }}" {% if selected_pc == pc.pk|stringformat:"s" %}selected{% endif %}>{{ pc.lab.name }} — {{ pc.pc_id }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label class="form-label" for="student">User</label>
+      <select name="student" id="student" class="form-control">
+        <option value="">All Users</option>
+        <option value="guest" {% if selected_student == 'guest' %}selected{% endif %}>Guest (walk-in)</option>
+        <option value="override" {% if selected_student == 'override' %}selected{% endif %}>Override</option>
+        {% for s in all_students %}
+          <option value="{{ s.pk }}" {% if selected_student == s.pk|stringformat:"s" %}selected{% endif %}>{{ s.display_name }} ({{ s.get_role_display }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label class="form-label" for="day">Date</label>
+      <input type="date" name="day" id="day" class="form-control" value="{{ selected_day }}">
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label class="form-label" for="time_range">Time Range</label>
+      <select name="time_range" id="time_range" class="form-control">
+        <option value="" {% if not selected_time_range %}selected{% endif %}>All Day</option>
+        <option value="morning" {% if selected_time_range == 'morning' %}selected{% endif %}>Morning (6AM–12PM)</option>
+        <option value="afternoon" {% if selected_time_range == 'afternoon' %}selected{% endif %}>Afternoon (12PM–6PM)</option>
+        <option value="evening" {% if selected_time_range == 'evening' %}selected{% endif %}>Evening (6PM–12AM)</option>
+      </select>
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label class="form-label" for="q">Search</label>
+      <input type="text" name="q" id="q" class="form-control" placeholder="PC ID, user name, application…" value="{{ search_query }}">
+    </div>
+    <div class="pal-filters-actions" style="grid-column: 1 / -1;">
+      <a href="{% url 'pc_activity_log' %}" class="action-btn small"><svg class="btn-icon"><use href="#icon-x"/></svg> Clear All Filters</a>
+      <button type="submit" class="action-btn primary"><svg class="btn-icon"><use href="#icon-filter"/></svg> Filter</button>
+    </div>
+  </form>
+</div>
+
+<script src="{% static 'js/dashboard.js' %}"></script>
+<div id="palMainRoot">
+<div class="pal-layout">
+  <div class="pal-main">
+    <div class="card">
+      <div class="pal-timeline-head">
+        <div class="section-title" style="margin-bottom:0;">Activity Timeline</div>
+        <div class="pal-timeline-actions">
+          <a href="{% url 'export_pc_activity_log' %}?{{ request.GET.urlencode }}&format=pdf" class="action-btn small"><svg class="btn-icon"><use href="#icon-pdf-doc"/></svg> Export as PDF</a>
+          <a href="{% url 'export_pc_activity_log' %}?{{ request.GET.urlencode }}&format=excel" class="action-btn small primary"><svg class="btn-icon"><use href="#icon-excel-doc"/></svg> Export as Excel</a>
+          <form method="post" action="{% url 'delete_pc_activity_log' %}"
+                onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {
+                  title: {% if filtered %}'Delete filtered logs?'{% else %}'Delete ALL activity logs?'{% endif %},
+                  text: {% if filtered %}'This deletes every sample matching the current filters. This cannot be undone.'{% else %}'This deletes every PC activity log in the system — not just what\'s filtered. This cannot be undone. Export a backup first if you need one.'{% endif %},
+                  confirmButtonText: 'Yes, delete'
+                });">
+            {% csrf_token %}
+            <input type="hidden" name="lab" value="{{ selected_lab }}">
+            <input type="hidden" name="pc" value="{{ selected_pc }}">
+            <input type="hidden" name="student" value="{{ selected_student }}">
+            <input type="hidden" name="day" value="{{ selected_day }}">
+            <input type="hidden" name="time_range" value="{{ selected_time_range }}">
+            <input type="hidden" name="q" value="{{ search_query }}">
+            <input type="hidden" name="return_qs" value="{{ request.GET.urlencode }}">
+            <button type="submit" class="action-btn small" style="border-color:#ff5d5d; color:#ff5d5d;">
+              <svg class="btn-icon"><use href="#icon-trash"/></svg>
+              {% if filtered %}Delete filtered{% else %}Delete old logs{% endif %}
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <div style="overflow-x:auto;">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Time</th><th>User</th><th>PC Used</th>
+              <th>Duration</th><th>Status</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in timeline %}
+              <tr>
+                <td style="white-space:nowrap;">{{ row.time|date:"g:i A" }}</td>
+                <td>{% if row.student %}{{ row.student.display_name }}<span class="pal-role-pill {{ row.student.role }}">{{ row.student.get_role_display }}</span>{% elif row.guest_name %}{{ row.guest_name }} <span class="helptext">(Guest — unverified)</span>{% else %}—{% endif %}</td>
+                <td>{{ row.pc.pc_id }}</td>
+                <td>{{ row.duration_display }}</td>
+                <td><span class="pal-activity-pill {{ row.status }}">{% if row.status == 'active' %}Active{% else %}Completed{% endif %}</span></td>
+                <td style="white-space:nowrap;">
+                  <a class="action-btn icon-only small"
+                     href="?lab={{ selected_lab }}&pc={{ selected_pc }}&student={{ selected_student }}&day={{ selected_day }}&time_range={{ selected_time_range }}&q={{ search_query|urlencode }}&page={{ page }}&session={{ row.session_key }}#session-details"
+                     title="View session">
+                    <svg viewBox="0 0 24 24" fill="none"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/></svg>
+                  </a>
+                </td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="6" class="empty">No activity samples{% if filtered %} match this filter{% endif %} yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="pal-pagination">
+        <div style="font-size:12px; color:var(--text-dim);">
+          {% if total_entries %}Showing {{ page_start }} to {{ page_end }} of {{ total_entries }} entries{% else %}No entries{% endif %}
+        </div>
+        <div class="pal-page-links">
+          <a class="pal-page-link {% if page <= 1 %}disabled{% endif %}"
+             href="?lab={{ selected_lab }}&pc={{ selected_pc }}&student={{ selected_student }}&day={{ selected_day }}&time_range={{ selected_time_range }}&q={{ search_query|urlencode }}&page={{ page|add:"-1" }}">‹</a>
+          {% for p in page_range %}
+            {% if p == 1 or p == total_pages or p >= page|add:"-2" and p <= page|add:"2" %}
+              <a class="pal-page-link {% if p == page %}active{% endif %}"
+                 href="?lab={{ selected_lab }}&pc={{ selected_pc }}&student={{ selected_student }}&day={{ selected_day }}&time_range={{ selected_time_range }}&q={{ search_query|urlencode }}&page={{ p }}">{{ p }}</a>
+            {% elif p == 2 or p == total_pages|add:"-1" %}
+              <span style="color:var(--text-faint); font-size:12px;">…</span>
+            {% endif %}
+          {% endfor %}
+          <a class="pal-page-link {% if page >= total_pages %}disabled{% endif %}"
+             href="?lab={{ selected_lab }}&pc={{ selected_pc }}&student={{ selected_student }}&day={{ selected_day }}&time_range={{ selected_time_range }}&q={{ search_query|urlencode }}&page={{ page|add:"1" }}">›</a>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="pal-side" id="session-details">
+    <div class="card">
+      <div class="section-title">Session Details</div>
+      {% if selected_session %}
+        <div class="pal-detail-row">
+          <span class="pal-detail-label">Name</span>
+          <span class="pal-detail-val">{% if selected_session.student %}{{ selected_session.student.display_name }}{% elif selected_session.guest_name %}{{ selected_session.guest_name }} (Guest){% else %}—{% endif %}</span>
+        </div>
+        <div class="pal-detail-row">
+          <span class="pal-detail-label">Role</span>
+          <span class="pal-detail-val">{% if selected_session.student %}<span class="pal-role-pill {{ selected_session.student.role }}">{{ selected_session.student.get_role_display }}</span>{% elif selected_session.guest_name %}<span class="helptext">Unverified guest</span>{% else %}—{% endif %}</span>
+        </div>
+        <div class="pal-detail-row">
+          <span class="pal-detail-label">ID Number</span>
+          <span class="pal-detail-val">{{ selected_session.student.id_number|default:"—" }}</span>
+        </div>
+        <div class="pal-detail-row">
+          <span class="pal-detail-label">Laboratory</span>
+          <span class="pal-detail-val">{{ selected_session.pc.lab.name }}</span>
+        </div>
+        <div class="pal-detail-row">
+          <span class="pal-detail-label">PC</span>
+          <span class="pal-detail-val">{{ selected_session.pc.pc_id }}</span>
+        </div>
+        <div class="pal-detail-row">
+          <span class="pal-detail-label">Login Time</span>
+          <span class="pal-detail-val">{{ selected_session.login_time|date:"M d, Y g:i:s A" }}</span>
+        </div>
+        <div class="pal-detail-row">
+          <span class="pal-detail-label">Logout Time</span>
+          <span class="pal-detail-val">{% if selected_session.logout_time %}{{ selected_session.logout_time|date:"M d, Y g:i:s A" }}{% else %}Still active{% endif %}</span>
+        </div>
+        <div class="pal-detail-row">
+          <span class="pal-detail-label">Duration</span>
+          <span class="pal-detail-val">{{ selected_session_duration_long }}</span>
+        </div>
+        <div class="pal-detail-row">
+          <span class="pal-detail-label">Status</span>
+          <span class="pal-detail-val"><span class="pal-activity-pill {{ selected_session.status }}">{% if selected_session.status == 'active' %}Active{% else %}Completed{% endif %}</span></span>
+        </div>
+        <div class="pal-detail-row">
+          <span class="pal-detail-label">Session Type</span>
+          <span class="pal-detail-val">{% if selected_session.via_override %}Override{% elif selected_session.scheduling_session %}Regular Session{% else %}Walk-in / Unscheduled{% endif %}</span>
+        </div>
+        <div class="pal-detail-row">
+          <span class="pal-detail-label">Record Source</span>
+          <span class="pal-detail-val">PC Agent</span>
+        </div>
+
+        <div class="section-title" style="margin-top:14px;">Window / Application Activity</div>
+        <div class="pal-mini-scroll">
+          <table class="pal-mini-table">
+            <thead><tr><th>Time</th><th>Site</th><th>Window Title</th></tr></thead>
+            <tbody>
+              {% for b in selected_session_blocks_recent_first %}
+                <tr>
+                  <td style="white-space:nowrap;">{{ b.start|date:"g:i A" }}</td>
+                  <td style="white-space:nowrap;">{{ b.site_label|default:"—" }}</td>
+                  <td>{{ b.title|default:"—" }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        <div style="display:flex; gap:8px; margin-top:14px; flex-wrap:wrap;">
+          <a href="{% url 'export_pc_activity_log' %}?session={{ selected_session.key }}&format=pdf" class="action-btn small primary"><svg class="btn-icon"><use href="#icon-eye"/></svg> View Full Session Report</a>
+          <a href="{% url 'export_pc_activity_log' %}?session={{ selected_session.key }}&format=excel" class="action-btn small"><svg class="btn-icon"><use href="#icon-excel-doc"/></svg> Export Session</a>
+        </div>
+      {% else %}
+        <p class="empty">No session selected yet — click the eye icon on any row in the Activity Timeline.</p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <div class="section-title">Most Used Applications <span style="color:var(--text-faint); font-weight:400;">(Today)</span></div>
+      {% if most_used_apps %}
+        <div class="pal-donut-wrap">
+          <div style="width:110px; height:110px; flex-shrink:0;"><canvas id="mostUsedAppsDonut"></canvas></div>
+          <div class="pal-donut-legend">
+            {% for app in most_used_apps %}
+              <div class="pal-donut-legend-item">
+                <span class="pal-donut-dot" style="background:{{ app.color }}"></span>
+                <span class="lbl">{{ app.name }}</span>
+                <span class="val">{{ app.pct }}%</span>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      {% else %}
+        <p class="empty">No application activity recorded today yet.</p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <div class="section-title">Most Active PCs <span style="color:var(--text-faint); font-weight:400;">(Today)</span></div>
+      {% if most_active_pcs %}
+        {% for item in most_active_pcs %}
+          <div class="pal-bar-row">
+            <div class="pal-bar-label">
+              <span class="name">{{ item.pc.pc_id }} <span style="color:var(--text-faint); font-weight:400;">({{ item.pc.lab.name }})</span></span>
+              <span class="dur">{{ item.duration }}</span>
+            </div>
+            <div class="pal-bar-track"><div class="pal-bar-fill" style="width:{{ item.pct }}%;"></div></div>
+          </div>
+        {% endfor %}
+      {% else %}
+        <p class="empty">No PC activity recorded today yet.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  if (typeof Chart === 'undefined') return;
+  var canvas = document.getElementById('mostUsedAppsDonut');
+  if (!canvas) return;
+  Chart.defaults.font.family = 'Inter, sans-serif';
+  Chart.defaults.color = '#8b98a3';
+  new Chart(canvas, {
+    type: 'doughnut',
+    data: {
+      labels: [{% for app in most_used_apps %}'{{ app.name|escapejs }}'{% if not forloop.last %},{% endif %}{% endfor %}],
+      datasets: [{
+        data: [{% for app in most_used_apps %}{{ app.pct }}{% if not forloop.last %},{% endif %}{% endfor %}],
+        backgroundColor: [{% for app in most_used_apps %}'{{ app.color }}'{% if not forloop.last %},{% endif %}{% endfor %}],
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      cutout: '68%',
+      plugins: { legend: { display: false }, tooltip: { enabled: true } },
+      responsive: true, maintainAspectRatio: false,
+    }
+  });
+})();
+</script>
+</div>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+// ---------------------------------------------------------------------
+// Auto-refresh: pulls fresh data periodically so new PC activity shows
+// up without a manual F5 — WITHOUT a full page reload/navigation. A real
+// reload was the cause of the visible "jump"/flash Yan noticed: white
+// flash while the browser re-requests everything, then a snap back to
+// the top of the page before scroll got restored.
+//
+// Instead, this fetches the SAME url (so it keeps whatever filters are
+// active in the querystring), parses the returned HTML, and swaps in
+// just the two data containers that actually change:
+//   #palStatsRoot  — the 6 stat cards at the top
+//   #palMainRoot   — the timeline table, pagination, session details
+//                    side panel, and the "Most Used Applications" chart
+// The filter form itself (labs/PC/user dropdowns, date, search box) is
+// deliberately OUTSIDE both containers, so it's never touched — nothing
+// to reset or flicker while someone is mid-filter.
+//
+// Chart.js needs a bit of extra care: swapping #palMainRoot's innerHTML
+// replaces the <canvas> element the old chart was drawn on, so the old
+// Chart instance would be pointing at a dead canvas. The inline script
+// block that builds that chart lives INSIDE #palMainRoot for exactly
+// this reason — re-executing it after every swap (see runScripts below)
+// rebuilds the chart against the new canvas each time.
+// ---------------------------------------------------------------------
+(function () {
+  var AUTO_REFRESH_MS = 15000; // 15 seconds
+  var lastScrollAt = 0;
+
+  // The page layout (base.html) is a fixed-height flex shell — `.app` is
+  // pinned to 100vh and it's the inner `.content` panel that actually
+  // scrolls (overflow-y: auto), not the window/document.
+  var scrollEl = document.querySelector('.content') || document.scrollingElement || document.documentElement;
+
+  scrollEl.addEventListener('scroll', function () {
+    lastScrollAt = Date.now();
+  }, { passive: true });
+
+  function isUserBusy() {
+    if (typeof appModalBackdrop !== 'undefined' && appModalBackdrop && appModalBackdrop.classList.contains('open')) return true;
+    if (document.querySelector('.swal2-container')) return true;
+    var active = document.activeElement;
+    if (active) {
+      var tag = active.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || active.isContentEditable) {
+        return true;
+      }
+    }
+    // Skip a refresh if the user scrolled within the last couple of
+    // seconds — mid-scroll is exactly when a swap feels most jarring.
+    if (Date.now() - lastScrollAt < 2000) return true;
+    return false;
+  }
+
+  // Re-runs any <script> tags found inside a freshly-swapped container.
+  // Scripts inserted via innerHTML don't execute on their own — this
+  // clones each one into a brand-new <script> element (which DOES run)
+  // and swaps it in, so the Chart.js init block fires again.
+  function runScripts(container) {
+    Array.prototype.slice.call(container.querySelectorAll('script')).forEach(function (oldScript) {
+      var newScript = document.createElement('script');
+      for (var i = 0; i < oldScript.attributes.length; i++) {
+        var attr = oldScript.attributes[i];
+        newScript.setAttribute(attr.name, attr.value);
+      }
+      newScript.textContent = oldScript.textContent;
+      oldScript.parentNode.replaceChild(newScript, oldScript);
+    });
+  }
+
+  function swap(id, newDoc) {
+    var oldEl = document.getElementById(id);
+    var newEl = newDoc.getElementById(id);
+    if (!oldEl || !newEl) return;
+    oldEl.innerHTML = newEl.innerHTML;
+    runScripts(oldEl);
+  }
+
+  function refresh() {
+    if (isUserBusy()) return;
+    fetch(window.location.href, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function (res) { return res.ok ? res.text() : null; })
+      .then(function (html) {
+        if (!html) return;
+        var newDoc = new DOMParser().parseFromString(html, 'text/html');
+        swap('palStatsRoot', newDoc);
+        swap('palMainRoot', newDoc);
+      })
+      .catch(function (err) {
+        console.error('PC activity log refresh failed:', err);
+      });
+  }
+
+  setInterval(refresh, AUTO_REFRESH_MS);
+})();
+</script>
+{% endblock %}

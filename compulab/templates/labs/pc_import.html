@@ -1,0 +1,191 @@
+{% extends base_template|default:"base.html" %}
+{% block title %}Import Computers{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1>Import Computers</h1>
+    
+  </div>
+</div>
+
+<div class="card" style="max-width:680px;">
+
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; flex-wrap:wrap;">
+    <div class="section-title" style="margin:0;">File format</div>
+    <a href="{% url 'pc_import_template' %}" class="action-btn small primary">
+      <svg class="btn-icon"><use href="#icon-download"/></svg> Download CSV Template
+    </a>
+  </div>
+
+ 
+  <div class="ld-table-bleed" style="margin-bottom:16px;">
+    <table class="ld-table">
+      <thead>
+        <tr>
+          <th>Lab <span class="req-pill required">Required</span></th>
+          <th>PC ID <span class="req-pill required">Required</span></th>
+          <th>IP Address <span class="req-pill required">Required</span></th>
+          <th>Status <span class="req-pill optional">Optional</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Lab 01</td>
+          <td>PC01</td>
+          <td>192.168.1.11</td>
+          <td>Available</td>
+        </tr>
+        <tr>
+          <td>Lab 01</td>
+          <td>PC02</td>
+          <td>192.168.1.12</td>
+          <td style="color:var(--text-faint);">— blank is fine —</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  
+  <div class="card" style="box-shadow:none; border:1px solid var(--border);">
+    <div class="section-title" style="margin-bottom:14px;">Upload file</div>
+
+    <form method="post" enctype="multipart/form-data" novalidate
+          onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Import PCs from this file?', text: 'Every valid row will add a new PC record under its matching lab. Rows with an unknown lab or an already-existing PC ID in that lab are skipped, not overwritten.', icon: 'question', confirmButtonText: 'Yes, import', confirmButtonColor: getComputedStyle(document.documentElement).getPropertyValue('--green').trim()}); return false;">
+      {% csrf_token %}
+
+      {% if form.non_field_errors %}
+        <div class="form-errors">{{ form.non_field_errors }}</div>
+      {% endif %}
+
+      <div class="form-group">
+        <label class="form-label" for="{{ form.file.id_for_label }}">
+          {{ form.file.label }}
+        </label>
+
+        <div class="import-dropzone">
+          <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6"><use href="#icon-upload"/></svg>
+          <span class="import-dropzone-text">Click to choose a .csv or .xlsx file</span>
+          {{ form.file }}
+        </div>
+
+        {% if form.file.errors %}
+          <div class="form-errors">
+            {{ form.file.errors|join:", " }}
+          </div>
+        {% endif %}
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="action-btn primary">
+          <svg class="btn-icon"><use href="#icon-upload"/></svg> Upload and Import
+        </button>
+
+        <a href="{% url 'lab_list' %}" class="action-btn secondary">
+         <svg class="btn-icon"><use href="#icon-x"/></svg> Cancel
+        </a>
+      </div>
+
+    </form>
+  </div>
+
+  {% if results %}
+  <div class="card" style="box-shadow:none; border:1px solid var(--border); margin-top:16px;">
+    <div class="section-title" style="margin-bottom:12px;">Import Results</div>
+
+    {% if results.created %}
+      <div class="import-result-summary success">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><use href="#icon-check"/></svg>
+        {{ results.created|length }} PC{{ results.created|length|pluralize }} imported.
+      </div>
+
+      <ul class="import-result-list">
+        {% for line in results.created %}
+          <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
+    {% if results.errors %}
+      <div class="import-result-summary warning" style="{% if results.created %}margin-top:14px;{% endif %}">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><use href="#icon-wrench"/></svg>
+        {{ results.errors|length }} row{{ results.errors|length|pluralize }} skipped or adjusted.
+      </div>
+
+      <ul class="import-result-list warning">
+        {% for line in results.errors %}
+          <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
+    {% if not results.created and not results.errors %}
+      <p class="empty">No rows found in that file.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+</div>
+
+<style>
+  .ld-table{width:100%; border-collapse:collapse; font-size:12.5px;}
+  .ld-table th{text-align:left; padding:8px 10px; color:var(--text-dim); font-weight:600; border-bottom:1px solid var(--border); font-size:10.5px; text-transform:uppercase; letter-spacing:.03em; white-space:nowrap;}
+  .ld-table td{padding:9px 10px; border-bottom:1px solid var(--border); color:var(--text); white-space:nowrap;}
+  .ld-table tr:hover td{background:rgba(255,255,255,0.02);}
+  .ld-table-bleed{overflow-x:auto;}
+
+  .req-pill {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    padding: 2px 7px;
+    border-radius: 999px;
+    margin-left: 6px;
+    vertical-align: middle;
+    text-transform: uppercase;
+  }
+  .req-pill.required { background: var(--red-dim); color: var(--red); }
+  .req-pill.optional { background: var(--blue-dim); color: var(--blue); }
+
+  .import-notes { display: flex; flex-direction: column; gap: 10px; }
+  .import-note {
+    display: flex; align-items: flex-start; gap: 9px;
+    font-size: 12.5px; color: var(--text-dim); line-height: 1.6;
+  }
+  .import-note svg { flex-shrink: 0; margin-top: 2px; color: var(--green); }
+  .import-note strong { color: var(--text); font-weight: 600; }
+
+  .import-dropzone {
+    position: relative;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px; text-align: center;
+    border: 1.5px dashed var(--border);
+    border-radius: 12px;
+    padding: 28px 16px;
+    color: var(--text-faint);
+    transition: border-color .15s ease, color .15s ease, background .15s ease;
+  }
+  .import-dropzone:hover { border-color: var(--green); color: var(--green); background: var(--green-dim); }
+  .import-dropzone-text { font-size: 13px; }
+  .import-dropzone input[type="file"] {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    opacity: 0; cursor: pointer;
+  }
+
+  .import-result-summary {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; font-weight: 600;
+  }
+  .import-result-summary.success { color: var(--green); }
+  .import-result-summary.warning { color: var(--amber); }
+
+  .import-result-list {
+    font-size: 12.5px; color: var(--text-dim); line-height: 1.7;
+    margin: 8px 0 0; padding-left: 18px;
+  }
+  .import-result-list.warning { color: var(--text-dim); }
+</style>
+
+{% endblock %}

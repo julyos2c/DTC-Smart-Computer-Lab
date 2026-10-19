@@ -1,0 +1,81 @@
+<style>
+  .app-footer {
+    flex-shrink: 0;
+    padding: 12px 20px;
+    border-top: 1px solid var(--border-soft);
+    background: var(--surface);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .app-footer-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .app-footer-mark {
+    width: 14px; height: 14px;
+    border-radius: 4px;
+    background: linear-gradient(135deg, var(--green), var(--blue));
+    flex-shrink: 0;
+  }
+
+  .app-footer-left b { color: var(--text); font-weight: 600; }
+
+  .app-footer-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .app-footer-dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--green);
+    display: inline-block;
+    transition: background-color 0.2s ease;
+  }
+
+  .app-footer-right[data-net="offline"] .app-footer-dot { background: var(--amber); }
+
+  @media (max-width: 600px) {
+    .app-footer { flex-direction: column; align-items: flex-start; }
+  }
+</style>
+
+<footer class="app-footer">
+  <div class="app-footer-left">
+    <span class="app-footer-mark"></span>
+    <span>&copy; {% now "Y" %} <b>ASCLAMS</b> — A Smart Computer Laboratory Management System{% if APP_VERSION %} · v{{ APP_VERSION }}{% endif %}</span>
+  </div>
+  <div class="app-footer-right" id="appFooterNet" data-net="online" aria-live="polite">
+    <span class="app-footer-dot"></span>
+    <span class="app-footer-status-text">System operational</span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var el = document.getElementById('appFooterNet');
+  var textEl = el && el.querySelector('.app-footer-status-text');
+  if (!el || !textEl) return;
+  function sync() {
+    var online = navigator.onLine;
+    el.setAttribute('data-net', online ? 'online' : 'offline');
+    textEl.textContent = online ? 'System operational' : 'Offline — showing cached data';
+  }
+  sync();
+  window.addEventListener('online', sync);
+  window.addEventListener('offline', sync);
+})();
+</script>

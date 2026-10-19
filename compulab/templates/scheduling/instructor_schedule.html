@@ -1,0 +1,382 @@
+{% extends base_template|default:"base.html" %}
+{% load static %}
+{% block title %}Scheduling{% endblock %}
+
+{% block content %}
+
+<script src="{% static 'vendor/fullcalendar/index.global.min.js' %}"></script>
+<script>
+  if (typeof FullCalendar === 'undefined') {
+    document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.11/index.global.min.js"><\/script>');
+  }
+</script>
+
+<style>
+.is-metrics{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:20px; min-width:0;}
+.is-metric{background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px 18px; display:flex; align-items:flex-start; gap:12px; min-width:0;}
+.is-metric-icon{ width:38px; height:38px; border-radius:10px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.is-metric-icon svg{ width:18px; height:18px; }
+.is-metric.green .is-metric-icon{ background:linear-gradient(160deg, color-mix(in srgb, #2dd4bf 30%, white) 0%, color-mix(in srgb, #2dd4bf 60%, white) 55%, color-mix(in srgb, #2dd4bf 85%, black 10%) 100%); box-shadow:inset 0 -3px 0 color-mix(in srgb, #2dd4bf 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color:color-mix(in srgb, #2dd4bf 55%, black 35%); }
+.is-metric.blue .is-metric-icon{ background:linear-gradient(160deg, color-mix(in srgb, var(--blue) 30%, white) 0%, color-mix(in srgb, var(--blue) 60%, white) 55%, color-mix(in srgb, var(--blue) 85%, black 10%) 100%); box-shadow:inset 0 -3px 0 color-mix(in srgb, var(--blue) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color:color-mix(in srgb, var(--blue) 55%, black 35%); }
+.is-metric.amber .is-metric-icon{ background:linear-gradient(160deg, color-mix(in srgb, var(--amber) 30%, white) 0%, color-mix(in srgb, var(--amber) 60%, white) 55%, color-mix(in srgb, var(--amber) 85%, black 10%) 100%); box-shadow:inset 0 -3px 0 color-mix(in srgb, var(--amber) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color:color-mix(in srgb, var(--amber) 55%, black 35%); }
+.is-metric.purple .is-metric-icon{ background:linear-gradient(160deg, color-mix(in srgb, var(--purple) 30%, white) 0%, color-mix(in srgb, var(--purple) 60%, white) 55%, color-mix(in srgb, var(--purple) 85%, black 10%) 100%); box-shadow:inset 0 -3px 0 color-mix(in srgb, var(--purple) 90%, black 18%), inset 0 1px 0 rgba(255,255,255,.3), 0 3px 6px rgba(0,0,0,.18); color:color-mix(in srgb, var(--purple) 55%, black 35%); }
+.is-metric-body{ min-width:0; }
+.is-metric-label{ font-size:12px; color:var(--text-dim); font-weight:500; }
+.is-metric-val{ font-family:var(--font-display); font-size:24px; font-weight:700; letter-spacing:-0.01em; color:var(--text); margin-top:2px; }
+.is-metric-sub{ font-size:11px; color:var(--text-faint); margin-top:2px; }
+
+.is-layout{ display:grid; grid-template-columns:1fr 300px; gap:16px; align-items:start; min-width:0; }
+.is-side{ display:flex; flex-direction:column; gap:16px; min-width:0; }
+.is-panel{ background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px; min-width:0; }
+.is-panel-title{ font-family:var(--font-display); font-size:13px; font-weight:600; color:var(--text); margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.is-action{ font-size:11px; color:var(--blue); text-decoration:none; font-weight:500; flex-shrink:0; }
+
+/* mini calendar */
+.is-cal-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+.is-cal-nav{ display:flex; align-items:center; gap:6px; }
+.is-cal-nav a{ width:22px; height:22px; border-radius:6px; display:flex; align-items:center; justify-content:center; color:var(--text-dim); text-decoration:none; border:1px solid var(--border); flex-shrink:0; }
+.is-cal-nav a:hover{ background:var(--surface-raised); color:var(--text); }
+.is-cal-title{ font-family:var(--font-display); font-size:12px; font-weight:600; color:var(--text); }
+.is-cal-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:2px; text-align:center; }
+.is-cal-dow{ font-size:9.5px; color:var(--text-faint); font-weight:600; padding:4px 0; }
+.is-cal-day{ font-size:11px; color:var(--text-dim); padding:5px 0; border-radius:6px; }
+.is-cal-day.status-today{ background:var(--green,#3ed6c4); color:#0a0e12; font-weight:700; }
+.is-cal-day.status-reserved{ color:var(--blue); font-weight:600; }
+.is-cal-day.status-pending{ color:var(--amber); font-weight:600; }
+
+.is-legend{ display:flex; flex-direction:column; gap:8px; }
+.is-legend-item{ display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-dim); }
+.is-legend-dot{ width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+
+.is-up-item{ padding:10px 0; border-bottom:1px solid var(--border-soft); min-width:0; }
+.is-up-item:last-child{ border-bottom:none; padding-bottom:0; }
+.is-up-top{ display:flex; align-items:center; gap:7px; }
+.is-up-dot{ width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+.is-up-title{ font-size:12.5px; font-weight:500; color:var(--text); overflow-wrap:anywhere; }
+.is-up-sub{ font-size:11px; color:var(--text-dim); margin-top:2px; margin-left:15px; overflow-wrap:anywhere; }
+.is-empty-sub{ font-size:12px; color:var(--text-faint); text-align:center; padding:14px 0; }
+
+.is-quick-actions{ display:flex; flex-direction:column; gap:8px; }
+.is-quick-item{ display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-dim); text-decoration:none; }
+.is-quick-item:hover{ color:var(--text); }
+.is-quick-dot{ width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+
+#calendar{
+  --fc-border-color:var(--border); --fc-page-bg-color:var(--surface); --fc-neutral-bg-color:var(--surface-raised);
+  --fc-list-event-hover-bg-color:var(--surface-raised); --fc-today-bg-color:rgba(91,157,255,0.08);
+  --fc-button-bg-color:var(--surface-raised); --fc-button-border-color:var(--border);
+  --fc-button-hover-bg-color:var(--border); --fc-button-active-bg-color:var(--border-soft);
+  --fc-button-text-color:var(--text); font-family:var(--font-body); color:var(--text);
+}
+#calendar .fc-toolbar-title{font-family:var(--font-display); font-size:16px; font-weight:600; color:var(--text);}
+#calendar .fc-col-header-cell-cushion, #calendar .fc-daygrid-day-number{color:var(--text-dim); text-decoration:none; font-size:12px;}
+#calendar .fc-event{border:none; font-size:11px; padding:1px 4px; cursor:pointer;}
+#calendar .fc-event,
+#calendar .fc-daygrid-event,
+#calendar .fc-h-event,
+#calendar .fc-daygrid-event-dot{
+  border:none !important;
+  box-shadow:none !important;
+}
+#calendar a,
+#calendar .fc-event,
+#calendar .fc-daygrid-event{
+  outline:none !important;
+}
+#calendar a:focus,
+#calendar a:focus-visible,
+#calendar .fc-event:focus,
+#calendar .fc-event:focus-visible{
+  outline:none !important;
+  box-shadow:none !important;
+}
+#calendar .fc-button{text-transform:capitalize; font-family:var(--font-body); font-size:12.5px; box-shadow:none !important;}
+#calendar a{color:inherit;}
+
+/* Today cell: rendered as an inset rounded "card" that sits apart from
+   the plain grid lines, with a bold accent-colored date number — plus a
+   small "TODAY" badge in the opposite corner from the date number so
+   they never overlap. Same treatment as the admin/in-charge Schedule
+   calendar. */
+#calendar .fc-daygrid-day.fc-day-today{
+  position:relative;
+  z-index:1;
+}
+#calendar .fc-daygrid-day.fc-day-today .fc-daygrid-day-frame{
+  margin:3px;
+  border-radius:8px;
+  background:var(--green-dim);
+  position:relative;
+}
+#calendar .fc-daygrid-day.fc-day-today .fc-daygrid-day-number{
+  color:var(--topbar-accent) !important;
+  font-weight:700;
+  font-size:15px;
+}
+.fc-today-badge{
+  position:absolute; top:5px; left:6px;
+  background:var(--topbar-accent); color:var(--topbar-ink-1);
+  font-size:8.5px; font-weight:700; letter-spacing:.04em;
+  padding:1px 6px; border-radius:8px; text-transform:uppercase;
+  z-index:2; pointer-events:none;
+}
+#calendar .fc-event.fc-event-today{
+  font-weight:700;
+  border:none !important;
+  box-shadow:none !important;
+}
+#calendar .fc-event.fc-event-past{
+  opacity:0.5;
+}
+
+.is-modal-backdrop{position:fixed; inset:0; background:rgba(0,0,0,0.55); display:none; align-items:center; justify-content:center; z-index:1000;}
+.is-modal-backdrop.open{display:flex;}
+.is-modal{background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:22px; width:340px; max-width:90vw; max-height:calc(100dvh - 48px); overflow-y:auto; box-sizing:border-box; position:relative;}
+.is-modal h3{font-family:var(--font-display); font-size:16px; margin:0 0 4px; color:var(--text);}
+.is-modal-lab{font-size:12px; color:var(--text-dim); margin-bottom:14px;}
+.is-modal-row{display:flex; justify-content:space-between; font-size:12.5px; padding:6px 0; border-bottom:1px solid var(--border-soft); color:var(--text);}
+.is-modal-row span:first-child{color:var(--text-dim);}
+.is-modal-close{position:absolute; top:14px; right:16px; background:none; border:none; color:var(--text-faint); font-size:18px; cursor:pointer;}
+
+@media (max-width:960px){
+  .is-metrics{ grid-template-columns:repeat(2,1fr); }
+  .is-layout{ grid-template-columns:1fr; }
+}
+
+</style>
+
+<div class="page-header">
+  <div>
+    <h1>Scheduling</h1>
+
+  </div>
+ <a href="{% url 'instructor_request_new' %}" class="action-btn primary js-modal-link"><svg class="btn-icon"><use href="#icon-plus"/></svg>New Reservation</a> 
+</div>
+
+<div class="is-metrics">
+  <div class="is-metric green">
+    <div class="is-metric-icon"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="17" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M3 9h18M8 3v3M16 3v3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></div>
+    <div class="is-metric-body"><div class="is-metric-label">Today's Sessions</div><div class="is-metric-val">{{ todays_sessions_count }}</div><div class="is-metric-sub">{% if todays_sessions_count %}Scheduled today{% else %}No scheduled session{% endif %}</div></div>
+  </div>
+  <div class="is-metric blue">
+    <div class="is-metric-icon"><svg viewBox="0 0 24 24" fill="none"><rect x="4" y="3" width="16" height="18" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></div>
+    <div class="is-metric-body"><div class="is-metric-label">My Reservations</div><div class="is-metric-val">{{ reservations_week_count }}</div><div class="is-metric-sub">This week</div></div>
+  </div>
+  <div class="is-metric amber">
+    <div class="is-metric-icon"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5l3.5 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></div>
+    <div class="is-metric-body"><div class="is-metric-label">Pending Requests</div><div class="is-metric-val">{{ pending_requests_count }}</div><div class="is-metric-sub">Waiting for approval</div></div>
+  </div>
+  <div class="is-metric purple">
+    <div class="is-metric-icon"><svg viewBox="0 0 24 24" fill="none"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    <div class="is-metric-body"><div class="is-metric-label">Total Classes</div><div class="is-metric-val">{{ total_classes_count }}</div><div class="is-metric-sub">All reservations</div></div>
+  </div>
+</div>
+
+<div class="is-layout">
+  <div class="card" style="margin-bottom:0; min-width:0;">
+    <form method="get" style="margin-bottom:12px;">
+      <select name="lab" class="form-control" style="max-width:220px; display:inline-block;" onchange="this.form.submit()">
+        <option value="">All Laboratories</option>
+        {% for lab in labs %}
+          <option value="{{ lab.pk }}" {% if selected_lab == lab.pk|stringformat:"s" %}selected{% endif %}>{{ lab.name }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    <div id="calendar"></div>
+  </div>
+
+  <div class="is-side">
+    <div class="is-panel">
+      <div class="is-cal-head">
+        <div class="is-cal-nav">
+          <a href="?month={{ cal_prev }}{% if selected_lab %}&lab={{ selected_lab }}{% endif %}"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6"/></svg></a>
+        </div>
+        <span class="is-cal-title">{{ cal_label }}</span>
+        <div class="is-cal-nav">
+          <a href="?month={{ cal_next }}{% if selected_lab %}&lab={{ selected_lab }}{% endif %}"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg></a>
+        </div>
+      </div>
+      <div class="is-cal-grid">
+        {% for label in cal_weekday_labels %}<div class="is-cal-dow">{{ label }}</div>{% endfor %}
+        {% for week in cal_weeks %}{% for day in week %}
+          {% if day %}<div class="is-cal-day status-{{ day.status }}">{{ day.day }}</div>{% else %}<div class="is-cal-day"></div>{% endif %}
+        {% endfor %}{% endfor %}
+      </div>
+    </div>
+
+    <div class="is-panel">
+      <div class="is-panel-title">Quick Actions</div>
+      <div class="is-quick-actions">
+        <a href="{% url 'instructor_request_new' %}" class="is-quick-item js-modal-link"><span class="is-quick-dot" style="background:#3ed6c4;"></span> New Reservation</a>
+        <a href="{% url 'attendance' %}" class="is-quick-item"><span class="is-quick-dot" style="background:#5b9dff;"></span> Attendance</a>
+        <a href="{% url 'inst_alerts' %}" class="is-quick-item"><span class="is-quick-dot" style="background:#f2a93b;"></span> Notifications</a>
+        <a href="{% url 'roster_list' %}" class="is-quick-item"><span class="is-quick-dot" style="background:#a78bfa;"></span> Class Rosters</a>
+      </div>
+    </div>
+
+    <div class="is-panel">
+      <div class="is-panel-title">Upcoming (Next 7 Days)</a></div>
+      {% for s in upcoming %}
+        <div class="is-up-item">
+          <div class="is-up-top"><span class="is-up-dot" style="background:#5b9dff;"></span><span class="is-up-title">{{ s.subject }}</span></div>
+          <div class="is-up-sub">{{ s.lab.name }} · {{ s.date|date:"M j, Y" }}, {{ s.start_time|time:"g:i A" }}–{{ s.end_time|time:"g:i A" }}</div>
+        </div>
+      {% empty %}
+        <p class="is-empty-sub">No upcoming reservations in the next 7 days.</p>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<div class="is-modal-backdrop" id="isModal">
+  <div class="is-modal">
+    <button type="button" class="is-modal-close" onclick="document.getElementById('isModal').classList.remove('open')">&times;</button>
+    <h3 id="imSubject"></h3>
+    <div class="is-modal-lab" id="imLab"></div>
+    <div class="is-modal-row"><span>Time</span><span id="imTime"></span></div>
+    <div class="is-modal-row"><span>Status</span><span id="imStatus"></span></div>
+    <div class="is-modal-row"><span>Code</span><span id="imCode" style="font-family:var(--font-mono)"></span></div>
+  </div>
+</div>
+
+<div class="is-modal-backdrop" id="dayListModal">
+  <div class="is-modal">
+    <button type="button" class="is-modal-close" onclick="closeDayListModal()">&times;</button>
+    <h3 id="dlDate"></h3>
+    <div id="dlList" style="display:flex; flex-direction:column; gap:6px; margin-top:10px;"></div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  var calEl = document.getElementById('calendar');
+  if (!calEl) return;
+  var events = {{ calendar_events_json|safe }};
+  var modal = document.getElementById('isModal');
+
+  function localDateKey(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  var calendar = new FullCalendar.Calendar(calEl, {
+    initialView: 'dayGridMonth',
+    initialDate: '{{ initial_date }}',
+    height: 'auto',
+    dayMaxEvents: 1,
+       moreLinkClick: function (arg) {
+      openDayListModal(arg.date, arg.allSegs.map(function (seg) { return seg.event; }));
+      // FullCalendar ignores an unrecognized return value here and still
+      // renders its own default popover behind ours — actively remove it
+      // since we're showing our own custom day-list modal instead.
+      setTimeout(function () {
+        var native = document.querySelector('.fc-popover');
+        if (native) native.remove();
+      }, 0);
+      return false;
+    },
+    headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,timeGridWeek,listMonth' },
+    events: events,
+    dayCellDidMount: function (arg) {
+      var today = new Date(); today.setHours(0, 0, 0, 0);
+      if (arg.date < today) {
+        arg.el.style.cursor = 'default';
+        var numEl0 = arg.el.querySelector('.fc-daygrid-day-number');
+        if (numEl0) { numEl0.style.opacity = '0.55'; }
+      }
+      if (arg.isToday) {
+        var badge = document.createElement('span');
+        badge.className = 'fc-today-badge';
+        badge.textContent = 'Today';
+        var frame = arg.el.querySelector('.fc-daygrid-day-frame') || arg.el;
+        frame.appendChild(badge);
+      }
+    },
+    eventDidMount: function (arg) {
+      var startKey = (arg.event.startStr || '').slice(0, 10);
+      var todayKey = localDateKey(new Date());
+      if (startKey === todayKey) {
+        arg.el.classList.add('fc-event-today');
+      } else if (startKey < todayKey) {
+        arg.el.classList.add('fc-event-past');
+      }
+    },
+    dateClick: function (info) {
+      var today = new Date(); today.setHours(0, 0, 0, 0);
+      if (info.date < today) return;
+      openAppModal('{% url "instructor_request_new" %}?date=' + info.dateStr, info.dayEl);
+    },
+    eventClick: function (info) {
+      openEventDetailModal(info.event);
+    }
+  });
+  calendar.render();
+
+  function openEventDetailModal(event) {
+    var p = event.extendedProps;
+    document.getElementById('imSubject').textContent = p.subject;
+    document.getElementById('imLab').textContent = p.lab;
+    document.getElementById('imTime').textContent = p.time || '';
+    document.getElementById('imStatus').textContent = p.status || '';
+    document.getElementById('imCode').textContent = p.code || '—';
+    modal.classList.add('open');
+  }
+
+  // Custom "view all sessions for this day" modal — used instead of
+  // FullCalendar's own +N-more popover, which we can't force into a
+  // fixed/centered position without breaking its internal open/close
+  // state tracking (it would only work correctly the very first time).
+  var dayListModal = document.getElementById('dayListModal');
+  var dlDate = document.getElementById('dlDate');
+  var dlList = document.getElementById('dlList');
+
+  function openDayListModal(date, events) {
+    dlDate.textContent = date.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+    dlList.innerHTML = '';
+    events.forEach(function (event) {
+      var p = event.extendedProps;
+      var row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'action-btn';
+      row.style.cssText = 'width:100%; justify-content:flex-start; text-align:left; gap:8px;';
+      row.style.borderLeft = '3px solid ' + (event.backgroundColor || 'var(--accent)');
+      var timeEl = document.createElement('strong');
+      timeEl.textContent = p.time || '';
+      row.appendChild(timeEl);
+      row.appendChild(document.createTextNode('  ' + (p.subject || event.title)));
+      row.addEventListener('click', function () {
+        closeDayListModal();
+        openEventDetailModal(event);
+      });
+      dlList.appendChild(row);
+    });
+    dayListModal.classList.add('open');
+  }
+
+    window.closeDayListModal = function () {
+    dayListModal.classList.remove('open');
+  };
+  dayListModal.addEventListener('click', function (e) {
+    if (e.target === dayListModal) closeDayListModal();
+  });
+
+  // FullCalendar still inserts its own default "+N more" popover into
+  // the DOM even when moreLinkClick returns false — we show our own
+  // custom day-list modal instead, so strip out the native one the
+  // instant it appears (rather than guessing at a setTimeout delay,
+  // which was unreliable — FullCalendar's own render commit can land
+  // after ours).
+  new MutationObserver(function (mutations) {
+    mutations.forEach(function (m) {
+      m.addedNodes.forEach(function (node) {
+        if (node.nodeType === 1 && node.classList && node.classList.contains('fc-popover')) {
+          node.remove();
+        }
+      });
+    });
+  }).observe(document.body, { childList: true, subtree: true });
+
+  modal.addEventListener('click', function (e) { if (e.target === modal) modal.classList.remove('open'); });
+});
+</script>
+
+{% endblock %}

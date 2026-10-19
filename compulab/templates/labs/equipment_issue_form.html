@@ -1,0 +1,39 @@
+{% extends base_template|default:"base.html" %}
+{% block title %}Report Issue{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1>Report an equipment issue</h1>
+  </div>
+</div>
+
+<div class="card" style="max-width:480px">
+  <form method="post" novalidate
+        onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Submit this report?', text: 'This equipment issue report will be submitted.', icon: 'question', confirmButtonText: 'Yes, submit', confirmButtonColor: getComputedStyle(document.documentElement).getPropertyValue('--green').trim()}); return false;">
+    {% csrf_token %}
+    {% if form.non_field_errors %}
+      <div class="form-errors">{{ form.non_field_errors }}</div>
+    {% endif %}
+
+    <div class="form-group">
+      <label class="form-label" for="{{ form.equipment.id_for_label }}">Equipment</label>
+      {{ form.equipment }}
+      {% if form.equipment.errors %}<div class="form-errors">{{ form.equipment.errors|join:", " }}</div>{% endif %}
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="{{ form.description.id_for_label }}">Description</label>
+      {{ form.description }}
+      {% if form.description.errors %}<div class="form-errors">{{ form.description.errors|join:", " }}</div>{% endif %}
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="action-btn primary"><svg class="btn-icon"><use href="#icon-send"/></svg> Submit report</button>
+      <a href="{% url 'equipment_issues' %}" class="action-btn"><svg class="btn-icon"><use href="#icon-x"/></svg> Cancel</a>
+    </div>
+  </form>
+</div>
+
+{% endblock %}

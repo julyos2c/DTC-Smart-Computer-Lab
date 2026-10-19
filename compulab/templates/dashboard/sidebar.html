@@ -1,0 +1,530 @@
+{% load static %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="icon-dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="icon-power" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="1.5"/><line x1="8" y1="20" x2="16" y2="20"/><line x1="12" y1="16" x2="12" y2="20"/><path d="M12 7.2v2.6"/><path d="M9.6 8.6a3.4 3.4 0 1 0 4.8 0"/></symbol>
+    <symbol id="icon-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17.3" cy="9" r="2.3"/><path d="M15.2 20c.3-2.5 1.9-4.4 3.9-5"/></symbol>
+    <symbol id="icon-box" viewBox="0 0 24 24"><path d="M3 8l9-5 9 5-9 5-9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></symbol>
+    <symbol id="icon-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="3" x2="8" y2="7"/><line x1="16" y1="3" x2="16" y2="7"/></symbol>
+    <symbol id="icon-chart" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="12"/><line x1="10" y1="21" x2="10" y2="7"/><line x1="16" y1="21" x2="16" y2="14"/><line x1="21" y1="21" x2="3" y2="21"/></symbol>
+    <symbol id="icon-bell" viewBox="0 0 24 24"><path d="M6 9a6 6 0 1 1 12 0c0 4 1.5 5.5 1.5 5.5h-15S6 13 6 9z"/><path d="M10 19a2 2 0 0 0 4 0"/></symbol>
+    <symbol id="icon-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.8 2.8-2-2 2.8-2.8z"/></symbol>
+    <symbol id="icon-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></symbol>
+    <symbol id="icon-book" viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h6v18H6a2 2 0 0 0-2 2V5z"/><path d="M20 5a2 2 0 0 0-2-2h-6v18h6a2 2 0 0 1 2 2V5z"/></symbol>
+    <symbol id="icon-check" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2.5"/><path d="M7 12l3 3 7-7"/></symbol>
+    <symbol id="icon-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><line x1="21" y1="12" x2="9" y2="12"/></symbol>
+    <symbol id="icon-edit" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></symbol>
+    <symbol id="icon-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></symbol>
+    <symbol id="icon-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></symbol>
+    <symbol id="icon-plus" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></symbol>
+    <symbol id="icon-x" viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></symbol>
+    <symbol id="icon-upload" viewBox="0 0 24 24"><path d="M12 16V4"/><path d="M6.5 9.5L12 4l5.5 5.5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
+    <symbol id="icon-download" viewBox="0 0 24 24"><path d="M12 4v12"/><path d="M6.5 11l5.5 5.5L17.5 11"/><path d="M4 19h16"/></symbol>
+    <symbol id="icon-pdf-doc" viewBox="0 0 24 24">
+      <defs>
+        <linearGradient id="pdfDocGrad" x1="2" y1="1" x2="22" y2="23" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5b8bff"/>
+          <stop offset="1" stop-color="#2140c9"/>
+        </linearGradient>
+      </defs>
+      <path d="M6 1.2h7.2L19 6.8V22a1.3 1.3 0 0 1-1.3 1.3H6.3A1.3 1.3 0 0 1 5 22V2.5A1.3 1.3 0 0 1 6.3 1.2z" fill="url(#pdfDocGrad)" stroke="none"/>
+      <path d="M13.2 1.2V6.2a0.9 0.9 0 0 0 0.9 0.9H19z" fill="#ffffff" fill-opacity="0.32" stroke="none"/>
+      <rect x="5.3" y="13.5" width="13.4" height="7.2" rx="1.4" fill="#12245f" stroke="none"/>
+      <text x="12" y="19.6" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="8.6" font-weight="800" fill="#ffffff" stroke="none">P</text>
+    </symbol>
+    <symbol id="icon-excel-doc" viewBox="0 0 24 24">
+      <defs>
+        <linearGradient id="excelDocGrad" x1="2" y1="1" x2="22" y2="23" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#3fbf72"/>
+          <stop offset="1" stop-color="#0d7a3d"/>
+        </linearGradient>
+      </defs>
+      <path d="M6 1.2h7.2L19 6.8V22a1.3 1.3 0 0 1-1.3 1.3H6.3A1.3 1.3 0 0 1 5 22V2.5A1.3 1.3 0 0 1 6.3 1.2z" fill="url(#excelDocGrad)" stroke="none"/>
+      <path d="M13.2 1.2V6.2a0.9 0.9 0 0 0 0.9 0.9H19z" fill="#ffffff" fill-opacity="0.32" stroke="none"/>
+      <rect x="5.3" y="13.5" width="13.4" height="7.2" rx="1.4" fill="#0a4d27" stroke="none"/>
+      <text x="12" y="19.6" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="8.6" font-weight="800" fill="#ffffff" stroke="none">X</text>
+    </symbol>
+    <symbol id="icon-arrow-left" viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><path d="M11 6l-6 6 6 6"/></symbol>
+    <symbol id="icon-arrow-right" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><path d="M13 6l6 6-6 6"/></symbol>
+    <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 14-5.2M20 12a8 8 0 0 1-14 5.2"/><path d="M18 3v4h-4"/><path d="M6 21v-4h4"/></symbol>
+    <symbol id="icon-filter" viewBox="0 0 24 24"><path d="M4 5h16l-6 8v6l-4 2v-8L4 5z"/></symbol>
+    <symbol id="icon-send" viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></symbol>
+    <symbol id="icon-unlock" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="1.5"/><path d="M7 11V7a5 5 0 0 1 9.5-2.2"/></symbol>
+    <symbol id="icon-print" viewBox="0 0 24 24"><path d="M6 9V3h12v6"/><rect x="4" y="9" width="16" height="8" rx="1.5"/><path d="M6 17v4h12v-4"/></symbol>
+    <symbol id="icon-save" viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h8V3"/><path d="M8 21v-7h8v7"/></symbol>
+    <symbol id="icon-lock" viewBox="0 0 24 24"><rect x="4" y="10.5" width="16" height="10" rx="1.8"/><path d="M7.5 10.5V7a4.5 4.5 0 0 1 9 0v3.5"/><circle cx="12" cy="15.2" r="1.6"/><line x1="12" y1="16.8" x2="12" y2="18.4"/></symbol>
+    <symbol id="icon-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 5-3 8.5-7 9-4-.5-7-4-7-9V6z"/></symbol>
+    <symbol id="icon-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
+  </defs>
+</svg>
+
+<style>
+  .nav {
+  /* follow the app-wide theme variables (set in base.html) instead of
+     hardcoded dark colors, so the sidebar re-themes along with the rest
+     of the shell when the light/dark toggle is used */
+  --ink-0: var(--sidebar-bg);
+  --ink-1: var(--sidebar-bg-hover);
+  --ink-2: var(--surface-raised);
+  --line: var(--sidebar-line);
+  --text-0: var(--sidebar-text);
+  --text-1: var(--sidebar-text-dim);
+  --text-2: var(--sidebar-text-faint);
+  --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
+  --sans: 'Inter', -apple-system, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+
+  width: 264px;
+  height: 100%;
+  min-height: 0;
+  background: var(--ink-0);
+  font-family: var(--sans);
+  padding: 18px 12px 24px;
+  box-sizing: border-box;
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+  .nav.role-admin      { --accent: var(--green); --accent-tint: var(--green-dim); }
+.nav.role-incharge   { --accent: var(--green); --accent-tint: var(--green-dim); }
+.nav.role-instructor { --accent: var(--green); --accent-tint: var(--green-dim); }
+
+html[data-theme="light"] .nav.role-admin      { --accent-tint: rgba(15,118,110,0.35); }
+html[data-theme="light"] .nav.role-incharge   { --accent-tint: rgba(15,118,110,0.35); }
+html[data-theme="light"] .nav.role-instructor { --accent-tint: rgba(15,118,110,0.35); }
+
+  .nav-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px 18px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+    text-decoration: none;
+    cursor: pointer;
+    border-radius: 8px;
+    transition: opacity 0.15s ease;
+  }
+  .nav-brand:hover { opacity: 0.8; }
+  .nav-brand-mark {
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: #fff;
+    flex: none;
+}
+.nav-brand-text {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  color: var(--text-0);
+}
+
+.nav-brand-text b {
+  display: flex;
+  flex-direction: column;
+  color: var(--text-0);
+  font-weight: 600;
+}
+
+.nav-brand-text b > span {
+  display: block;
+}
+
+.brand-letter {
+  color: #FFD700;
+}
+
+
+  .nav-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 20px 8px 8px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    color: var(--text-2);
+    text-transform: uppercase;
+  }
+  .nav-section::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+  }
+  .nav-section:first-of-type { margin-top: 4px; }
+
+  .brand-letter {
+  color: #FFD700; /* Gold */
+}
+  .nav-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 9px 12px;
+    margin: 2px 4px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    text-decoration: none;
+    color: var(--text-1);
+    transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease, padding 0.2s ease, transform 0.15s ease;
+  }
+  .nav-item:hover {
+    background: var(--ink-1);
+    color: var(--text-0);
+    transform: translateX(3px);
+  }
+  .nav-item:active {
+    transform: translateX(3px) scale(0.97);
+  }
+  .nav-item.active {
+    background: var(--accent-tint);
+    border-color: var(--accent);
+    color: var(--text-0);
+  }
+
+  .nav-led {
+    width: 6px; height: 6px;
+    flex: none;
+    border-radius: 50%;
+    border: 1.3px solid var(--text-2);
+    background: transparent;
+    transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+  }
+  .nav-item:hover .nav-led { border-color: var(--text-1); transform: scale(1.2); }
+  .nav-item.active .nav-led {
+    background: var(--accent);
+    border-color: var(--accent);
+    box-shadow: 0 0 5px 0 var(--accent);
+  }
+
+  .nav-icon {
+    width: 17px; height: 17px;
+    flex: none;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 1;
+    transition: transform 0.15s ease;
+  }
+  .nav-item:hover .nav-icon { transform: scale(1.12); }
+  .nav-item.active .nav-icon { stroke: var(--accent); opacity: 1; }
+
+  .nav-label {
+    flex: 1;
+    font-size: 14px;
+    font-weight: 500;   /* dati 500 */
+    line-height: 1.3;
+    white-space: nowrap;
+    color: inherit;
+}
+
+  .nav-badge {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+    background: var(--accent-tint);
+    padding: 1px 6px;
+    border-radius: 4px;
+    line-height: 1.5;
+  }
+
+   .nav-dot-red {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--red);
+    flex: none;
+  }
+
+  .nav-spacer { flex: 1; }
+
+  .nav-logout-form { margin: 0; padding-top: 14px; margin-top: 10px; border-top: 1px solid var(--line); }
+
+  .nav-item.nav-logout {
+    width: 100%;
+    background: transparent;
+    border-left: 2px solid transparent;
+    font-family: var(--sans);
+    cursor: pointer;
+    text-align: left;
+  }
+  .nav-item.nav-logout:hover {
+    background: var(--red-dim);
+    color: var(--red-soft);
+    border-left-color: var(--red);
+  }
+  .nav-item.nav-logout:hover .nav-led {
+    border-color: var(--red);
+    background: var(--red);
+    box-shadow: 0 0 5px 0 var(--red);
+  }
+  .nav-item.nav-logout:hover .nav-icon { stroke: var(--red-soft); opacity: 1; }
+
+  /* Collapse/expand — toggled via the hamburger button in the topbar,
+     which adds/removes the "sidebar-collapsed" class on <html>. */
+  .nav { transition: width 0.2s ease; }
+
+  html.sidebar-collapsed .nav { width: 84px; }
+  html.sidebar-collapsed .nav-brand { justify-content: center; padding-left: 0; padding-right: 0; gap: 0; }
+  html.sidebar-collapsed .nav-brand-mark { width: 38px; height: 38px; }
+  html.sidebar-collapsed .nav-brand-text,
+  html.sidebar-collapsed .nav-section,
+  html.sidebar-collapsed .nav-label,
+  html.sidebar-collapsed .nav-badge,
+  html.sidebar-collapsed .nav-led {
+    display: none;
+  }
+  html.sidebar-collapsed .nav-item {
+    justify-content: center;
+    padding: 9px 0;
+    gap: 0;
+  }
+
+/* On mobile, the sidebar toggle opens/closes the full off-canvas panel —
+     never shrink it to icon-only there, even if "collapsed" is set from
+     a previous desktop session. */
+  @media (max-width: 768px) {
+    html.sidebar-collapsed .nav { width: 264px; }
+    html.sidebar-collapsed .nav-brand { justify-content: flex-start; padding-left: 8px; padding-right: 8px; gap: 10px; }
+    html.sidebar-collapsed .nav-brand-mark { width: 50px; height: 50px; }
+    html.sidebar-collapsed .nav-brand-text,
+    html.sidebar-collapsed .nav-section,
+    html.sidebar-collapsed .nav-label,
+    html.sidebar-collapsed .nav-badge,
+    html.sidebar-collapsed .nav-led { display: block; }
+    html.sidebar-collapsed .nav-item { justify-content: flex-start; padding: 9px 12px 9px 10px; gap: 11px; }
+  }
+
+.nav-led {
+  display: none;
+}
+
+</style>
+
+{% if request.user.role == 'admin' %}
+<nav class="nav role-admin">
+{% include 'dashboard/_nav_brand.html' with dashboard_url='admin_dashboard' %}
+
+  <div class="nav-section">Overview</div>
+  <a class="nav-item {% if request.resolver_match.url_name == 'admin_dashboard' %}active{% endif %}"
+     href="{% url 'admin_dashboard' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-dashboard"/></svg>
+    <span class="nav-label">Dashboard</span>
+  </a>
+  <a class="nav-item {% if request.resolver_match.url_name == 'pc_status' %}active{% endif %}"
+     href="{% url 'pc_status' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-power"/></svg>
+    <span class="nav-label">PC power status</span>
+  </a>
+  <a class="nav-item {% if request.resolver_match.url_name == 'pc_activity_log' %}active{% endif %}"
+     href="{% url 'pc_activity_log' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-cpu"/></svg>
+    <span class="nav-label">PC activity log</span>
+  </a>
+
+  <div class="nav-section">Management</div>
+  <a class="nav-item {% if request.resolver_match.url_name == 'lab_list' %}active{% endif %}"
+     href="{% url 'lab_list' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-cpu"/></svg>
+    <span class="nav-label">Manage labs</span>
+  </a>
+  <a class="nav-item {% if request.resolver_match.url_name == 'users' %}active{% endif %}"
+     href="{% url 'users' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-users"/></svg>
+    <span class="nav-label">User & role management</span>
+  </a>
+  <a class="nav-item {% if request.resolver_match.url_name == 'inventory' %}active{% endif %}"
+     href="{% url 'inventory' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-box"/></svg>
+    <span class="nav-label">Inventory</span>
+  </a>
+  <a class="nav-item {% if request.resolver_match.url_name == 'schedule' %}active{% endif %}"
+     href="{% url 'schedule' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-calendar"/></svg>
+        <span class="nav-label">Schedule & requests</span>
+    {% if pending_requests_count %}
+      <span class="nav-dot-red"></span>
+    {% endif %}
+  </a>
+  <a class="nav-item {% if request.resolver_match.url_name == 'roster_list' or request.resolver_match.url_name == 'roster_detail' %}active{% endif %}"
+     href="{% url 'roster_list' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-book"/></svg>
+    <span class="nav-label">Class rosters</span>
+  </a>
+
+  <div class="nav-section">Insights</div>
+  <a class="nav-item {% if request.resolver_match.url_name == 'analytics' %}active{% endif %}"
+     href="{% url 'analytics' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-chart"/></svg>
+    <span class="nav-label">Reporting & analytics</span>
+  </a>
+  
+
+  <div class="nav-spacer"></div>
+  <form method="post" action="{% url 'logout' %}" class="nav-logout-form" onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Log out?', text: 'You will need to log in again to access your dashboard.', icon: 'question', confirmButtonText: 'Yes, log out', confirmButtonColor: getComputedStyle(document.documentElement).getPropertyValue('--red').trim()}); return false;">
+    {% csrf_token %}
+    <button type="submit" class="nav-item nav-logout">
+      <span class="nav-led"></span>
+      <svg class="nav-icon"><use href="#icon-logout"/></svg>
+      <span class="nav-label">Log out</span>
+    </button>
+  </form>
+</nav>
+
+{% elif request.user.role == 'incharge' %}
+<nav class="nav role-incharge">
+{% include 'dashboard/_nav_brand.html' with dashboard_url='incharge_dashboard' %}
+
+  <div class="nav-section">Overview</div>
+  <a class="nav-item {% if request.resolver_match.url_name == 'incharge_dashboard' %}active{% endif %}"
+     href="{% url 'incharge_dashboard' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-dashboard"/></svg>
+    <span class="nav-label">Dashboard</span>
+  </a>
+
+  <div class="nav-section">Lab</div>
+  <a class="nav-item {% if request.resolver_match.url_name == 'pc_activity_log' %}active{% endif %}"
+     href="{% url 'pc_activity_log' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-cpu"/></svg>
+    <span class="nav-label">PC activity log</span>
+  </a>
+  <a class="nav-item {% if request.resolver_match.url_name == 'lab_schedule' %}active{% endif %}"
+     href="{% url 'lab_schedule' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-calendar"/></svg>
+    <span class="nav-label">Lab schedule</span>
+  </a>
+  <a class="nav-item {% if request.resolver_match.url_name == 'schedule' %}active{% endif %}"
+   href="{% url 'schedule' %}">
+  <span class="nav-led"></span>
+  <svg class="nav-icon"><use href="#icon-calendar"/></svg>
+  <span class="nav-label">Schedule & requests</span>
+  {% if pending_requests_count %}
+    <span class="nav-dot-red"></span>
+  {% endif %}
+</a>
+  <a class="nav-item {% if request.resolver_match.url_name == 'roster_list' or request.resolver_match.url_name == 'roster_detail' %}active{% endif %}"
+     href="{% url 'roster_list' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-book"/></svg>
+    <span class="nav-label">Class rosters</span>
+  </a>
+  <a class="nav-item {% if request.resolver_match.url_name == 'analytics' or request.resolver_match.url_name == 'report_lab_utilization' or request.resolver_match.url_name == 'report_equipment_status' or request.resolver_match.url_name == 'report_instructor_usage' or request.resolver_match.url_name == 'report_attendance' or request.resolver_match.url_name == 'report_maintenance' %}active{% endif %}"
+     href="{% url 'analytics' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-chart"/></svg>
+    <span class="nav-label">View reports</span>
+  </a>
+
+  <div class="nav-section">Operations</div>
+  <a class="nav-item {% if request.resolver_match.url_name == 'issues' %}active{% endif %}"
+     href="{% url 'issues' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-wrench"/></svg>
+    <span class="nav-label">Manage issues</span>
+    {% if open_issues_count %}
+      <span class="nav-badge">{{ open_issues_count }}</span>
+    {% endif %}
+  </a>
+  
+  <a class="nav-item {% if request.resolver_match.url_name == 'inventory' %}active{% endif %}"
+     href="{% url 'inventory' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-box"/></svg>
+    <span class="nav-label">Inventory</span>
+  </a>
+
+  <div class="nav-spacer"></div>
+  <form method="post" action="{% url 'logout' %}" class="nav-logout-form" onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Log out?', text: 'You will need to log in again to access your dashboard.', icon: 'question', confirmButtonText: 'Yes, log out', confirmButtonColor: getComputedStyle(document.documentElement).getPropertyValue('--red').trim()}); return false;">
+    {% csrf_token %}
+    <button type="submit" class="nav-item nav-logout">
+      <span class="nav-led"></span>
+      <svg class="nav-icon"><use href="#icon-logout"/></svg>
+      <span class="nav-label">Log out</span>
+    </button>
+  </form>
+</nav>
+
+{% elif request.user.role == 'instructor' %}
+<nav class="nav role-instructor">
+{% include 'dashboard/_nav_brand.html' with dashboard_url='instructor_dashboard' %}
+
+  <div class="nav-section">Overview</div>
+  <a class="nav-item {% if request.resolver_match.url_name == 'instructor_dashboard' %}active{% endif %}"
+     href="{% url 'instructor_dashboard' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-dashboard"/></svg>
+    <span class="nav-label">Dashboard</span>
+  </a>
+
+  <div class="nav-section">Teaching</div>
+  <a class="nav-item {% if request.resolver_match.url_name == 'inst_schedule' %}active{% endif %}"
+     href="{% url 'inst_schedule' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-book"/></svg>
+    <span class="nav-label">Scheduling</span>
+  </a>
+  <a class="nav-item {% if request.resolver_match.url_name == 'attendance' %}active{% endif %}"
+     href="{% url 'attendance' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-check"/></svg>
+    <span class="nav-label">Attendance</span>
+  </a>
+  <a class="nav-item {% if request.resolver_match.url_name == 'roster_list' or request.resolver_match.url_name == 'roster_detail' %}active{% endif %}"
+     href="{% url 'roster_list' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-book"/></svg>
+    <span class="nav-label">Class rosters</span>
+  </a>
+
+  <div class="nav-section">Operations</div>
+  <a class="nav-item {% if request.resolver_match.url_name == 'my_issues' or request.resolver_match.url_name == 'my_issue_detail' or request.resolver_match.url_name == 'issue_create' %}active{% endif %}"
+     href="{% url 'my_issues' %}">
+    <span class="nav-led"></span>
+    <svg class="nav-icon"><use href="#icon-eye"/></svg>
+    <span class="nav-label">My issue reports</span>
+  </a>
+
+
+
+  <div class="nav-spacer"></div>
+  <form method="post" action="{% url 'logout' %}" class="nav-logout-form" onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Log out?', text: 'You will need to log in again to access your dashboard.', icon: 'question', confirmButtonText: 'Yes, log out', confirmButtonColor: getComputedStyle(document.documentElement).getPropertyValue('--red').trim()}); return false;">
+    {% csrf_token %}
+    <button type="submit" class="nav-item nav-logout">
+      <span class="nav-led"></span>
+      <svg class="nav-icon"><use href="#icon-logout"/></svg>
+      <span class="nav-label">Log out</span>
+    </button>
+  </form>
+</nav>
+{% endif %}
