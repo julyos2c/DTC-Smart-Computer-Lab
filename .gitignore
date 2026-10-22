@@ -33,3 +33,9 @@ data_backup.json
 .DS_Store
 Thumbs.db
 .vscode/
+# Installer build output and tools (installer/build/build-installers.ps1)
+installer/build/.venv/
+installer/build/work/
+installer/build/tools/
+installer/dist/
+installer/server/wheels/

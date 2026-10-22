@@ -31,7 +31,7 @@ if ($task) {
     $info = Get-ScheduledTaskInfo -TaskName 'CompuLab Agent' -ErrorAction SilentlyContinue
     Write-Host "  Start-up task      : $($task.State) (last run $($info.LastRunTime), result $($info.LastTaskResult))"
 } else { Write-Host '  Start-up task      : NOT INSTALLED (run install-agent.ps1)' -ForegroundColor Red }
-$running = @(Get-Process pythonw, python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$InstallDir*" })
+$running = @(Get-Process pythonw, python, CompuLabAgent -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$InstallDir*" })
 Write-Host "  Agent running      : $(if ($running.Count) { 'yes' } else { 'no (it starts when a user signs in to Windows)' })"
 
 $statusFile = Join-Path $DataDir 'agent_status.json'
@@ -43,10 +43,7 @@ if (Test-Path $statusFile) {
     if ($s.last_error) { Write-Host "  Last error         : $($s.last_error)" -ForegroundColor Yellow }
 } else { Write-Host '  Last contact       : no status recorded yet (agent not started since installing 2.2?)' }
 
-$pendingFile = Join-Path $DataDir 'pending_callbacks.json'
-$queued = 0
-if (Test-Path $pendingFile) { try { $queued = @(Get-Content $pendingFile -Raw | ConvertFrom-Json).Count } catch { } }
-Write-Host "  Queued events      : $queued (session-end messages waiting for the server to confirm them)"
+Write-Host "  Queued events      : $(Get-QueuedEventCount $DataDir) (session-end messages waiting for the server to confirm them)"
 
 if ($serverUrl) {
     $check = Test-CompuLabServer $serverUrl

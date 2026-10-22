@@ -36,12 +36,12 @@ foreach ($name in $script:WebService, $script:WorkerService) {
 
 Write-Host "`n2. Website on this computer"
 $web = $false
-try { $r = Invoke-WebRequest "http://127.0.0.1:$port/healthz" -UseBasicParsing -TimeoutSec 5; $web = ($r.Content.Trim() -eq 'ok') } catch { }
+try { $r = Invoke-WebRequest "http://127.0.0.1:$port/healthz" -UseBasicParsing -TimeoutSec 5; $web = ((Get-ResponseText $r).Trim() -eq 'ok') } catch { }
 Show "http://127.0.0.1:$port" $web $(if ($web) { 'answers' } else { 'no answer: see logs\compulab.log and logs\CompuLabWeb*.log' })
 Show 'Campus address (SITE_URL)' $null $values['SITE_URL']
 $lanOk = $false
 if ($values['SITE_URL']) {
-    try { $r = Invoke-WebRequest ($values['SITE_URL'] + '/healthz') -UseBasicParsing -TimeoutSec 5; $lanOk = ($r.Content.Trim() -eq 'ok') } catch { }
+    try { $r = Invoke-WebRequest ($values['SITE_URL'] + '/healthz') -UseBasicParsing -TimeoutSec 5; $lanOk = ((Get-ResponseText $r).Trim() -eq 'ok') } catch { }
     Show 'Campus address answers' $lanOk $(if ($lanOk) { 'lab PCs on the campus network can use it' } else { 'not answering on that address: is this still the server''s IP? (set-server-address.ps1)' })
 }
 $fw = Get-NetFirewallRule -DisplayName 'CompuLab Web' -ErrorAction SilentlyContinue
@@ -75,7 +75,7 @@ if ($ts) {
     else { Show 'Tailscale' $false 'installed, but "tailscale status" failed (service stopped?)' }
     if ($remote) {
         $remoteOk = $false
-        try { $r = Invoke-WebRequest "$remote/healthz" -UseBasicParsing -TimeoutSec 8; $remoteOk = ($r.Content.Trim() -eq 'ok') } catch { }
+        try { $r = Invoke-WebRequest "$remote/healthz" -UseBasicParsing -TimeoutSec 8; $remoteOk = ((Get-ResponseText $r).Trim() -eq 'ok') } catch { }
         Show 'Remote address answers' $remoteOk $(if ($remoteOk) { 'from this server (test from an outside device too)' } else { 'not from this server: see REMOTE_ACCESS.md, Troubleshooting' })
     }
 } elseif ($remote) { Show 'Tailscale' $false 'COMPULAB_REMOTE_URL is set but Tailscale is not installed' }

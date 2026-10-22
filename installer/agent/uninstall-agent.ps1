@@ -22,11 +22,12 @@ param(
 )
 
 . "$PSScriptRoot\agent-common.ps1"
-Assert-Admin
+$systemWide = (Get-ScheduledTask -TaskName $script:AgentTaskName -ErrorAction SilentlyContinue) -or
+              (Get-NetFirewallRule -DisplayName 'CompuLab Agent', 'CompuLab ping' -ErrorAction SilentlyContinue) -or
+              ($InstallDir -like "$env:ProgramFiles*")
+if ($systemWide) { Assert-Admin }
 
-$pendingFile = Join-Path $DataDir 'pending_callbacks.json'
-$queued = 0
-if (Test-Path $pendingFile) { try { $queued = @(Get-Content $pendingFile -Raw | ConvertFrom-Json).Count } catch { } }
+$queued = Get-QueuedEventCount $DataDir
 
 Get-ScheduledTask -TaskName 'CompuLab Agent' -ErrorAction SilentlyContinue | ForEach-Object {
     Stop-ScheduledTask -TaskName 'CompuLab Agent' -ErrorAction SilentlyContinue

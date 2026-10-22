@@ -16,16 +16,19 @@ Do this once, on the computer that will be the CompuLab server. Allow about an h
 |---|---|---|
 | Python 3.12 (or 3.11+) | python.org → Downloads → Windows installer (64-bit) | Tick **Add python.exe to PATH** and **Install for all users** |
 | MariaDB 11.4 LTS (or 10.11 LTS) | mariadb.org → Download → MariaDB Server, MSI | Choose a strong **root password** and write it down safely. Keep "Install as service" ticked. Do *not* enable remote root access. |
-| WinSW-x64.exe | github.com/winsw/winsw/releases | Save it as `installer\server\bin\WinSW-x64.exe` |
+| WinSW-x64.exe | github.com/winsw/winsw/releases (v2.12.0) | **Only for a plain folder copy**: save it as `installer\server\bin\WinSW-x64.exe`. `CompuLab-Server-Setup.exe` already contains it (and the Python packages, so the install needs no internet). |
 
 Do **not** use XAMPP for the server: it is not a supervised service and its MariaDB is too old for
 the current Django version.
 
-## 3. Copy CompuLab to the server
+## 3-4. Install
 
-Copy the whole CompuLab folder to e.g. `C:\CompuLab` (or `git clone` it there).
+**Easiest:** run `CompuLab-Server-Setup-<version>.exe` (it copies CompuLab to `C:\CompuLab` and runs
+the installer in a console window). Then continue with step 3 of the list below.
 
-## 4. Run the installer
+**From a folder copy:** copy the whole CompuLab folder to e.g. `C:\CompuLab` (or `git clone` it
+there), then double-click **Install CompuLab Server.cmd** in it (it asks for administrator rights),
+or:
 
 1. Click Start, type **PowerShell**, right-click **Windows PowerShell** → **Run as administrator**.
 2. Run:
@@ -34,6 +37,11 @@ Copy the whole CompuLab folder to e.g. `C:\CompuLab` (or `git clone` it there).
    cd C:\CompuLab
    powershell -ExecutionPolicy Bypass -File installer\server\install-server.ps1
    ```
+
+   Unattended: `-NonInteractive -ServerAddress 192.168.1.10` with the MariaDB root password in the
+   environment variable `COMPULAB_DB_ROOT_PASSWORD` (and optionally `DJANGO_SUPERUSER_EMAIL` /
+   `DJANGO_SUPERUSER_PASSWORD` for the first Administrator), or settings from
+   `-ConfigFile installer\server\server-install.sample.json` (a copy with your values).
 
 3. When asked, choose the server's **campus address** from the list it shows (the fixed IP you
    reserved in step 1). Press Enter to accept the first one. (Or pass it:
@@ -59,7 +67,12 @@ The installer:
 
 It works without internet (after the packages are installed), email, Tailscale or a cloud
 server: those are optional and added later. Running it again later is safe (it keeps your
-settings and data).
+settings and data): that is also how to **repair** an installation. If it stops, the message says
+why ("Installation stopped: ...") and everything shown is in `logs\install-<time>.log`.
+
+**Uninstall:** Settings → Apps → *CompuLab Server* (setup program), or **Uninstall CompuLab
+Server.cmd** in `installer\server`: removes the services, firewall rules and backup task, and keeps
+the database, `.env`, uploads, backups and logs (the script's help explains how to remove those too).
 
 ### Values only you can provide
 

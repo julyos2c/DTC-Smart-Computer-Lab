@@ -14,6 +14,33 @@ emails wait and are sent automatically later.
  MariaDB database      port 5555              http://server:8000
 ```
 
+**Short version for the school:** [../docs/SCHOOL_DEPLOYMENT_GUIDE.md](../docs/SCHOOL_DEPLOYMENT_GUIDE.md).
+
+## Three ways to install (same result)
+
+| | Server | Lab PC |
+|---|---|---|
+| **Setup program** (easiest) | `CompuLab-Server-Setup-<version>.exe` | `CompuLab-Agent-Setup-<version>.exe` (no Python needed on the PC) |
+| **Double-click** in a copy of the CompuLab folder | `Install CompuLab Server.cmd` | `Install CompuLab Agent.cmd` (put the PC's `agent_config.local.json` next to it) |
+| **PowerShell** (scripted, unattended) | `installer\server\install-server.ps1` | `installer\agent\install-agent.ps1` |
+
+The setup programs run the same PowerShell installers. Every installer can be run again at any time
+to repair or update; it keeps settings, data and queued events.
+
+| Entry point | What it does |
+|---|---|
+| `Install CompuLab Server.cmd` | install / update / repair the server (asks for administrator rights) |
+| `installer\server\Server Status.cmd` | checks every part of the server, changes nothing |
+| `installer\server\Backup Now.cmd` | backup of database, uploads and settings |
+| `installer\server\Uninstall CompuLab Server.cmd` | removes services, firewall rule and backup task; keeps all data |
+| `Install CompuLab Agent.cmd` | install / repair the agent on a lab PC |
+| `installer\agent\Agent Status.cmd` | the agent's server address, last contact and queued events |
+| `installer\agent\Uninstall CompuLab Agent.cmd` | removes the agent; keeps queued events |
+
+Sample settings without secrets: `installer\server\server-install.sample.json` (for
+`install-server.ps1 -ConfigFile`) and `installer\agent\agent_config.local.sample.json` (shape of the
+per-PC file CompuLab generates).
+
 | What | Guide | Time |
 |---|---|---|
 | 1. The server (once) | [server/README.md](server/README.md) | about 1 hour |
@@ -58,3 +85,23 @@ powershell -ExecutionPolicy Bypass -File installer\launcher\install-launcher.ps1
 | Server was restarted | Nothing: both services start automatically; queued emails and Override switches continue. |
 
 Backups run every night (see the server guide). Test a restore at least once a term.
+
+## For developers: building and testing the installers
+
+```powershell
+# Build both setup programs into installer\dist (needs Python 3.13 + internet; no admin rights)
+powershell -ExecutionPolicy Bypass -File installer\build\build-installers.ps1 -InstallInnoSetup
+
+# Tests (no admin rights; nothing outside temporary folders is changed)
+powershell -ExecutionPolicy Bypass -File installer\tests\test-installer-logic.ps1      # script logic
+powershell -ExecutionPolicy Bypass -File installer\tests\test-server-install.ps1       # server setup end to end (needs a build + MySQL/MariaDB server files)
+powershell -ExecutionPolicy Bypass -File installer\tests\test-agent-install.ps1        # agent setup end to end (needs a build)
+venv\Scripts\python -m unittest discover -s lab_pc_agent\tests                          # agent queue + agent-to-server
+venv\Scripts\python manage.py test                                                      # Django (includes system/tests.py)
+```
+
+The end-to-end tests compile a **test build** of each setup (`/DTestBuild`: per-user, skips the
+Windows services, firewall rules and start-up task, which need administrator rights) and run it
+silently into a temporary folder. The server test starts a throwaway MySQL/MariaDB server on a free
+port from the installed server files. What they cannot cover is listed in
+`docs/MANUAL_VERIFICATION.md`.

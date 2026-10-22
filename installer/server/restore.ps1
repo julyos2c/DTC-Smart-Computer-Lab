@@ -16,11 +16,14 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$BackupFolder,
-    [string]$SafetyBackupRoot = ''
+    [string]$SafetyBackupRoot = '',
+    # Skip the "type RESTORE" question (for scripted use). The safety backup
+    # of the current data is still taken first.
+    [switch]$Force
 )
 
 . "$PSScriptRoot\common.ps1"
-Assert-Admin
+if (Get-Service -Name $script:WebService, $script:WorkerService -ErrorAction SilentlyContinue) { Assert-Admin }
 $sqlFile = Join-Path $BackupFolder 'database.sql'
 if (-not (Test-Path $sqlFile)) { throw "No database.sql in $BackupFolder" }
 $mysql = Find-MySqlTool 'mysql.exe'
@@ -28,12 +31,14 @@ if (-not $mysql) { $mysql = Find-MySqlTool 'mariadb.exe' }
 if (-not $mysql) { throw 'mysql.exe / mariadb.exe not found.' }
 
 Write-Host "This replaces the current CompuLab data with the backup from $BackupFolder." -ForegroundColor Yellow
-$answer = Read-Host 'Type RESTORE to continue'
-if ($answer -ne 'RESTORE') { Write-Host 'Cancelled.'; return }
+if (-not $Force) {
+    $answer = Read-Host 'Type RESTORE to continue'
+    if ($answer -ne 'RESTORE') { Write-Host 'Cancelled.'; return }
+}
 
 Write-Step 'Safety backup of the current data'
 if (-not $SafetyBackupRoot) { $SafetyBackupRoot = Join-Path $script:AppDir 'backups\before-restore' }
-& "$PSScriptRoot\backup.ps1" -BackupRoot $SafetyBackupRoot
+& "$PSScriptRoot\backup.ps1" -BackupRoot $SafetyBackupRoot | Out-Null
 
 Stop-CompuLabServices
 $envValues = Read-DotEnv
@@ -58,8 +63,8 @@ if (Test-Path $mediaZip) {
 
 Write-Step 'Applying any newer database changes'
 Invoke-Manage @('migrate', '--noinput')
-Start-CompuLabServices
-$port = ((Read-DotEnv)['SITE_URL'] -replace '^.*:(\d+).*$', '$1')
-if ($port -notmatch '^\d+$') { $port = '8000' }
-if (Wait-Healthy "http://127.0.0.1:$port/healthz" 90) { Write-Ok 'CompuLab is running again' }
-else { Write-Note 'CompuLab did not answer yet; check Services and the logs folder.' }
+if (Get-Service -Name $script:WebService -ErrorAction SilentlyContinue) {
+    Start-CompuLabServices
+    if (Wait-Healthy "http://127.0.0.1:$(Get-SitePort)/healthz" 90) { Write-Ok 'CompuLab is running again' }
+    else { Write-Note 'CompuLab did not answer yet; check Services and the logs folder.' }
+} else { Write-Ok 'Restore complete (no CompuLab services on this computer to restart).' }

@@ -33,7 +33,9 @@ New-Item -ItemType Directory -Force -Path $target | Out-Null
 Write-Step "Backing up to $target"
 $cnf = New-MySqlDefaultsFile $envValues['DB_USER'] $envValues['DB_PASSWORD'] $envValues['DB_HOST'] $envValues['DB_PORT']
 try {
-    & $dump "--defaults-extra-file=$cnf" --single-transaction --routines --triggers --default-character-set=utf8mb4 `
+    # --no-tablespaces: MySQL 8.0.21+ otherwise needs the PROCESS privilege,
+    # which the CompuLab database user does not have (and does not need).
+    & $dump "--defaults-extra-file=$cnf" --single-transaction --routines --triggers --no-tablespaces --default-character-set=utf8mb4 `
         "--result-file=$(Join-Path $target 'database.sql')" $envValues['DB_NAME']
     if ($LASTEXITCODE -ne 0) { throw 'The database dump failed.' }
 } finally {
@@ -47,7 +49,7 @@ if (Test-Path $media) {
     Write-Ok 'Uploaded files saved'
 }
 Copy-Item $script:EnvFile (Join-Path $target 'env.txt')
-& icacls $target /inheritance:r /grant:r 'Administrators:(OI)(CI)F' 'SYSTEM:(OI)(CI)F' | Out-Null
+& icacls $target /inheritance:r /grant:r 'Administrators:(OI)(CI)F' 'SYSTEM:(OI)(CI)F' "*$(Get-CurrentUserSid):(OI)(CI)F" | Out-Null
 Write-Ok 'Settings saved'
 
 # Retention: 14 newest + the newest backup of each of the last 8 weeks.
@@ -60,3 +62,5 @@ foreach ($dir in $all) {
     if ($keep.FullName -notcontains $dir.FullName) { Remove-Item $dir.FullName -Recurse -Force }
 }
 Write-Ok "Done. Backups kept: $(@(Get-ChildItem $BackupRoot -Directory -Filter 'compulab-*').Count)"
+# The newest backup folder, for scripts that call this one (update, restore, tests).
+$target

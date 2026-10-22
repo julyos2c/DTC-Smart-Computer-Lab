@@ -12,20 +12,33 @@ About 10 minutes per PC.
 3. **Download its settings:** PC status → the PC's row → **Agent config**. Save
    `agent_config.local.json` to a USB stick. It contains the agent secret: don't email it, and
    delete it from the stick afterwards.
-4. **Python 3.12** (or 3.11+) on the PC: python.org installer, tick *Add to PATH* and
-   *Install for all users*.
-5. Students should use a **standard (non-administrator)** Windows account.
+4. Students should use a **standard (non-administrator)** Windows account.
 
 ## Install
 
-On the lab PC, open PowerShell **as Administrator**, then (USB stick is `E:` here):
+**Easiest (no Python needed):** put `CompuLab-Agent-Setup-<version>.exe` and the PC's
+`agent_config.local.json` side by side on the USB stick and run the setup on the PC (as a Windows
+administrator). It picks up the config file by itself, installs the packaged `CompuLabAgent.exe`
+and shows the result of the agent's self-test. Many PCs at once, silently:
+
+```
+CompuLab-Agent-Setup.exe /VERYSILENT /CONFIG="\\server\share\agents\PC-01.json"
+```
+
+**From a CompuLab folder copy:** put `agent_config.local.json` next to **Install CompuLab Agent.cmd**
+and double-click it, or open PowerShell **as Administrator** (USB stick is `E:` here):
 
 ```powershell
 cd E:\CompuLab
 powershell -ExecutionPolicy Bypass -File installer\agent\install-agent.ps1 -ConfigFile E:\agent_config.local.json
 ```
 
-Optional: `-LabUser LAB\student` to start it only for the students' Windows account.
+A folder copy runs `agent.py`, so it needs **Python 3.11-3.13** on the PC (python.org installer,
+*Add to PATH*, *Install for all users*). Optional: `-LabUser LAB\student` to start it only for the
+students' Windows account; `-NonInteractive` for scripts (no questions).
+
+If the settings file is unusable (placeholder or missing secret, bad address), the installer stops
+**before changing anything** and says what is wrong.
 
 Sign out of Windows and back in: the lock screen appears. In CompuLab, PC status should show the PC
 as **Available** with "Last contact" a few seconds ago.
@@ -36,8 +49,12 @@ to set or override the address.
 
 ## What the installer does
 
-- Copies the agent to `C:\Program Files\CompuLab Agent` with its own Python environment, and the
-  helper scripts to `C:\Program Files\CompuLab Agent\tools`.
+- Copies the agent to `C:\Program Files\CompuLab Agent` (the packaged `CompuLabAgent.exe`, or
+  `agent.py` with its own Python environment), and the helper scripts to
+  `C:\Program Files\CompuLab Agent\tools`.
+- Runs the installed agent's self-test (`--self-test`: settings readable, queue folder writable,
+  server reachable) and shows the result; the install log is in
+  `C:\ProgramData\CompuLab Agent\install-<time>.log`.
 - Saves `agent_config.local.json` there (students can read but not change it). The server address
   in it is fixed by you; there is no automatic server discovery.
 - Creates `C:\ProgramData\CompuLab Agent`, where the agent keeps events waiting to be sent and its
@@ -78,7 +95,10 @@ The lab PCs only ever talk to the campus server; they never need the internet.
 
 - **Update:** run `install-agent.ps1` again from the new CompuLab copy (settings and queued events
   are kept unless you pass a new `-ConfigFile`). PC status shows each PC's agent version.
-- **Remove:** `installer\agent\uninstall-agent.ps1` removes the start-up task, the firewall rules
+- **Send queued events now** (e.g. after fixing the network): `"C:\Program Files\CompuLab Agent\CompuLabAgent.exe" --flush`
+  (exit code 0 = all delivered, 2 = server still unreachable, events kept).
+- **Remove:** Settings → Apps → *CompuLab Agent* (setup program), or
+  `installer\agent\uninstall-agent.ps1`, which removes the start-up task, the firewall rules
   and the program folder. It keeps `C:\ProgramData\CompuLab Agent` (queued events) unless you add
   `-RemoveData`; `-KeepFiles` keeps the program folder too.
 - **Server address changed:** `tools\set-agent-server.ps1 -ServerUrl ...` (above), or download the

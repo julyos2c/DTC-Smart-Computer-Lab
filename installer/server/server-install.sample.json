@@ -1,0 +1,13 @@
+{
+  "_comment": "Optional settings for install-server.ps1 -ConfigFile <this file>. Copy it, change the values, delete keys you don't need (defaults are used). Contains no passwords: the MariaDB root password comes from the COMPULAB_DB_ROOT_PASSWORD environment variable or is typed during the install; .env gets new random secrets.",
+  "ServerAddress": "192.168.1.10",
+  "Port": 8000,
+  "RemoteUrl": "",
+  "DbName": "compulab_db",
+  "DbUser": "compulab",
+  "DbHost": "127.0.0.1",
+  "DbPort": "3306",
+  "DbServiceName": "auto",
+  "BackupRoot": "D:\\CompuLabBackups",
+  "AllowFrom": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"]
+}

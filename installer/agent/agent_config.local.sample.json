@@ -1,0 +1,8 @@
+{
+  "_comment": "Sample only. The real file is downloaded per PC from CompuLab (PC status > the PC's row > Agent config) and installed with CompuLab-Agent-Setup.exe or install-agent.ps1 -ConfigFile. Never commit or email the real one: it contains the agent secret.",
+  "secret": "PASTE-PC_AGENT_SHARED_SECRET-HERE",
+  "server_url": "http://192.168.1.10:8000",
+  "port": 5555,
+  "pc_name": "PC 01",
+  "lab_name": "Computer Lab 1"
+}

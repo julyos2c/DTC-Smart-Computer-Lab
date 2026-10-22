@@ -51,7 +51,7 @@ $tailscale = Find-Tailscale
 if ($Mode -eq 'Disable') {
     Write-Step 'Removing remote access'
     if ($tailscale) {
-        & $tailscale serve reset 2>$null | Out-Null
+        Invoke-Quiet $tailscale @('serve', 'reset') | Out-Null
         if ($LASTEXITCODE -eq 0) { Write-Ok 'Tailscale serve configuration removed' }
     }
     Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
@@ -104,7 +104,7 @@ if ($Mode -eq 'Serve') {
 } else {
     Write-Step 'Allowing the CompuLab port from Tailscale addresses only'
     if (-not $self.IPv4) { Write-Note 'This machine has no Tailscale IPv4 address. Nothing was changed.'; exit 1 }
-    & $tailscale serve reset 2>$null | Out-Null
+    Invoke-Quiet $tailscale @('serve', 'reset') | Out-Null
     Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
     New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Protocol TCP -LocalPort $Port `
         -RemoteAddress '100.64.0.0/10' -Action Allow -Profile Any | Out-Null

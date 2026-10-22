@@ -1,0 +1,4 @@
+# Windows scripts keep Windows line endings (batch files misbehave with LF).
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.iss text eol=crlf

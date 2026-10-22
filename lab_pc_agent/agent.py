@@ -85,14 +85,21 @@ try:
 except Exception:
     _PIL_AVAILABLE = False
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'agent_config.json')
+import sys
+
+# The folder agent.py lives in, or - for the packaged CompuLabAgent.exe built
+# by installer\build\build-installers.ps1 (PyInstaller) - the folder of the
+# .exe, so the config files and assets sit next to whichever one runs.
+APP_DIR = (os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, 'frozen', False)
+           else os.path.dirname(os.path.abspath(__file__)))
+CONFIG_PATH = os.path.join(APP_DIR, 'agent_config.json')
 # Per-PC values that must never be committed (above all "secret"). Gitignored;
 # any key in it overrides the same key in agent_config.json.
-LOCAL_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'agent_config.local.json')
+LOCAL_CONFIG_PATH = os.path.join(APP_DIR, 'agent_config.local.json')
 
 # Secrets that are public (placeholder, or published in git history) and so
 # must never be accepted: anyone could send them to this PC's port.
-REJECTED_SECRETS = {'', 'SET-IN-agent_config.local.json', 'danao_technological_college'}
+REJECTED_SECRETS = {'', 'SET-IN-agent_config.local.json', 'danao_technological_college', 'PASTE-PC_AGENT_SHARED_SECRET-HERE'}
 
 # Reported to the server on every call, so the PC status page shows which
 # agent version each lab PC runs (useful after an update roll-out).
@@ -129,7 +136,7 @@ def _agent_data_dir():
     for path in candidates:
         if path and _writable_dir(path):
             return path
-    return os.path.dirname(os.path.abspath(__file__))
+    return APP_DIR
 
 
 DATA_DIR = _agent_data_dir()
@@ -1194,7 +1201,7 @@ class LockScreen:
         root.title('CompuLab')
         try:
             small_logo = tk.PhotoImage(file=os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), 'assets', 'icon_college_logo_small.png'))
+                APP_DIR, 'assets', 'icon_college_logo_small.png'))
             root.iconphoto(True, small_logo)
             self._icons['_taskbar_logo_ref'] = small_logo  # keep alive
         except Exception:
@@ -1430,7 +1437,7 @@ class LockScreen:
             return None
 
     def _load_icons(self):
-        assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets')
+        assets_dir = os.path.join(APP_DIR, 'assets')
         names = {
             'lock_badge': 'icon_lock_badge_sm.png',
             'user': 'icon_user.png',
@@ -1645,7 +1652,7 @@ class LockScreen:
         the old procedural circuit-board backdrop if Pillow isn't
         installed or the photo file is missing, so the agent still runs
         with just the standard library if that extra step is skipped."""
-        bg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'bg_building.jpg')
+        bg_path = os.path.join(APP_DIR, 'assets', 'bg_building.jpg')
         if _PIL_AVAILABLE and os.path.exists(bg_path):
             try:
                 img = Image.open(bg_path).convert('RGB')
@@ -2269,9 +2276,71 @@ def print_status():
             sys.exit(2)
 
 
+def self_test(report_path):
+    """`agent.py --self-test <file>` / `CompuLabAgent.exe --self-test <file>`:
+    checks what the agent needs without starting the lock screen and writes
+    a JSON report (the installer runs this right after installing). Exit
+    code 0 when the configuration is valid and the data folder writable;
+    an unreachable server is reported but is not a failure (the agent
+    keeps retrying once it runs)."""
+    report = {
+        'agent_version': AGENT_VERSION, 'frozen': bool(getattr(sys, 'frozen', False)),
+        'app_dir': APP_DIR, 'data_dir': DATA_DIR, 'data_dir_writable': _writable_dir(DATA_DIR),
+        'config_ok': False, 'config_error': '', 'server_url': '', 'server_reachable': False,
+        'server_detail': '', 'pending_events': pending_count(),
+    }
+    try:
+        config = load_config()
+        url = str(config.get('server_url') or '').rstrip('/')
+        if not url.startswith(('http://', 'https://')):
+            raise ValueError('server_url must start with http:// or https://')
+        int(config.get('port', 5555))
+        report.update(config_ok=True, server_url=url)
+    except SystemExit as e:
+        report['config_error'] = str(e)
+    except Exception as e:
+        report['config_error'] = f'{e.__class__.__name__}: {e}'
+    if report['server_url']:
+        try:
+            with urllib.request.urlopen(report['server_url'] + '/healthz', timeout=5) as r:
+                body = r.read(16).decode('utf-8', 'replace').strip()
+            report['server_reachable'] = body == 'ok'
+            report['server_detail'] = 'answers' if body == 'ok' else 'something answered, but not CompuLab'
+        except Exception as e:
+            report['server_detail'] = f'unreachable ({e.__class__.__name__}: {getattr(e, "reason", e)})'
+    report['ok'] = report['config_ok'] and report['data_dir_writable']
+    with open(report_path, 'w', encoding='utf-8') as f:
+        json.dump(report, f, indent=2)
+    return 0 if report['ok'] else 1
+
+
+def _attach_console():
+    """The packaged agent is a windowed program: give --status somewhere to print."""
+    if getattr(sys, 'frozen', False) and sys.stdout is None and os.name == 'nt':
+        import ctypes
+        if ctypes.windll.kernel32.AttachConsole(-1) or ctypes.windll.kernel32.AllocConsole():
+            sys.stdout = open('CONOUT$', 'w', encoding='utf-8', errors='replace')
+            sys.stderr = sys.stdout
+
+
+def flush_once():
+    """`agent.py --flush` / `CompuLabAgent.exe --flush`: send the queued
+    events now (oldest first) and exit, without the lock screen. Exit code
+    0 when the queue is empty afterwards, 2 when the server is unreachable
+    (the events stay queued)."""
+    config = load_config()
+    return 0 if flush_pending_callbacks(config.get('server_url', 'http://127.0.0.1:8000')) else 2
+
+
 def main():
-    import sys
+    if '--flush' in sys.argv:
+        sys.exit(flush_once())
+    if '--self-test' in sys.argv:
+        idx = sys.argv.index('--self-test')
+        path = sys.argv[idx + 1] if len(sys.argv) > idx + 1 else os.path.join(DATA_DIR, 'self_test.json')
+        sys.exit(self_test(path))
     if '--status' in sys.argv:
+        _attach_console()
         print_status()
         return
     config = load_config()

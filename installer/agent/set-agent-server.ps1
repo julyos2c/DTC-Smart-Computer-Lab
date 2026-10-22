@@ -18,8 +18,9 @@
 param(
     [string]$ServerUrl = '',
     [string]$InstallDir = "$env:ProgramFiles\CompuLab Agent",
-    [int]$AgentPort = 5555,
-    [switch]$Force   # save even if the new address does not answer right now
+    [int]$AgentPort = 0,
+    [switch]$Force,  # save even if the new address does not answer right now
+    [switch]$SkipFirewall
 )
 
 . "$PSScriptRoot\agent-common.ps1"
@@ -34,8 +35,9 @@ if (-not $ServerUrl) {
     return
 }
 
-Assert-Admin
+if (-not $SkipFirewall) { Assert-Admin }
 $ServerUrl = Test-ServerUrlFormat $ServerUrl
+if ($AgentPort -le 0) { $AgentPort = if ($config.port) { [int]$config.port } else { 5555 } }
 $check = Test-CompuLabServer $ServerUrl
 if ($check.Ok) { Write-Ok "$ServerUrl answers" }
 elseif (-not $Force) { throw "$ServerUrl does not answer ($($check.Detail)). Check the address, or add -Force to save it anyway." }
@@ -44,7 +46,7 @@ else { Write-Note "$ServerUrl does not answer right now; saved anyway (-Force). 
 Set-AgentServerUrl $localConfig $ServerUrl
 Protect-AgentConfig $localConfig
 Write-Ok "Saved: $ServerUrl"
-Set-AgentFirewall $ServerUrl $AgentPort
+if (-not $SkipFirewall) { Set-AgentFirewall $ServerUrl $AgentPort }
 
 Stop-Agent $InstallDir
 $task = Get-ScheduledTask -TaskName 'CompuLab Agent' -ErrorAction SilentlyContinue

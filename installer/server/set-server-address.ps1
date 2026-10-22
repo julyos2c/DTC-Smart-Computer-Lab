@@ -24,8 +24,10 @@ param(
 )
 
 . "$PSScriptRoot\common.ps1"
-Assert-Admin
+if (-not $NoRestart) { Assert-Admin }
 if ($Port -le 0) { $Port = Get-SitePort }
+$check = Test-InstallSettings @{ ServerAddress = $Primary; Port = $Port; DbName = 'x'; DbUser = 'x'; DbPort = 3306; AllowFrom = @() }
+if ($check.Count) { throw ($check -join ' ') }
 $addresses = @(Get-LanAddresses)
 if (-not $Primary) { $Primary = if ($addresses.Count) { $addresses[0] } else { '127.0.0.1' } }
 $hosts = @('127.0.0.1', 'localhost', $env:COMPUTERNAME.ToLower(), $Primary) + $addresses + $Extra | Select-Object -Unique

@@ -3,6 +3,10 @@
   Updates CompuLab to a new version on this server.
 
 .DESCRIPTION
+  Easiest: run the new CompuLab-Server-Setup.exe on the server; it replaces
+  the program files and runs install-server.ps1, which does all of the
+  steps below. By hand:
+
   1. Replace the application files with the new version first:
        - with Git:  git pull   (in the CompuLab folder), or
        - by copying the new release folder over this one, keeping .env,
@@ -23,12 +27,12 @@ Assert-Admin
 if (-not $BackupRoot) { $BackupRoot = Join-Path $script:AppDir 'backups' }
 
 Write-Step 'Backup before updating'
-& "$PSScriptRoot\backup.ps1" -BackupRoot $BackupRoot
+$backupFolder = & "$PSScriptRoot\backup.ps1" -BackupRoot $BackupRoot | Select-Object -Last 1
 
 Stop-CompuLabServices
 Write-Step 'Installing packages'
-& $script:VenvPython -m pip install --disable-pip-version-check -r (Join-Path $PSScriptRoot 'requirements-server.txt')
-if ($LASTEXITCODE -ne 0) { throw 'Package installation failed; services left stopped. Fix the error or restore the backup.' }
+try { Write-Ok "Packages installed ($(Install-PythonPackages (Join-Path $PSScriptRoot 'requirements-server.txt')))" }
+catch { throw "Package installation failed; services left stopped. Fix the error or restore the backup. ($($_.Exception.Message))" }
 
 Write-Step 'Database changes in this update'
 Invoke-Manage @('migrate', '--plan')
@@ -41,5 +45,5 @@ $port = Get-SitePort
 if (Wait-Healthy "http://127.0.0.1:$port/healthz" 90) { Write-Ok 'Update complete - CompuLab is running' }
 else {
     Write-Note 'CompuLab did not come back. Check logs\. To roll back: restore the code (git checkout <previous tag>)'
-    Write-Note "and, only if the database changes must be undone, run restore.ps1 with the backup in $BackupRoot."
+    Write-Note "and, only if the database changes must be undone: restore.ps1 -BackupFolder `"$backupFolder`""
 }

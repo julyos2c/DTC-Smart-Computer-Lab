@@ -22,7 +22,8 @@ foreach ($attempt in 1..3) {
     foreach ($c in $candidates) {
         try {
             $r = Invoke-WebRequest -Uri ($c.Url + '/healthz') -UseBasicParsing -TimeoutSec 4
-            if ($r.StatusCode -eq 200 -and $r.Content.Trim() -eq 'ok') {
+            $text = if ($r.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($r.Content) } else { [string]$r.Content }
+            if ($r.StatusCode -eq 200 -and $text.Trim() -eq 'ok') {
                 Start-Process $c.Url
                 exit 0
             }
