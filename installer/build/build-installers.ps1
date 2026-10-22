@@ -256,7 +256,10 @@ foreach ($payloadRoot in $serverPayload, $agentPayload) {
 }
 Write-Ok "No settings, secrets ($($secretValues.Count) local value(s) checked), databases, logs, per-PC files or tests in either payload"
 
-$isccVersion = (Get-Item $iscc).VersionInfo.ProductVersion
+# ISCC.exe carries no version number; the uninstaller Inno Setup installed
+# next to it does.
+$innoUninstaller = Join-Path (Split-Path $iscc) 'unins000.exe'
+$isccVersion = if (Test-Path $innoUninstaller) { [string](Get-Item $innoUninstaller).VersionInfo.ProductVersion } else { '6 (exact version unknown)' }
 $commitDate = [string](Invoke-Git @('log', '-1', '--format=%cI'))
 $buildInfo = [ordered]@{
     product = 'CompuLab'; version = $Version; commit = $commit; branch = $branch; commit_date = $commitDate
