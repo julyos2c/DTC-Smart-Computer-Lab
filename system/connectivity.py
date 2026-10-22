@@ -177,7 +177,9 @@ def _agent_summary(now):
     try:
         from django.db.models import Max
         from labs.models import PC
-        pcs = PC.objects.exclude(ip_address__isnull=True).exclude(ip_address='')
+        # A blank IP is stored as NULL; .exclude(ip_address='') would compile
+        # to "NOT ip_address = NULL" and drop every row.
+        pcs = PC.objects.filter(ip_address__isnull=False)
         recent_cutoff = now - datetime.timedelta(seconds=AGENT_RECENT_SECONDS)
         return {
             'pcs': pcs.count(),

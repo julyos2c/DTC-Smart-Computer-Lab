@@ -123,9 +123,11 @@ class SystemStatusView(RoleRequiredMixin, TemplateView):
         ctx['background_mode'] = 'in-process' if settings.RUN_BACKGROUND_TASKS else 'separate worker service'
         ctx['cloud_sync_enabled'] = getattr(settings, 'CLOUD_SYNC_ENABLED', False)
         ctx['agent_pcs'] = (
-            PC.objects.exclude(ip_address__isnull=True).exclude(ip_address='').select_related('lab')
+            PC.objects.filter(ip_address__isnull=False).select_related('lab')   # blank IPs are stored as NULL
             .order_by('lab__name', 'pc_id')[:200]
         )
+        from labs import agent_auth
+        ctx['agent_secrets'] = agent_auth.summary(PC.objects.only('agent_secret', 'agent_secret_in_use'))
         return ctx
 
 

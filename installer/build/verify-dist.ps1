@@ -209,8 +209,9 @@ stops; it never installs, upgrades or replaces Python or the database server):
 The setup includes everything else: CompuLab, the Python packages (offline) and the service wrapper (WinSW 2.12.0).
 
 **Lab PC agent** - nothing to install first (no Python: the agent is a packaged program). Needed:
-the PC's ``agent_config.local.json`` (CompuLab > PC status > Agent config), the PC registered in CompuLab with its fixed
-IP, an administrator account to install, and a standard (non-administrator) account for students.
+the PC's ``agent_config.local.json`` (CompuLab > PC power status > Agent config, with that PC's own agent secret), the PC
+registered in CompuLab with its fixed IP, an administrator account to install, and the standard (non-administrator)
+Windows account(s) students sign in with - only those get the lock screen (local group "CompuLab Students").
 
 ## Installing
 
@@ -232,9 +233,10 @@ IP, an administrator account to install, and a standard (non-administrator) acco
 Silent installs (as administrator):
 
 ``````
-CompuLab-Server-Setup-$Version.exe /VERYSILENT /SERVERADDRESS=192.168.1.10 /PORT=8000
-    (needs the MariaDB root password in the environment variable COMPULAB_DB_ROOT_PASSWORD)
-CompuLab-Agent-Setup-$Version.exe /VERYSILENT /CONFIG="C:\Setup\PC-01.json"
+CompuLab-Server-Setup-$Version.exe /VERYSILENT /SERVERADDRESS=192.168.1.10 /PORT=8000 /DBPORT=3306
+    (needs the environment variables COMPULAB_DB_ROOT_PASSWORD, and for a new installation
+     DJANGO_SUPERUSER_EMAIL (@gmail.com) and DJANGO_SUPERUSER_PASSWORD for the first Administrator)
+CompuLab-Agent-Setup-$Version.exe /VERYSILENT /CONFIG="C:\Setup\PC-01.json" /STUDENTS="student"
 ``````
 
 **Update / repair:** run a newer (or the same) setup again. Server: settings (.env), database, uploads, backups and logs

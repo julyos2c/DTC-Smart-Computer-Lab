@@ -81,6 +81,16 @@ class PC(models.Model):
     agent_pending_events = models.PositiveSmallIntegerField(
         default=0, help_text='Events the agent reported as still queued on the PC at its last contact.',
     )
+    # This PC's own agent secret (labs/agent_auth.py). Created the first time
+    # its Agent config file is downloaded; until the agent on the PC has used
+    # it once (agent_secret_in_use), the shared PC_AGENT_SHARED_SECRET still
+    # works for this PC so an installed agent keeps working while it is being
+    # moved over. Never shown in the UI; only inside the Agent config file.
+    agent_secret = models.CharField(max_length=64, blank=True, default='', editable=False)
+    agent_secret_in_use = models.BooleanField(
+        default=False, editable=False,
+        help_text='The agent on this PC authenticated with its own secret; the shared secret is no longer accepted for it.',
+    )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

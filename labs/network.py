@@ -46,6 +46,48 @@ def check_pc(pc):
     return pc, _ping_once(pc.ip_address)
 
 
+_SECRET_MISMATCH = ('Agent at {ip} rejected the request: its agent secret does not match. Download this PC\'s '
+                    'Agent config again (PC power status > Agent config) and re-run the agent setup on the PC.')
+
+
+def _post_to_agent(pc, path, extra, done_message):
+    """POSTs a signed command to the agent on `pc` (http://<ip>:<port>/<path>)
+    and returns (success, message). Signed with this PC's own secret, or the
+    shared one while the PC has not moved to its own (labs/agent_auth.py);
+    during that move the other secret is tried if the agent rejects the
+    first. The secret itself never appears in a message."""
+    import json
+    import urllib.request
+    import urllib.error
+    from labs import agent_auth
+
+    port = getattr(settings, 'PC_AGENT_PORT', 5555)
+    timeout = getattr(settings, 'PC_AGENT_TIMEOUT_SECONDS', 4)
+    url = f'http://{pc.ip_address}:{port}/{path}'
+    candidates = agent_auth.secrets_for_command(pc)
+    if not candidates:
+        return False, (f'{pc.pc_id} has no agent secret of its own yet and the shared secret is switched off '
+                       '(PC_AGENT_REQUIRE_PER_PC_SECRET). Download its Agent config and re-run the agent setup on the PC.')
+    for secret, is_own in candidates:
+        payload = json.dumps(dict(extra, secret=secret)).encode('utf-8')
+        request = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'}, method='POST')
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                if 200 <= response.status < 300:
+                    agent_auth.command_accepted(pc, is_own)
+                    return True, done_message
+                return False, f'Agent at {pc.ip_address} responded with status {response.status}.'
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                continue   # try the next secret, if any
+            return False, f'Agent at {pc.ip_address} returned an error: {e.code} {e.reason}'
+        except urllib.error.URLError as e:
+            return False, f'Could not reach agent at {pc.ip_address}:{port} — is the agent running on that PC? ({e.reason})'
+        except Exception as e:
+            return False, f'Request to {pc.ip_address} failed: {e}'
+    return False, _SECRET_MISMATCH.format(ip=pc.ip_address)
+
+
 def unlock_pc(pc):
     """
     Tells this specific lab PC to release its own lock/kiosk screen, once a
@@ -66,36 +108,8 @@ def unlock_pc(pc):
     student was verified; it only means the unlock signal didn't get through
     (e.g. agent not running yet, PC offline, wrong IP on file).
     """
-    from django.conf import settings
-    import json
-    import urllib.request
-    import urllib.error
-
     if pc.ip_address:
-        port = getattr(settings, 'PC_AGENT_PORT', 5555)
-        secret = getattr(settings, 'PC_AGENT_SHARED_SECRET', '')
-        timeout = getattr(settings, 'PC_AGENT_TIMEOUT_SECONDS', 4)
-        url = f'http://{pc.ip_address}:{port}/unlock'
-        payload = json.dumps({'secret': secret}).encode('utf-8')
-        request = urllib.request.Request(
-            url,
-            data=payload,
-            headers={'Content-Type': 'application/json'},
-            method='POST',
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                if 200 <= response.status < 300:
-                    return True, f'Unlock signal sent to agent at {pc.ip_address}.'
-                return False, f'Agent at {pc.ip_address} responded with status {response.status}.'
-        except urllib.error.HTTPError as e:
-            if e.code == 403:
-                return False, f'Agent at {pc.ip_address} rejected the request — check PC_AGENT_SHARED_SECRET matches on both sides.'
-            return False, f'Agent at {pc.ip_address} returned an error: {e.code} {e.reason}'
-        except urllib.error.URLError as e:
-            return False, f'Could not reach agent at {pc.ip_address}:{port} — is the agent running on that PC? ({e.reason})'
-        except Exception as e:
-            return False, f'Unlock request to {pc.ip_address} failed: {e}'
+        return _post_to_agent(pc, 'unlock', {}, f'Unlock signal sent to agent at {pc.ip_address}.')
 
     # No IP on file for this PC — fall back to a server-local command, if any.
     command = getattr(settings, 'PC_UNLOCK_COMMAND', None)
@@ -128,35 +142,10 @@ def send_override_warning(pc, admin_name, seconds):
     — the PC just won't have shown a warning first. Returns
     (success: bool, message: str).
     """
-    from django.conf import settings
-    import json
-    import urllib.request
-    import urllib.error
-
     if not pc.ip_address:
         return False, 'This PC has no IP address on file — cannot send a warning.'
-
-    port = getattr(settings, 'PC_AGENT_PORT', 5555)
-    secret = getattr(settings, 'PC_AGENT_SHARED_SECRET', '')
-    timeout = getattr(settings, 'PC_AGENT_TIMEOUT_SECONDS', 4)
-    url = f'http://{pc.ip_address}:{port}/override-warning'
-    payload = json.dumps({'secret': secret, 'seconds': seconds, 'admin_name': admin_name}).encode('utf-8')
-    request = urllib.request.Request(
-        url, data=payload, headers={'Content-Type': 'application/json'}, method='POST',
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            if 200 <= response.status < 300:
-                return True, f'Warning sent to agent at {pc.ip_address}.'
-            return False, f'Agent at {pc.ip_address} responded with status {response.status}.'
-    except urllib.error.HTTPError as e:
-        if e.code == 403:
-            return False, f'Agent at {pc.ip_address} rejected the request — check PC_AGENT_SHARED_SECRET matches on both sides.'
-        return False, f'Agent at {pc.ip_address} returned an error: {e.code} {e.reason}'
-    except urllib.error.URLError as e:
-        return False, f'Could not reach agent at {pc.ip_address}:{port} — is the agent running on that PC? ({e.reason})'
-    except Exception as e:
-        return False, f'Warning request to {pc.ip_address} failed: {e}'
+    return _post_to_agent(pc, 'override-warning', {'seconds': seconds, 'admin_name': admin_name},
+                          f'Warning sent to agent at {pc.ip_address}.')
 
 
 def _send_power_signal(pc, path, action_label):
@@ -172,35 +161,9 @@ def _send_power_signal(pc, path, action_label):
     reached the agent — the PC still takes ~30s to actually shut down/
     restart after that (see the agent's grace period).
     """
-    from django.conf import settings
-    import json
-    import urllib.request
-    import urllib.error
-
     if not pc.ip_address:
         return False, 'This PC has no IP address on file — cannot send a remote power command.'
-
-    port = getattr(settings, 'PC_AGENT_PORT', 5555)
-    secret = getattr(settings, 'PC_AGENT_SHARED_SECRET', '')
-    timeout = getattr(settings, 'PC_AGENT_TIMEOUT_SECONDS', 4)
-    url = f'http://{pc.ip_address}:{port}/{path}'
-    payload = json.dumps({'secret': secret}).encode('utf-8')
-    request = urllib.request.Request(
-        url, data=payload, headers={'Content-Type': 'application/json'}, method='POST',
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            if 200 <= response.status < 300:
-                return True, f'{action_label} signal sent to agent at {pc.ip_address}.'
-            return False, f'Agent at {pc.ip_address} responded with status {response.status}.'
-    except urllib.error.HTTPError as e:
-        if e.code == 403:
-            return False, f'Agent at {pc.ip_address} rejected the request — check PC_AGENT_SHARED_SECRET matches on both sides.'
-        return False, f'Agent at {pc.ip_address} returned an error: {e.code} {e.reason}'
-    except urllib.error.URLError as e:
-        return False, f'Could not reach agent at {pc.ip_address}:{port} — is the agent running on that PC? ({e.reason})'
-    except Exception as e:
-        return False, f'{action_label} request to {pc.ip_address} failed: {e}'
+    return _post_to_agent(pc, path, {}, f'{action_label} signal sent to agent at {pc.ip_address}.')
 
 
 def shutdown_pc(pc):

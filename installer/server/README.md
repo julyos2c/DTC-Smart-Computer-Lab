@@ -19,12 +19,15 @@ Do this once, on the computer that will be the CompuLab server. Allow about an h
 | WinSW-x64.exe | github.com/winsw/winsw/releases (v2.12.0) | **Only for a plain folder copy**: save it as `installer\server\bin\WinSW-x64.exe`. `CompuLab-Server-Setup.exe` already contains it (and the Python packages, so the install needs no internet). |
 
 Do **not** use XAMPP for the server: it is not a supervised service and its MariaDB is too old for
-the current Django version.
+the current Django version. If XAMPP must stay on the computer, install MariaDB on another port
+(e.g. 3307) and give that port to the installer (setup field **Database port**, or `-DbPort 3307`).
 
-The CompuLab installer never installs, upgrades or replaces Python or the database server. It only
-uses the ones installed: if the database service is stopped it starts it, and if it is not set to
-start automatically it changes that (CompuLab needs it at boot) and says so. With several MariaDB /
-MySQL services on the computer it asks for `-DbServiceName` instead of guessing.
+The CompuLab installer never installs, upgrades, replaces or stops Python or a database server, and
+never touches XAMPP. Before changing anything it checks which program listens on the database port
+and refuses XAMPP or anything that is not MariaDB/MySQL. It uses the database service that owns the
+port: if that service is stopped it starts it, and if it is not set to start automatically it
+changes that (CompuLab needs it at boot) and says so. With several MariaDB/MySQL services and none on
+the port it asks for `-DbServiceName` instead of guessing.
 
 ## 3-4. Install
 
@@ -44,15 +47,21 @@ or:
    ```
 
    Unattended: `-NonInteractive -ServerAddress 192.168.1.10` with the MariaDB root password in the
-   environment variable `COMPULAB_DB_ROOT_PASSWORD` (and optionally `DJANGO_SUPERUSER_EMAIL` /
-   `DJANGO_SUPERUSER_PASSWORD` for the first Administrator), or settings from
-   `-ConfigFile installer\server\server-install.sample.json` (a copy with your values).
+   environment variable `COMPULAB_DB_ROOT_PASSWORD` and, on a new installation, the first
+   Administrator in `DJANGO_SUPERUSER_EMAIL` (@gmail.com) / `DJANGO_SUPERUSER_PASSWORD` (required:
+   it stops without them), or settings from `-ConfigFile installer\server\server-install.sample.json`
+   (a copy with your values).
 
 3. When asked, choose the server's **campus address** from the list it shows (the fixed IP you
    reserved in step 1). Press Enter to accept the first one. (Or pass it:
-   `install-server.ps1 -ServerAddress 192.168.1.10`; another port: `-Port 8080`.)
+   `install-server.ps1 -ServerAddress 192.168.1.10`; another web port: `-Port 8080`; another
+   database port: `-DbPort 3307`; backups elsewhere: `-BackupRoot E:\CompuLabBackups`.)
 4. When asked, type the MariaDB root password (used once, not saved).
-5. When asked, create the first Administrator account (email + password).
+5. When asked, create the first Administrator account: a @gmail.com address (CompuLab accepts only
+   Gmail addresses for every account) and a password typed twice. A refused value is explained and
+   asked again; if no working Administrator exists at the end, the installer stops ("The first
+   Administrator account was not created: ...") instead of reporting success. A repair never
+   creates a second one.
 
 At the end it prints the address, e.g. `http://192.168.1.10:8000`. Open it from another computer
 on the campus network and sign in.
@@ -65,11 +74,14 @@ The installer:
 - creates the `compulab_db` database and a `compulab` database user;
 - applies the database migrations;
 - installs and starts two Windows services that start at boot (after the database service) and
-  restart themselves if they stop: **CompuLab Web** (the website) and **CompuLab Worker** (PC
-  status, email, cloud sync, reminders);
+  restart themselves if they stop: **CompuLab Web** (the website) and **CompuLab Worker** (lab PC
+  checks, email, cloud sync, reminders);
 - opens the web port for private campus/VPN addresses only (never the database port);
 - schedules a nightly backup at 1:30 AM (as SYSTEM; a missed night runs at the next start-up; each
-  run writes `logs\backup-<time>.log`, and a failure shows as Last Run Result 0x1 in Task Scheduler).
+  run writes `logs\backup-<time>.log`, and a failure shows as Last Run Result 0x1 in Task Scheduler)
+  to the backup folder (`-BackupRoot`, default `C:\CompuLab\backups`), which it checks is writable
+  and records as `COMPULAB_BACKUP_ROOT` in `.env`. Repair, Update, **Back Up CompuLab Now** and
+  restore keep using that folder until `-BackupRoot` is given again.
 
 It works without internet (after the packages are installed), email, Tailscale or a cloud
 server: those are optional and added later. Running it again later is safe (it keeps your
@@ -104,18 +116,24 @@ For Gmail use an **App Password** (Google account → Security → 2-Step Verifi
 
 ## 6. Lab PCs
 
-See [../agent/README.md](../agent/README.md). The agent secret they need is `PC_AGENT_SHARED_SECRET`
-in `.env`; easier: in CompuLab, PC status → **Agent config** downloads a ready file per PC.
+See [../agent/README.md](../agent/README.md). In CompuLab, PC power status → **Agent config**
+downloads a ready file per PC with **that PC's own agent secret** (`labs/agent_auth.py`).
+`PC_AGENT_SHARED_SECRET` in `.env` only keeps agents installed with an older file working; System
+status shows which PCs still use it. When none do, set `PC_AGENT_REQUIRE_PER_PC_SECRET=True` in
+`.env` and restart both services. Replace one PC's secret (e.g. a stolen PC):
+`venv\Scripts\python manage.py agent_secret` (list) and `... agent_secret --rotate <id>`, then
+reinstall that PC with its new Agent config.
 
 ## Maintenance
 
 | Task | Command (as Administrator, in the CompuLab folder) |
 |---|---|
-| Backup now | `powershell -ExecutionPolicy Bypass -File installer\server\backup.ps1 -BackupRoot E:\CompuLabBackups` |
-| Change where nightly backups go | re-run `install-server.ps1 -BackupRoot E:\CompuLabBackups` |
+| Backup now | Start → CompuLab → **Back Up CompuLab Now**, or `powershell -ExecutionPolicy Bypass -File installer\server\backup.ps1 -Log` (to the configured folder) |
+| Change where backups go | re-run `install-server.ps1 -BackupRoot E:\CompuLabBackups` (once; remembered) |
 | Restore a backup | `... installer\server\restore.ps1 -BackupFolder E:\CompuLabBackups\compulab-20261022-013000` |
-| Install a new CompuLab version | replace the files (or `git pull`), then `... installer\server\update.ps1` |
-| Is everything working? | `... installer\server\server-status.ps1` (add `-StartServices` to start stopped services) |
+| Install a new CompuLab version | run the newer setup; or replace the files (or `git pull`), then `... installer\server\update.ps1` |
+| Is everything working? | Start → CompuLab → **CompuLab Server Status** → F, or `... installer\server\server-status.ps1` (add `-StartServices` to start stopped services) |
+| First Administrator missing / broken | `venv\Scripts\python manage.py ensure_admin --check`; re-run the installer (Repair) to create one |
 | Server IP changed | `... installer\server\set-server-address.ps1 -Primary 192.168.1.10`, then `installer\agent\set-agent-server.ps1` on each lab PC |
 | Remote access (Tailscale) | `... installer\server\configure-remote-access.ps1` (see `installer\REMOTE_ACCESS.md`) |
 | Stop / start | Services app → CompuLab Web / CompuLab Worker, or `Stop-Service CompuLabWeb,CompuLabWorker` |
@@ -131,7 +149,9 @@ with the same steps, then `restore.ps1`) and check that you can sign in.
 
 1. Install the new machine with steps 1–4 (it gets its own empty database).
 2. Copy the latest backup folder to it and run `restore.ps1 -BackupFolder ...`.
-3. Copy `PC_AGENT_SHARED_SECRET` (and email settings) from the old `.env` (`env.txt` in the backup) into the new `.env`, then restart both services.
+3. Lab PCs on their own agent secret keep working (the secrets are in the restored database). For
+   PCs still on the shared secret, copy `PC_AGENT_SHARED_SECRET` (and email settings) from the old
+   `.env` (`env.txt` in the backup) into the new `.env`, then restart both services.
 4. Give the new machine the old IP address in the router, so lab PCs and bookmarks keep working.
 
 ## What this does not do automatically

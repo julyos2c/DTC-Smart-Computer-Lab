@@ -27,21 +27,31 @@
        (first run only).
     4. Creates the database and its user (idempotent).
     5. Backs up (when updating), applies migrations, collects static files.
-    6. Creates the first Administrator account if there is none.
+    6. Checks for a working Administrator account (active, role Admin) and
+       creates the first one if there is none; the installation stops if it
+       could not be created (never a second one on Repair/Update).
     7. Installs two Windows services that start at boot, after the database
        service, and restart themselves if they stop:
          CompuLab Web     - the website (waitress)
-         CompuLab Worker  - background work: PC status, email, cloud sync, jobs
+         CompuLab Worker  - background work: lab PC checks, email, cloud sync, jobs
     8. Opens the web port in Windows Firewall for private (campus / VPN)
        addresses only (never the database port).
-    9. Schedules a nightly backup.
+    9. Schedules a nightly backup to -BackupRoot. The folder is recorded in
+       .env (COMPULAB_BACKUP_ROOT); Repair, Update, "Back Up CompuLab Now"
+       and restore keep using it until -BackupRoot is given again.
+
+  Database: a MariaDB/MySQL server must already listen on -DbPort (3306
+  unless chosen otherwise) of this computer. Port in use by XAMPP or by a
+  program that is not MariaDB/MySQL: the installer stops and changes
+  nothing (it never touches another database installation).
    10. Checks that the site answers, then prints the addresses to use.
   Everything shown is also written to logs\install-<time>.log.
 
   Unattended install (no questions): -NonInteractive with -ServerAddress,
   the MariaDB root password in the environment variable
-  COMPULAB_DB_ROOT_PASSWORD, and optionally the first Administrator in
-  DJANGO_SUPERUSER_EMAIL / DJANGO_SUPERUSER_PASSWORD. Settings may also
+  COMPULAB_DB_ROOT_PASSWORD, and - on a new installation - the first
+  Administrator in DJANGO_SUPERUSER_EMAIL (@gmail.com) /
+  DJANGO_SUPERUSER_PASSWORD (required: without them it stops). Settings may also
   come from -ConfigFile (see installer\server\server-install.sample.json);
   command-line values win over the file.
 
@@ -90,9 +100,12 @@ try {
     $existingEnv = Read-DotEnv
 
     # ------------------------------------------------------------ 0. settings
+    # Backups keep going where they went before (COMPULAB_BACKUP_ROOT in .env,
+    # or the existing nightly task); C:\CompuLab\backups only on a new install.
+    $configuredBackup = Get-ConfiguredBackupRoot
     $defaults = @{
         ServerAddress = ''; Port = 8000; RemoteUrl = ''; DbName = 'compulab_db'; DbUser = 'compulab'
-        DbHost = '127.0.0.1'; DbPort = '3306'; DbServiceName = 'auto'; BackupRoot = (Join-Path $script:AppDir 'backups')
+        DbHost = '127.0.0.1'; DbPort = '3306'; DbServiceName = 'auto'; BackupRoot = $configuredBackup.Path
         AllowFrom = $script:DefaultAllowFrom; AdminEmail = ''
     }
     if (-not $firstRun) {
@@ -142,11 +155,25 @@ try {
         }
     }
     $problems = Test-InstallSettings $S
+    if (-not $firstRun) {
+        # The database name and user of an existing installation hold its data:
+        # a repair never switches to another (empty) database.
+        foreach ($pair in @(@('DbName', 'DB_NAME'), @('DbUser', 'DB_USER'))) {
+            if ($existingEnv[$pair[1]] -and "$($S[$pair[0]])" -ne $existingEnv[$pair[1]]) {
+                $problems += "$($pair[0]) cannot be changed on an existing installation (it is '$($existingEnv[$pair[1]])' in .env). To move the data, back up and restore instead."
+            }
+        }
+    }
     if ($problems.Count) { throw ("The settings are not valid:`n      - " + ($problems -join "`n      - ")) }
     if ($S.ServerAddress -match '^\d+\.\d+\.\d+\.\d+$' -and $S.ServerAddress -notin $addresses -and $S.ServerAddress -ne '127.0.0.1') {
         Write-Note "$($S.ServerAddress) is not one of this computer's current addresses ($($addresses -join ', ')). Continuing, but lab PCs will not reach the server until it has that address."
     }
-    Write-Ok "Campus address http://$($S.ServerAddress):$($S.Port), database $($S.DbName) on $($S.DbHost):$($S.DbPort)"
+    $backupProblem = Test-BackupRoot "$($S.BackupRoot)"
+    if ($backupProblem) { throw "$backupProblem Choose another folder with -BackupRoot (for example a second disk: -BackupRoot E:\CompuLabBackups)." }
+    if ($S.BackupRoot -ne $configuredBackup.Path -and $configuredBackup.Source -ne 'default') {
+        Write-Note "Backup folder changed from $($configuredBackup.Path) to $($S.BackupRoot)."
+    }
+    Write-Ok "Campus address http://$($S.ServerAddress):$($S.Port), database $($S.DbName) on $($S.DbHost):$($S.DbPort), backups in $($S.BackupRoot)"
 
     Write-Step 'Checking Python'
     $python = Find-Python
@@ -174,9 +201,13 @@ try {
                '(-SkipDatabaseSetup if the CompuLab database already exists on another computer.)')
     }
     if ($mysql) { Write-Ok "Database client: $mysql" }
+    $dbLocal = $S.DbHost -in @('127.0.0.1', 'localhost')
+    $listener = if ($dbLocal) { Get-ListenerInfo ([int]$S.DbPort) } else { $null }
     $dbService = $null
     if ($S.DbServiceName -ne 'none') {
-        $dbService = if ($S.DbServiceName -eq 'auto') { Get-DbServiceName } else { $S.DbServiceName }
+        # The service that owns the database port is the one CompuLab uses.
+        $owner = if ($listener) { $listener.ServiceName } else { '' }
+        $dbService = if ($S.DbServiceName -eq 'auto') { Get-DbServiceName $owner } else { $S.DbServiceName }
     }
     if ($dbService) {
         $svc = Get-Service $dbService -ErrorAction SilentlyContinue
@@ -191,8 +222,21 @@ try {
             Set-Service $dbService -StartupType Automatic
             Write-Note "Changed the start type of $dbService from $($svc.StartType) to Automatic (CompuLab needs it at boot). Nothing else about it was changed."
         }
-    } elseif ($S.DbHost -in @('127.0.0.1', 'localhost') -and $S.DbServiceName -eq 'auto') {
+    } elseif ($dbLocal -and $S.DbServiceName -eq 'auto') {
         Write-Note 'No MariaDB/MySQL Windows service was found. The database must start automatically at boot, or CompuLab will not start after a restart.'
+    }
+    if ($dbLocal) {
+        # Port $S.DbPort must belong to a MariaDB/MySQL server: never XAMPP or
+        # another program, which CompuLab must not touch.
+        if (-not $listener) { $listener = Wait-DbListener ([int]$S.DbPort) $(if ($dbService) { 20 } else { 2 }) }
+        $dbProblem = Test-DbListener $listener $S.DbHost ([int]$S.DbPort)
+        if ($dbProblem) { throw $dbProblem }
+        if ($listener.ServiceName -and $dbService -and $listener.ServiceName -ne $dbService) {
+            throw ("Port $($S.DbPort) belongs to the service '$($listener.ServiceName)', not to '$dbService'. " +
+                   "Run the installer with -DbServiceName $($listener.ServiceName), or give the port of '$dbService' with -DbPort.")
+        }
+        $who = if ($listener.ServiceName) { "the $($listener.ServiceName) service" } elseif ($listener.ProcessPath) { $listener.ProcessPath } else { "process $($listener.ProcessId)" }
+        Write-Ok "Port $($S.DbPort) is served by $who"
     }
 
     $winsw = $null
@@ -233,7 +277,17 @@ try {
             & "$PSScriptRoot\set-server-address.ps1" -Primary $S.ServerAddress -Port $S.Port -NoRestart
         }
         if ($S.RemoteUrl) { Set-DotEnvValue 'COMPULAB_REMOTE_URL' "$($S.RemoteUrl)".TrimEnd('/') }
+        # A database moved to another port/host (checked above: a MariaDB/MySQL
+        # server answers there) is only changed when asked for explicitly.
+        foreach ($pair in @(@('DbPort', 'DB_PORT'), @('DbHost', 'DB_HOST'))) {
+            if (($PSBoundParameters.ContainsKey($pair[0]) -or $fromFile.ContainsKey($pair[0])) -and "$($S[$pair[0]])" -ne $existingEnv[$pair[1]]) {
+                Set-DotEnvValue $pair[1] "$($S[$pair[0]])"
+                Write-Note "$($pair[1]) changed from '$($existingEnv[$pair[1]])' to '$($S[$pair[0]])'."
+            }
+        }
     }
+    # Where Repair, Update, "Back Up CompuLab Now" and restore put backups.
+    Set-DotEnvValue 'COMPULAB_BACKUP_ROOT' "$($S.BackupRoot)"
     $envValues = Read-DotEnv
     $siteUrl = $envValues['SITE_URL']
 
@@ -243,8 +297,7 @@ try {
         $plainRoot = $env:COMPULAB_DB_ROOT_PASSWORD
         if (-not $plainRoot) {
             if ($NonInteractive) { throw 'Set the environment variable COMPULAB_DB_ROOT_PASSWORD (MariaDB root password) for an unattended install, or use -SkipDatabaseSetup.' }
-            $rootPassword = Read-Host -AsSecureString 'MariaDB/MySQL root password (used once, not saved)'
-            $plainRoot = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($rootPassword))
+            $plainRoot = Read-SecretText 'MariaDB/MySQL root password (used once, not saved)'
         }
         $rootCnf = New-MySqlDefaultsFile 'root' $plainRoot $envValues['DB_HOST'] $envValues['DB_PORT']
         try {
@@ -282,25 +335,56 @@ try {
     Write-Ok 'Database and static files are up to date'
 
     # ------------------------------------------------------------ 6. first admin
-    Push-Location $script:AppDir
-    # Exactly one output line is 'True' or 'False' (Django 5.2's shell also
-    # prints an "objects imported" line, so don't match the whole output).
-    $shellOut = @(Invoke-Quiet $script:VenvPython @('manage.py', 'shell', '-c', 'from django.contrib.auth import get_user_model as g; print(g().objects.filter(is_superuser=True).exists())'))
-    Pop-Location
-    $hasSuperuser = @($shellOut | Where-Object { "$_".Trim() -eq 'True' }).Count -gt 0
-    if (-not $hasSuperuser) {
+    # The installation is not complete without an Administrator who can sign
+    # in: manage.py ensure_admin checks for one (active superuser, role
+    # Admin), creates it if there is none (never a second one), and the
+    # result is verified before the installer continues.
+    Write-Step 'Checking the Administrator account'
+    $admin = Invoke-EnsureAdmin @('--check')
+    if ($admin.ExitCode -eq 0) { Write-Ok $admin.Message }
+    elseif ($admin.ExitCode -ne 3) { throw "Could not check the Administrator account: $($admin.Message)" }
+    else {
+        Write-Note $admin.Message
         Write-Step 'Create the first Administrator account'
-        if ($env:DJANGO_SUPERUSER_EMAIL -and $env:DJANGO_SUPERUSER_PASSWORD) {
-            Invoke-Manage @('createsuperuser', '--noinput')
-            Write-Ok "Administrator $($env:DJANGO_SUPERUSER_EMAIL) created"
-        } elseif ($NonInteractive) {
-            Write-Note 'No Administrator yet. Create one later: venv\Scripts\python manage.py createsuperuser (in the CompuLab folder).'
-        } else {
-            Write-Note 'Use a Gmail address you can reach. The password is typed by you and never shown or logged.'
-            Push-Location $script:AppDir
-            & $script:VenvPython manage.py createsuperuser
-            Pop-Location
+        $email = if ($env:DJANGO_SUPERUSER_EMAIL) { $env:DJANGO_SUPERUSER_EMAIL } else { "$($S.AdminEmail)" }
+        $adminPassword = $env:DJANGO_SUPERUSER_PASSWORD
+        if ($NonInteractive -and (-not $email -or -not $adminPassword)) {
+            throw ('There is no Administrator account yet. For an unattended install set the environment variables DJANGO_SUPERUSER_EMAIL ' +
+                   '(a @gmail.com address) and DJANGO_SUPERUSER_PASSWORD, or run the installer again without /VERYSILENT and type them.')
         }
+        if (-not $NonInteractive) {
+            Write-Note 'This is the CompuLab sign-in of the Administrator (not a Windows account). CompuLab accepts only @gmail.com addresses.'
+            Write-Note 'The password is at least 8 characters, not only digits, not a common password; it is never shown or logged.'
+        }
+        $askEmail = -not $email; $askPassword = -not $adminPassword
+        $last = $null
+        for ($attempt = 1; $attempt -le $(if ($NonInteractive) { 1 } else { 4 }); $attempt++) {
+            if (-not $NonInteractive) {
+                if ($askEmail) { $email = (Read-Host '    Administrator email (@gmail.com)').Trim() }
+                $emailProblem = Test-AdminEmail $email
+                if ($emailProblem) { Write-Note $emailProblem; $askEmail = $true; continue }
+                if ($askPassword) {
+                    $first = Read-SecretText '    Password'
+                    $again = Read-SecretText '    Password (again)'
+                    if ($first -ne $again) { Write-Note 'The two passwords are different. Type them again.'; $first = $null; $again = $null; continue }
+                    $adminPassword = $first; $first = $null; $again = $null
+                }
+            }
+            $last = Invoke-EnsureAdmin @('--email', $email) $adminPassword
+            if ($last.ExitCode -eq 0) { break }
+            Write-Note $last.Message
+            if ($last.ExitCode -ne 2) { break }   # not a problem with what was typed
+            $askPassword = $last.Message -match 'password'
+            $askEmail = -not $askPassword
+        }
+        $adminPassword = $null
+        $admin = Invoke-EnsureAdmin @('--check')
+        if ($admin.ExitCode -ne 0) {
+            $why = if ($last) { $last.Message } else { $admin.Message }
+            throw ("The first Administrator account was not created: $why Nothing is lost: run the installer again " +
+                   '(Start > CompuLab > Repair CompuLab Server) and it asks again.')
+        }
+        Write-Ok $admin.Message
     }
 
     # ------------------------------------------------------------ 7. services
@@ -361,7 +445,8 @@ try {
     if ($SkipServices) { Write-Host '  Services were not installed (-SkipServices): start CompuLab with installer\server\run-foreground.ps1.' }
     Write-Host '  Next steps:'
     Write-Host '   - Reserve this server''s IP address in the router (DHCP reservation) so it never changes.'
-    Write-Host '   - Lab PCs: CompuLab > PC status > Agent config gives each PC its settings file; then run CompuLab-Agent-Setup.exe on the PC.'
+    Write-Host '   - Lab PCs: CompuLab > PC power status > Agent config gives each PC its settings file; then run CompuLab-Agent-Setup.exe on the PC.'
+    Write-Host "   - Backups:                 $($S.BackupRoot) (nightly at 1:30 AM and 'Back Up CompuLab Now'; kept by Repair/Update)"
     Write-Host '   - Optional email:          installer\server\configure-email.ps1'
     Write-Host '   - Optional remote access:  installer\server\configure-remote-access.ps1 (see installer\REMOTE_ACCESS.md)'
     Write-Host '   - Check everything:        installer\server\server-status.ps1'

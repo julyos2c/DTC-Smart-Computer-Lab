@@ -24,7 +24,7 @@ param([string]$BackupRoot = '')
 
 . "$PSScriptRoot\common.ps1"
 Assert-Admin
-if (-not $BackupRoot) { $BackupRoot = Join-Path $script:AppDir 'backups' }
+if (-not $BackupRoot) { $BackupRoot = (Get-ConfiguredBackupRoot).Path }   # the configured backup folder
 
 Write-Step 'Backup before updating'
 $backupFolder = & "$PSScriptRoot\backup.ps1" -BackupRoot $BackupRoot | Select-Object -Last 1

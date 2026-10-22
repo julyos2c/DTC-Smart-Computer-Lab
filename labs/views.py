@@ -12,7 +12,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 from accounts.mixins import RoleRequiredMixin, ModalFormMixin, ModalDetailMixin, modal_redirect, is_modal_request, bulk_delete
 from labs.models import PC, Lab, InventoryItem, MaintenanceLog, EquipmentIssue, PCActivityLog
-from labs import agent_events
+from labs import agent_auth, agent_events
 from labs.network import refresh_pc_statuses
 from labs.privacy import resolve_site_label
 from labs.forms import ReservationPCLoginForm, MaintenanceScheduleForm, LabForm, InventoryItemForm, PCForm, PCImportForm
@@ -640,8 +640,8 @@ def pc_agent_login_api(request):
     except (ValueError, TypeError):
         return JsonResponse({'ok': False, 'error': 'invalid JSON body'}, status=400)
 
-    expected_secret = getattr(settings, 'PC_AGENT_SHARED_SECRET', '')
-    if not expected_secret or payload.get('secret') != expected_secret:
+    caller = PC.objects.filter(ip_address=request.META.get('REMOTE_ADDR')).first()
+    if not agent_auth.authenticate(caller, payload.get('secret')):
         return JsonResponse({'ok': False, 'error': 'invalid secret'}, status=403)
 
     PC.objects.filter(ip_address=request.META.get('REMOTE_ADDR')).update(
@@ -689,7 +689,6 @@ def pc_agent_login_api(request):
 def pc_agent_info_api(request):
     from django.conf import settings
 
-    expected_secret = getattr(settings, 'PC_AGENT_SHARED_SECRET', '')
     secret = request.GET.get('secret') if request.method == 'GET' else None
     if secret is None:
         try:
@@ -698,10 +697,9 @@ def pc_agent_info_api(request):
             payload = {}
         secret = payload.get('secret')
 
-    if not expected_secret or secret != expected_secret:
-        return JsonResponse({'ok': False, 'error': 'invalid secret'}, status=403)
-
     pc = PC.objects.select_related('lab').filter(ip_address=request.META.get('REMOTE_ADDR')).first()
+    if not agent_auth.authenticate(pc, secret):
+        return JsonResponse({'ok': False, 'error': 'invalid secret'}, status=403)
     if pc is None:
         return JsonResponse({'ok': False, 'error': 'PC not registered'}, status=200)
     touch = {'agent_version': request.GET.get('agent_version', '')}
@@ -753,11 +751,9 @@ def pc_agent_activity_api(request):
     except (ValueError, TypeError):
         return JsonResponse({'ok': False, 'error': 'invalid JSON body'}, status=400)
 
-    expected_secret = getattr(settings, 'PC_AGENT_SHARED_SECRET', '')
-    if not expected_secret or payload.get('secret') != expected_secret:
-        return JsonResponse({'ok': False, 'error': 'invalid secret'}, status=403)
-
     pc = PC.objects.filter(ip_address=request.META.get('REMOTE_ADDR')).select_related('current_user').first()
+    if not agent_auth.authenticate(pc, payload.get('secret')):
+        return JsonResponse({'ok': False, 'error': 'invalid secret'}, status=403)
     if pc is None:
         return JsonResponse({'ok': False, 'error': 'PC not registered'}, status=200)
     _touch_from_agent(pc, payload)
@@ -818,12 +814,10 @@ def pc_agent_end_session_api(request):
     except (ValueError, TypeError):
         return JsonResponse({'ok': False, 'error': 'invalid JSON body'}, status=400)
 
-    expected_secret = getattr(settings, 'PC_AGENT_SHARED_SECRET', '')
-    if not expected_secret or payload.get('secret') != expected_secret:
-        return JsonResponse({'ok': False, 'error': 'invalid secret'}, status=403)
-
     remote_addr = request.META.get('REMOTE_ADDR')
     pc = PC.objects.filter(ip_address=remote_addr).select_related('lab').first()
+    if not agent_auth.authenticate(pc, payload.get('secret')):
+        return JsonResponse({'ok': False, 'error': 'invalid secret'}, status=403)
     if pc is None:
         return JsonResponse({'ok': False, 'error': 'PC not registered'}, status=200)
     _touch_from_agent(pc, payload)
@@ -886,11 +880,9 @@ def pc_agent_logout_api(request):
     except (ValueError, TypeError):
         return JsonResponse({'ok': False, 'error': 'invalid JSON body'}, status=400)
 
-    expected_secret = getattr(settings, 'PC_AGENT_SHARED_SECRET', '')
-    if not expected_secret or payload.get('secret') != expected_secret:
-        return JsonResponse({'ok': False, 'error': 'invalid secret'}, status=403)
-
     pc = PC.objects.filter(ip_address=request.META.get('REMOTE_ADDR')).select_related('lab').first()
+    if not agent_auth.authenticate(pc, payload.get('secret')):
+        return JsonResponse({'ok': False, 'error': 'invalid secret'}, status=403)
     if pc is None:
         return JsonResponse({'ok': False, 'error': 'PC not registered'}, status=200)
     _touch_from_agent(pc, payload)
@@ -955,18 +947,20 @@ def manual_unlock_log_api(request):
     except (ValueError, TypeError):
         return JsonResponse({'ok': False, 'error': 'invalid JSON body'}, status=400)
 
-    expected_secret = getattr(settings, 'PC_AGENT_SHARED_SECRET', '')
-    if not expected_secret or payload.get('secret') != expected_secret:
+    pc_ip = (payload.get('pc_ip') or '').strip()
+    # The offline tool runs in a browser anywhere on the LAN, so the PC comes
+    # from pc_ip here; the secret must be that PC's (or the shared one while
+    # that PC has not moved to its own).
+    pc = PC.objects.select_related('lab').filter(ip_address=pc_ip).first() if pc_ip else None
+    if not agent_auth.authenticate(pc, payload.get('secret')):
         return JsonResponse({'ok': False, 'error': 'invalid secret'}, status=403)
 
-    pc_ip = (payload.get('pc_ip') or '').strip()
     guest_name = (payload.get('guest_name') or '').strip()
     incharge_name = (payload.get('incharge_name') or '').strip()
 
     if not guest_name or not incharge_name:
         return JsonResponse({'ok': False, 'error': 'guest_name and incharge_name are both required'}, status=400)
 
-    pc = PC.objects.select_related('lab').filter(ip_address=pc_ip).first()
     if pc is None:
         return JsonResponse({'ok': False, 'error': 'No PC in the system is registered with that IP address'}, status=200)
 
@@ -2039,7 +2033,9 @@ def pc_agent_config_download(request, pk):
         raise PermissionDenied
     pc = get_object_or_404(PC.objects.select_related('lab'), pk=pk)
     config = {
-        'secret': settings.PC_AGENT_SHARED_SECRET,
+        # This PC's own secret (created on the first download; the same one
+        # on later downloads). See labs/agent_auth.py.
+        'secret': agent_auth.ensure_secret(pc),
         'server_url': settings.SITE_URL,
         'port': settings.PC_AGENT_PORT,
         'pc_name': pc.pc_id,
@@ -2403,7 +2399,9 @@ class LabListView(RoleRequiredMixin, ListView):
         # view, the lock screen ends up showing the wrong pc_id.
         from django.db.models import Count
         dupe_ips = (
-            PC.objects.exclude(ip_address__isnull=True).exclude(ip_address='')
+            # (A blank IP is stored as NULL; .exclude(ip_address='') would
+            # compile to "NOT ip_address = NULL" and drop every row.)
+            PC.objects.filter(ip_address__isnull=False)
             .values('ip_address').annotate(n=Count('id')).filter(n__gt=1)
             .values_list('ip_address', flat=True)
         )

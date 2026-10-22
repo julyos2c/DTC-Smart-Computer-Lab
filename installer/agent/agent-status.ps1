@@ -30,6 +30,14 @@ $task = Get-ScheduledTask -TaskName 'CompuLab Agent' -ErrorAction SilentlyContin
 if ($task) {
     $info = Get-ScheduledTaskInfo -TaskName 'CompuLab Agent' -ErrorAction SilentlyContinue
     Write-Host "  Start-up task      : $($task.State) (last run $($info.LastRunTime), result $($info.LastTaskResult))"
+    $scope = Get-ExistingAgentScope
+    $who = switch ($scope.Kind) {
+        'StudentGroup' { "members of '$($scope.Account)': $((@(Get-StudentGroupMembers) -join ', '))" }
+        'AllUsers'     { 'EVERY Windows account, administrators included (older setting)' }
+        'SingleUser'   { "only $($scope.Account)" }
+        default        { 'unknown' }
+    }
+    Write-Host "  Lock screen for    : $who"
 } else { Write-Host '  Start-up task      : NOT INSTALLED (run install-agent.ps1)' -ForegroundColor Red }
 $running = @(Get-Process pythonw, python, CompuLabAgent -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$InstallDir*" })
 Write-Host "  Agent running      : $(if ($running.Count) { 'yes' } else { 'no (it starts when a user signs in to Windows)' })"

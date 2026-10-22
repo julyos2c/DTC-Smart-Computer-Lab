@@ -9,7 +9,7 @@
 
       powershell -ExecutionPolicy Bypass -File installer\agent\install-agent.ps1 -ConfigFile E:\agent_config.local.json
 
-  Get -ConfigFile from CompuLab: PC status > (this PC's row) > "Agent config"
+  Get -ConfigFile from CompuLab: PC power status > (this PC's row) > "Agent config"
   (it contains the server address, the agent secret and this PC's name).
   Without it, the script asks for the server address and secret. -ServerUrl
   overrides the address in either case. Safe to run again (repair/update):
@@ -27,8 +27,13 @@
     5. Checks that the CompuLab server answers. If it does not, the install
        continues with a warning: the agent keeps trying by itself.
     6. Opens port 5555 (and ping) for the CompuLab server's IP address only.
-    7. Starts the agent at every Windows sign-in (so also after a restart)
-       and restarts it within a minute if it stops.
+    7. Starts the agent when a STUDENT account signs in to Windows (so also
+       after a restart) and brings it back within about a minute if it stops.
+       Student accounts are the members of the local group "CompuLab
+       Students" (created here; -StudentAccounts adds accounts to it).
+       Administrators are never added, so their sessions are not locked.
+       A repair/update keeps whatever the installed agent did; -AllUsers
+       locks every account (administrators too: the old behaviour).
     8. Runs the installed agent's self-test.
   Everything shown is also written to C:\ProgramData\CompuLab Agent\install-<time>.log.
 
@@ -44,7 +49,12 @@ param(
     # -DataDir / -InstallDir only for isolated tests (installer\tests).
     [string]$DataDir = "$env:ProgramData\CompuLab Agent",
     [string]$SourceDir = '',
-    [string]$LabUser = '',           # Windows account students use; default: any user who signs in
+    # Windows account(s) students sign in with, comma-separated (local or
+    # DOMAIN\name); added to the "CompuLab Students" group. Never administrators.
+    [string]$StudentAccounts = '',
+    [string]$LabUser = '',           # older name for a single -StudentAccounts entry
+    # Lock every Windows account, administrators included (old behaviour).
+    [switch]$AllUsers,
     [int]$AgentPort = 0,
     [switch]$NonInteractive,
     # Keep the window open at the end (used by CompuLab-Agent-Setup.exe).
@@ -92,7 +102,7 @@ try {
     $config = $null
     if ($ConfigFile) { $config = Read-AgentConfig $ConfigFile }
     elseif (Test-Path $localConfig) { $config = Read-AgentConfig $localConfig; Write-Ok 'Keeping the settings already on this PC' }
-    elseif ($NonInteractive) { throw 'No settings: pass -ConfigFile (PC status > Agent config in CompuLab).' }
+    elseif ($NonInteractive) { throw 'No settings: pass -ConfigFile (PC power status > Agent config in CompuLab).' }
     else {
         if (-not $ServerUrl) { $ServerUrl = Read-Host 'CompuLab server campus address (e.g. http://192.168.1.10:8000)' }
         $secretSecure = Read-Host -AsSecureString 'Agent secret (PC_AGENT_SHARED_SECRET from the server''s .env)'
@@ -112,6 +122,38 @@ try {
     if ($problems.Count) { throw ("The agent settings are not usable:`n      - " + ($problems -join "`n      - ")) }
     $port = if ($config.port) { [int]$config.port } else { 5555 }
     Write-Ok "Server: $($config.server_url), agent port $port"
+
+    # Who gets the lock screen - decided and checked before anything changes.
+    $scope = $null
+    if (-not $SkipTask) {
+        Write-Step 'Checking which Windows accounts get the lock screen'
+        $scope = Resolve-AgentScope -AllUsers:$AllUsers -StudentAccounts @($StudentAccounts, $LabUser) -Existing (Get-ExistingAgentScope)
+        if ($scope.Scope -eq 'StudentGroup') {
+            $known = @(Get-LocalAccountNames)
+            $admins = @(Get-AdministratorAccountNames)
+            $current = @(Get-StudentGroupMembers)
+            if (-not $current.Count -and -not $scope.AddAccounts.Count) {
+                if ($NonInteractive) {
+                    throw ("No student account given: the lock screen would start for nobody. Enter the Windows account(s) students sign in with " +
+                           "(setup: 'Student Windows accounts', or -StudentAccounts student1,student2), or add them to the local group '$($script:StudentGroupName)'.")
+                }
+                $candidates = @(Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.Enabled } | ForEach-Object { $_.Name } |
+                    Where-Object { (Get-StudentAccountProblems @($_) $known $admins).Count -eq 0 })
+                Write-Host "    Standard (non-administrator) accounts on this PC: $(if ($candidates.Count) { $candidates -join ', ' } else { '(none - create one first: Settings > Accounts > Other users)' })"
+                $scope.AddAccounts = @(ConvertTo-AccountList (Read-Host '    Windows account(s) students sign in with (comma-separated)'))
+                if (-not $scope.AddAccounts.Count) { throw 'No student account given: the lock screen would start for nobody.' }
+            }
+            $accountProblems = Get-StudentAccountProblems $scope.AddAccounts $known $admins
+            if ($accountProblems.Count) { throw ("The student accounts are not usable:`n      - " + ($accountProblems -join "`n      - ")) }
+            $memberProblems = Get-StudentAccountProblems $current $known $admins
+            $adminMembers = @($memberProblems | Where-Object { $_ -match 'administrator account' })
+            foreach ($m in $adminMembers) { Write-Note "In the group '$($script:StudentGroupName)': $m Remove it from the group (Computer Management > Local Users and Groups)." }
+            Write-Ok "Lock screen for the members of '$($script:StudentGroupName)' ($($scope.Reason)); administrators are not locked"
+        } else {
+            Write-Note "Lock screen for EVERY Windows account on this PC, administrators included ($($scope.Reason))."
+            Write-Note "To lock only students: run the setup again with the student account(s) (setup field 'Student Windows accounts', or -StudentAccounts)."
+        }
+    }
 
     # ------------------------------------------------------------ 3. files
     Write-Step "Installing the agent in $InstallDir"
@@ -161,9 +203,16 @@ try {
 
     # ------------------------------------------------------------ 7. auto-start
     if (-not $SkipTask) {
-        Write-Step 'Starting the agent at every sign-in'
-        Register-AgentTask $InstallDir $LabUser
-        Write-Ok "Scheduled task `"$($script:AgentTaskName)`" registered (starts at every sign-in, also after a restart)"
+        Write-Step 'Starting the agent when a student signs in'
+        if ($scope.Scope -eq 'StudentGroup') {
+            $group = Initialize-StudentGroup $scope.AddAccounts
+            Register-AgentTask $InstallDir $group.Sid
+            Write-Ok "Scheduled task `"$($script:AgentTaskName)`" registered for '$($script:StudentGroupName)': $($group.Members -join ', ') (starts at sign-in, also after a restart; back within about a minute if closed)"
+            Write-Note 'Accounts added just now get the lock screen from their next sign-in.'
+        } else {
+            Register-AgentTask $InstallDir $script:UsersGroupSid
+            Write-Ok "Scheduled task `"$($script:AgentTaskName)`" registered for every Windows account (starts at sign-in, also after a restart)"
+        }
     }
 
     # ------------------------------------------------------------ 8. self-test
@@ -173,7 +222,11 @@ try {
     Write-Ok "Agent $($report.agent_version) starts, reads its settings and can write its queue; server: $($report.server_detail)"
 
     Write-Host "`nThe CompuLab agent is installed." -ForegroundColor Green
-    Write-Host '  It starts the next time a user signs in to Windows (sign out and back in now to start it).'
+    if ($scope -and $scope.Scope -eq 'StudentGroup') {
+        Write-Host "  It starts the next time a student account ($($script:StudentGroupName)) signs in to Windows. Administrators are not locked."
+    } else {
+        Write-Host '  It starts the next time a user signs in to Windows (sign out and back in now to start it).'
+    }
     Write-Host "  Check it any time:         powershell -ExecutionPolicy Bypass -File `"$toolsDir\agent-status.ps1`""
     Write-Host "  Change the server address: powershell -ExecutionPolicy Bypass -File `"$toolsDir\set-agent-server.ps1`" -ServerUrl http://<server>:8000"
     Write-Host '  In CompuLab, this PC must have its IP address set (Manage labs > PC > Edit):'

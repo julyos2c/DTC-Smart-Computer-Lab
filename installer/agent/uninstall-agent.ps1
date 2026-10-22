@@ -10,6 +10,8 @@
       hours old) are sent then. Add -RemoveData to delete it too.
   Add -KeepFiles to keep the program folder (including this PC's
   agent_config.local.json, which holds the agent secret).
+    * the local group "CompuLab Students" and its members (Windows accounts
+      are never changed by CompuLab).
 
   Afterwards, in CompuLab, delete or edit this PC if it is no longer a lab PC.
 #>
@@ -50,5 +52,8 @@ if ($RemoveData) {
     Write-Ok "Removed $DataDir"
 } elseif (Test-Path $DataDir) {
     Write-Ok "Kept $DataDir ($queued queued event(s); delete it with -RemoveData)"
+}
+if (Get-LocalGroup -Name $script:StudentGroupName -ErrorAction SilentlyContinue) {
+    Write-Note "The local group '$($script:StudentGroupName)' was kept (its members are used again if the agent is reinstalled). Delete it in Computer Management if it is no longer needed."
 }
 Write-Host 'CompuLab agent removed. In CompuLab, delete or edit this PC if it is no longer a lab PC.' -ForegroundColor Green

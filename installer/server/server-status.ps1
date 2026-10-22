@@ -8,6 +8,11 @@
   Run on the server (as Administrator for the full report):
       powershell -ExecutionPolicy Bypass -File installer\server\server-status.ps1
   Changes nothing. Add -StartServices to start stopped CompuLab services.
+
+  Without administrator rights the report is LIMITED and says so: the
+  settings file (.env), the firewall rule and the backup task can only be
+  read by an administrator; those lines show "needs administrator".
+  (Start menu > CompuLab Server Status offers to ask for the rights.)
 #>
 [CmdletBinding()]
 param([switch]$StartServices)
@@ -19,9 +24,16 @@ function Show([string]$Label, $Ok, [string]$Detail) {
     Write-Host ("  [{0}] {1,-28} {2}" -f $mark, $Label, $Detail) -ForegroundColor $color
 }
 
-$port = Get-SitePort
-$values = Read-DotEnv
+$isAdmin = Test-IsAdmin
+$envReadable = $true
+try { $values = Read-DotEnv; $port = Get-SitePort } catch { $values = @{}; $port = 8000; $envReadable = $false }
 Write-Host "`nCompuLab server status ($env:COMPUTERNAME)" -ForegroundColor Cyan
+if (-not $isAdmin) {
+    Write-Host '  LIMITED REPORT: not running as administrator. The settings file, the firewall rule and the backup task' -ForegroundColor Yellow
+    Write-Host '  are not checked (shown as "needs administrator"). For the full report: Start menu > CompuLab Server Status > F,' -ForegroundColor Yellow
+    Write-Host '  or run this script in PowerShell opened with "Run as administrator".' -ForegroundColor Yellow
+}
+if (-not $envReadable) { Write-Host "  The settings file (.env) could not be read: web port assumed to be $port." -ForegroundColor Yellow }
 
 Write-Host "`n1. Windows services"
 # The database service CompuLab Web depends on (set by install-server.ps1).
@@ -40,14 +52,35 @@ Write-Host "`n2. Website on this computer"
 $web = $false
 try { $r = Invoke-WebRequest "http://127.0.0.1:$port/healthz" -UseBasicParsing -TimeoutSec 5; $web = ((Get-ResponseText $r).Trim() -eq 'ok') } catch { }
 Show "http://127.0.0.1:$port" $web $(if ($web) { 'answers' } else { 'no answer: see logs\compulab.log and logs\CompuLabWeb*.log' })
-Show 'Campus address (SITE_URL)' $null $values['SITE_URL']
+Show 'Campus address (SITE_URL)' $null $(if ($envReadable) { $values['SITE_URL'] } else { 'needs administrator (settings file)' })
 $lanOk = $false
 if ($values['SITE_URL']) {
     try { $r = Invoke-WebRequest ($values['SITE_URL'] + '/healthz') -UseBasicParsing -TimeoutSec 5; $lanOk = ((Get-ResponseText $r).Trim() -eq 'ok') } catch { }
     Show 'Campus address answers' $lanOk $(if ($lanOk) { 'lab PCs on the campus network can use it' } else { 'not answering on that address: is this still the server''s IP? (set-server-address.ps1)' })
 }
-$fw = Get-NetFirewallRule -DisplayName 'CompuLab Web' -ErrorAction SilentlyContinue
-Show 'Firewall rule' ([bool]$fw) $(if ($fw) { "port $port open for campus/VPN addresses" } else { 'missing: lab PCs and staff cannot connect (re-run install-server.ps1)' })
+if ($isAdmin) {
+    $fw = Get-NetFirewallRule -DisplayName 'CompuLab Web' -ErrorAction SilentlyContinue
+    Show 'Firewall rule' ([bool]$fw) $(if ($fw) { "port $port open for campus/VPN addresses" } else { 'missing: lab PCs and staff cannot connect (re-run install-server.ps1)' })
+} else { Show 'Firewall rule' $null 'needs administrator' }
+
+Write-Host "`n2b. Backups"
+$backup = Get-ConfiguredBackupRoot
+Show 'Backup folder' $null "$($backup.Path) (from $($backup.Source))"
+if ($isAdmin) {
+    $task = Get-ScheduledTask -TaskName $script:BackupTaskName -ErrorAction SilentlyContinue
+    if ($task) {
+        $info = $task | Get-ScheduledTaskInfo
+        $taskRoot = Get-BackupRootFromTaskArguments ([string]$task.Actions[0].Arguments)
+        $okRun = $info.LastTaskResult -eq 0 -or $info.LastRunTime -lt [datetime]'2000-01-01'
+        Show 'Nightly backup task' $okRun "last run $($info.LastRunTime) result $($info.LastTaskResult); next $($info.NextRunTime)"
+        if ($taskRoot -and $taskRoot -ne $backup.Path) { Show 'Task backup folder' $false "the task writes to ${taskRoot}: run install-server.ps1 -BackupRoot `"$($backup.Path)`" to make them agree" }
+    } else { Show 'Nightly backup task' $false 'missing (re-run install-server.ps1)' }
+} else { Show 'Nightly backup task' $null 'needs administrator' }
+$newest = Get-ChildItem -LiteralPath $backup.Path -Directory -Filter 'compulab-*' -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+if ($newest) {
+    $age = (Get-Date) - $newest.CreationTime
+    Show 'Newest backup' ($age.TotalHours -lt 36) "$($newest.Name) ($([int]$age.TotalHours) hours old)"
+} else { Show 'Newest backup' $(if ($isAdmin) { $false } else { $null }) $(if ($isAdmin) { "none in $($backup.Path)" } else { 'none found (the folder may need administrator rights)' }) }
 
 Write-Host "`n3. Inside CompuLab (from /healthz/ready)"
 if ($web) {

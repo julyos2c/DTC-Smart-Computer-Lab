@@ -2,15 +2,17 @@
 ; which packages the agent as CompuLabAgent.exe (PyInstaller, so lab PCs need no
 ; Python) and passes /DPayload=... /DAppVersion=... /DFileVersion=... /DOutputDir=...
 ;
-; The setup asks for the PC's Agent config file (CompuLab > PC status > Agent
-; config); an agent_config.local.json next to the setup .exe is picked up
-; automatically. It then runs installer\agent\install-agent.ps1 from the
-; payload, which installs to C:\Program Files\CompuLab Agent, registers the
-; start-at-sign-in task, opens the firewall for the server only and runs the
-; agent's self-test. The setup itself contains no secret and can be shared.
+; The setup asks for the PC's Agent config file (CompuLab > PC power status >
+; Agent config); an agent_config.local.json next to the setup .exe is picked
+; up automatically. It also asks for the Windows account(s) students sign in
+; with: only those (the local group "CompuLab Students") get the lock screen,
+; never administrators. It then runs installer\agent\install-agent.ps1 from
+; the payload, which installs to C:\Program Files\CompuLab Agent, registers
+; the start-at-sign-in task, opens the firewall for the server only and runs
+; the agent's self-test. The setup itself contains no secret and can be shared.
 ;
 ; Silent install on many PCs (as Administrator):
-;   CompuLab-Agent-Setup.exe /VERYSILENT /CONFIG="\\server\share\pc-01.json"
+;   CompuLab-Agent-Setup.exe /VERYSILENT /CONFIG="\\server\share\pc-01.json" /STUDENTS="student"
 ; Silent update keeping the PC's settings:
 ;   CompuLab-Agent-Setup.exe /VERYSILENT
 
@@ -70,6 +72,7 @@ UninstalledAll=The CompuLab agent was removed from this PC.%n%nEvents still wait
 var
   ConfigPage: TInputFileWizardPage;
   ManualPage: TInputQueryWizardPage;
+  StudentsPage: TInputQueryWizardPage;
 
 function GetFileAttributes(lpFileName: String): Cardinal;
   external 'GetFileAttributesW@kernel32.dll stdcall';
@@ -108,7 +111,7 @@ var
 begin
   ConfigPage := CreateInputFilePage(wpWelcome, 'Agent settings',
     'Choose this PC''s Agent config file',
-    'In CompuLab (as Admin): PC status > this PC''s row > Agent config downloads agent_config.local.json. ' +
+    'In CompuLab (as Admin): PC power status > this PC''s row > Agent config downloads agent_config.local.json. ' +
     'It contains the server address and the agent secret: keep it private and delete it from the USB stick afterwards.' + #13#10#13#10 +
     'Leave this empty to keep the settings already on this PC, or to type the server address and secret on the next page.');
   ConfigPage.Add('Agent config file:', 'Agent config (*.json)|*.json|All files|*.*', '.json');
@@ -124,6 +127,14 @@ begin
   ManualPage.Add('CompuLab server address:', False);
   ManualPage.Add('Agent secret:', True);
   ManualPage.Values[0] := ExpandConstant('{param:SERVER|}');
+
+  StudentsPage := CreateInputQueryPage(ManualPage.ID, 'Student accounts',
+    'Which Windows accounts get the CompuLab lock screen',
+    'Enter the Windows account name(s) students sign in with on this PC, separated by commas (for example: student, LAB\student2). ' +
+    'They must be standard (non-administrator) accounts. Only these accounts get the lock screen; administrators and IT staff are not locked.' + #13#10#13#10 +
+    'Leave this empty when updating an installed agent to keep its current setting.');
+  StudentsPage.Add('Student Windows accounts:', False);
+  StudentsPage.Values[0] := ExpandConstant('{param:STUDENTS|}');
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -152,11 +163,18 @@ begin
       Result := False;
     end;
   end;
+  // Silent installs are checked by install-agent.ps1 instead (clear message
+  // in the install log; a silent wizard would just abort here).
+  if (CurPageID = StudentsPage.ID) and (Trim(StudentsPage.Values[0]) = '') and not HasInstalledConfig() and not WizardSilent() then
+  begin
+    MsgBox('Enter at least one Windows account that students sign in with (a standard account, not an administrator).', mbError, MB_OK);
+    Result := False;
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  Params, ConfigFile, Payload: String;
+  Params, ConfigFile, Payload, Students: String;
   Code, Show: Integer;
 begin
   if CurStep <> ssPostInstall then Exit;
@@ -172,6 +190,9 @@ begin
   Params := '-NoProfile -ExecutionPolicy Bypass -File "' + Payload + '\installer\agent\install-agent.ps1" -NonInteractive -SourceDir "' +
     Payload + '\agent-bundle"';
   if ConfigFile <> '' then Params := Params + ' -ConfigFile "' + ConfigFile + '"';
+  Students := Trim(StudentsPage.Values[0]);
+  StringChangeEx(Students, '"', '', True);
+  if Students <> '' then Params := Params + ' -StudentAccounts "' + Students + '"';
 #ifdef TestBuild
   Params := Params + ' ' + ExpandConstant('{param:PSARGS|}');
 #endif

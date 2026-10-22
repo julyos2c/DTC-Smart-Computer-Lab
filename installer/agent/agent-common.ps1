@@ -9,6 +9,11 @@ $ErrorActionPreference = 'Stop'
 
 $script:AgentTaskName = 'CompuLab Agent'
 $script:AgentExeName = 'CompuLabAgent.exe'
+# Windows accounts in this local group get the lock screen at sign-in;
+# everyone else (administrators, IT staff) does not.
+$script:StudentGroupName = 'CompuLab Students'
+$script:UsersGroupSid = 'S-1-5-32-545'           # BUILTIN\Users: every account (older installs)
+$script:AdministratorsGroupSid = 'S-1-5-32-544'
 # Same list as REJECTED_SECRETS in lab_pc_agent\agent.py: placeholders and a
 # secret published in the project's history are never accepted.
 $script:RejectedSecrets = @('', 'SET-IN-agent_config.local.json', 'danao_technological_college', 'PASTE-PC_AGENT_SHARED_SECRET-HERE')
@@ -64,7 +69,7 @@ function Get-AgentConfigProblems($Config) {
     $problems = @()
     if (-not $Config) { return ,@('The configuration is empty.') }
     $secret = [string]$Config.secret
-    if ($script:RejectedSecrets -contains $secret) { $problems += 'secret is missing or still a placeholder: download the PC''s Agent config from CompuLab (PC status > Agent config).' }
+    if ($script:RejectedSecrets -contains $secret) { $problems += 'secret is missing or still a placeholder: download the PC''s Agent config from CompuLab (PC power status > Agent config).' }
     elseif ($secret.Length -lt 16) { $problems += 'secret is too short to be the server''s PC_AGENT_SHARED_SECRET.' }
     try { Test-ServerUrlFormat ([string]$Config.server_url) | Out-Null } catch { $problems += "server_url: $($_.Exception.Message)" }
     if ($Config.PSObject.Properties.Name -contains 'port') {
@@ -161,10 +166,13 @@ function Set-AgentFirewall([string]$ServerUrl, [int]$AgentPort = 5555) {
     Write-Ok "Port $AgentPort and ping accept the CompuLab server ($($serverIps -join ', ')) only"
 }
 
-function New-AgentTaskDefinition([string]$InstallDir, [string]$LabUser) {
+function New-AgentTaskDefinition([string]$InstallDir, [string]$GroupSid) {
     # The parts of the "CompuLab Agent" task, without registering anything
     # (installer\tests\test-installer-logic.ps1 checks them without admin rights).
-    # Starts the lock screen at every Windows sign-in (also after a restart).
+    # Starts the lock screen when a member of $GroupSid signs in to Windows
+    # (also after a restart): normally the "CompuLab Students" group, so
+    # administrators and IT staff are never locked; S-1-5-32-545 (Users) =
+    # every account (installations from before the group existed).
     # A logon task, not a service: the lock screen must run in the signed-in
     # user's desktop. A logon trigger cannot "restart the program when it
     # exits", so the trigger repeats every minute while the user is signed in:
@@ -173,13 +181,8 @@ function New-AgentTaskDefinition([string]$InstallDir, [string]$LabUser) {
     $launch = Get-AgentLaunch $InstallDir
     $action = if ($launch.Args) { New-ScheduledTaskAction -Execute $launch.Exe -Argument $launch.Args -WorkingDirectory $InstallDir }
               else { New-ScheduledTaskAction -Execute $launch.Exe -WorkingDirectory $InstallDir }
-    if ($LabUser) {
-        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $LabUser
-        $taskPrincipal = New-ScheduledTaskPrincipal -UserId $LabUser -LogonType Interactive -RunLevel Limited
-    } else {
-        $trigger = New-ScheduledTaskTrigger -AtLogOn
-        $taskPrincipal = New-ScheduledTaskPrincipal -GroupId 'S-1-5-32-545' -RunLevel Limited   # BUILTIN\Users
-    }
+    $trigger = New-ScheduledTaskTrigger -AtLogOn
+    $taskPrincipal = New-ScheduledTaskPrincipal -GroupId $GroupSid -RunLevel Limited
     # No duration = repeat for as long as the user is signed in.
     $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1)).Repetition
     $trigger.Repetition.StopAtDurationEnd = $false
@@ -188,9 +191,102 @@ function New-AgentTaskDefinition([string]$InstallDir, [string]$LabUser) {
     return @{ Action = $action; Trigger = $trigger; Principal = $taskPrincipal; Settings = $taskSettings }
 }
 
-function Register-AgentTask([string]$InstallDir, [string]$LabUser) {
-    $definition = New-AgentTaskDefinition $InstallDir $LabUser
+function Register-AgentTask([string]$InstallDir, [string]$GroupSid) {
+    $definition = New-AgentTaskDefinition $InstallDir $GroupSid
     Register-ScheduledTask -TaskName $script:AgentTaskName @definition -Force | Out-Null
+}
+
+# ---------------------------------------------------------------- who gets the lock screen
+function ConvertTo-AccountList([string[]]$Text) {
+    # "student1, LAB\student2; student3" -> 'student1', 'LAB\student2', 'student3'
+    # (a plain list: callers wrap it in @() - nothing for an empty list).
+    $Text | ForEach-Object { "$_" -split '[,;]' } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique
+}
+
+function Get-ExistingAgentScope {
+    # How the installed "CompuLab Agent" task decides who is locked:
+    # @{ Kind = 'StudentGroup' | 'AllUsers' | 'SingleUser' | 'None'; Account }.
+    $task = Get-ScheduledTask -TaskName $script:AgentTaskName -ErrorAction SilentlyContinue
+    if (-not $task) { return @{ Kind = 'None'; Account = '' } }
+    $p = $task.Principal
+    if ($p.GroupId) {
+        $sid = "$($p.GroupId)"
+        try { if ($sid -notmatch '^S-1-') { $sid = (New-Object Security.Principal.NTAccount($p.GroupId)).Translate([Security.Principal.SecurityIdentifier]).Value } } catch { }
+        if ($sid -eq $script:UsersGroupSid) { return @{ Kind = 'AllUsers'; Account = '' } }
+        return @{ Kind = 'StudentGroup'; Account = "$($p.GroupId)" }
+    }
+    if ($p.UserId) { return @{ Kind = 'SingleUser'; Account = "$($p.UserId)" } }
+    return @{ Kind = 'None'; Account = '' }
+}
+
+function Resolve-AgentScope([switch]$AllUsers, [string[]]$StudentAccounts, $Existing) {
+    # Decides who gets the lock screen. Pure (tested):
+    #   -AllUsers                     -> every Windows account (administrators too)
+    #   student accounts given        -> the CompuLab Students group (those added)
+    #   repair/update, nothing given  -> whatever the installed task does now,
+    #                                    so an update never silently locks or
+    #                                    unlocks different accounts
+    #   new installation              -> the CompuLab Students group
+    # Returns @{ Scope = 'StudentGroup' | 'AllUsers'; AddAccounts; Reason }.
+    $accounts = @(ConvertTo-AccountList $StudentAccounts)
+    if ($AllUsers) { return @{ Scope = 'AllUsers'; AddAccounts = @(); Reason = 'requested (-AllUsers): every Windows account, administrators included' } }
+    if ($accounts.Count) { return @{ Scope = 'StudentGroup'; AddAccounts = $accounts; Reason = 'student accounts given' } }
+    switch ("$($Existing.Kind)") {
+        'StudentGroup' { return @{ Scope = 'StudentGroup'; AddAccounts = @(); Reason = 'kept from the installed agent' } }
+        'AllUsers'     { return @{ Scope = 'AllUsers'; AddAccounts = @(); Reason = 'kept from the installed agent (older setting: every account, administrators included)' } }
+        'SingleUser'   { return @{ Scope = 'StudentGroup'; AddAccounts = @($Existing.Account); Reason = "the installed agent's single student account $($Existing.Account) moves into the group" } }
+    }
+    return @{ Scope = 'StudentGroup'; AddAccounts = @(); Reason = 'new installation' }
+}
+
+function Get-StudentAccountProblems([string[]]$Accounts, [string[]]$KnownAccounts, [string[]]$AdminAccounts) {
+    # What is wrong with the student accounts to add (empty = fine). Pure:
+    # the caller passes the accounts that exist and the administrators'.
+    # Names are compared without the computer/domain part when that part is
+    # this computer.
+    $short = { param($n) $n = "$n".Trim(); if ($n -match '^(\.|' + [regex]::Escape($env:COMPUTERNAME) + ')\\(.+)$') { $Matches[2] } else { $n } }
+    $known = @($KnownAccounts | ForEach-Object { (& $short $_).ToLower() })
+    $admins = @($AdminAccounts | ForEach-Object { (& $short $_).ToLower() })
+    $problems = @()
+    foreach ($a in $Accounts) {
+        $n = (& $short $a).ToLower()
+        if ($known -notcontains $n) { $problems += "Windows account '$a' does not exist on this PC (Settings > Accounts > Other users)." }
+        elseif ($admins -contains $n) { $problems += "'$a' is an administrator account: students must use a standard account, and administrators are never given the lock screen." }
+    }
+    return ,$problems
+}
+
+# The three below return plain lists: callers wrap them in @().
+function Get-LocalAccountNames {
+    # Local accounts plus domain accounts already known to this PC's groups.
+    $names = @(Get-LocalUser -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    $names += @(Get-LocalGroupMember -SID $script:UsersGroupSid -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    $names | Select-Object -Unique
+}
+
+function Get-AdministratorAccountNames {
+    Get-LocalGroupMember -SID $script:AdministratorsGroupSid -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }
+}
+
+function Get-StudentGroupMembers {
+    if (-not (Get-LocalGroup -Name $script:StudentGroupName -ErrorAction SilentlyContinue)) { return }
+    Get-LocalGroupMember -Group $script:StudentGroupName -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }
+}
+
+function Initialize-StudentGroup([string[]]$Accounts) {
+    # Creates the "CompuLab Students" group if needed, adds $Accounts, and
+    # returns the group's SID (for the task) and its members.
+    $group = Get-LocalGroup -Name $script:StudentGroupName -ErrorAction SilentlyContinue
+    if (-not $group) {
+        $group = New-LocalGroup -Name $script:StudentGroupName -Description 'Windows accounts that get the CompuLab lock screen at sign-in (CompuLab Agent). Never add administrators.'
+        Write-Ok "Created the local group '$($script:StudentGroupName)'"
+    }
+    $members = @(Get-StudentGroupMembers)
+    foreach ($a in $Accounts) {
+        $already = @($members | Where-Object { $_ -ieq $a -or $_ -like "*\$a" }).Count -gt 0
+        if (-not $already) { Add-LocalGroupMember -Group $script:StudentGroupName -Member $a; Write-Ok "Added $a to '$($script:StudentGroupName)'" }
+    }
+    return @{ Sid = $group.SID.Value; Members = @(Get-StudentGroupMembers) }
 }
 
 function Get-AgentFirewallRuleSpecs([string[]]$ServerIps, [int]$AgentPort = 5555) {

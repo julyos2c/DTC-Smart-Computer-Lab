@@ -24,11 +24,13 @@
     8. a plain folder copy installs in Python mode (agent.py + its own venv).
 #>
 [CmdletBinding()]
-param([string]$IsccPath = '', [switch]$KeepFiles, [switch]$SkipPythonMode)
+param([string]$IsccPath = '', [switch]$KeepFiles, [switch]$SkipPythonMode,
+      # Default: the last build's staged payload; stage-test-payload.ps1 makes one from the working tree.
+      [string]$Payload = '')
 
 $ErrorActionPreference = 'Continue'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$Payload = Join-Path $Repo 'installer\build\work\agent-payload'
+if (-not $Payload) { $Payload = Join-Path $Repo 'installer\build\work\agent-payload' }
 $Tmp = Join-Path $env:TEMP ("compulab-agent-install-test-" + (Get-Date -Format 'HHmmss'))
 $AgentDir = Join-Path $Tmp 'Agent'
 $DataDir = Join-Path $Tmp 'Data'

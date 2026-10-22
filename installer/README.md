@@ -100,6 +100,10 @@ powershell -ExecutionPolicy Bypass -File installer\build\verify-dist.ps1
 powershell -ExecutionPolicy Bypass -File installer\tests\test-installer-logic.ps1      # script logic + admin-only definitions (not installed)
 powershell -ExecutionPolicy Bypass -File installer\tests\test-server-install.ps1       # server setup end to end (needs a build + MySQL/MariaDB server files)
 powershell -ExecutionPolicy Bypass -File installer\tests\test-agent-install.ps1        # agent setup end to end, no Python on PATH (needs a build)
+# The end-to-end tests use the last build's staged payload. To test uncommitted changes without a
+# release build: stage a TEST payload from the working tree (reuses WinSW, packages and the packaged
+# agent of the last build; refuses if lab_pc_agent\agent.py changed since) and pass it with -Payload:
+powershell -ExecutionPolicy Bypass -File installer\tests\stage-test-payload.ps1          # prints the folder
 venv\Scripts\python -m unittest discover -s lab_pc_agent\tests                          # agent queue + agent-to-server
 venv\Scripts\python manage.py test                                                      # Django (includes system/tests.py)
 ```

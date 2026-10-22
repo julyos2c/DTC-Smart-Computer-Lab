@@ -189,6 +189,27 @@ class LiveServerAgentTests(unittest.TestCase):
         self.assertIsNotNone(contact[0])
         self.assertEqual(contact[1], agent.AGENT_VERSION)
 
+    def test_per_pc_secret_replaces_the_shared_one(self):
+        """An agent reinstalled with its PC's own secret (Agent config) is
+        accepted, and from then on the shared secret no longer works for it."""
+        agent._save_pending([])
+        if self.server is None:
+            self.start_server()
+        own = 'own-secret-for-INT-01-' + 'x' * 30
+        orm('from labs.models import PC\n'
+            f'PC.objects.filter(pc_id="INT-01").update(agent_secret="{own}", agent_secret_in_use=False)')
+
+        def post(secret, event_id):
+            item = {'path': '/labs/api/pc-agent-end-session/', 'queued_at': time.time(),
+                    'body': {'reason': 'manual', 'secret': secret, 'event_id': event_id, 'agent_version': 'test'}}
+            return agent._post_callback(self.url, item, timeout=10)[0]
+
+        self.assertEqual(post(SECRET, 'shared-before-move'), agent.DELIVERED)   # still on the old file
+        self.assertEqual(post(own, 'own-secret-1'), agent.DELIVERED)             # reinstalled with the new file
+        self.assertEqual(query("SELECT agent_secret_in_use FROM labs_pc WHERE pc_id = 'INT-01'")[0][0], 1)
+        self.assertEqual(post(SECRET, 'shared-after-move'), agent.DROP)
+        self.assertEqual(query("SELECT COUNT(*) FROM labs_agenteventreceipt WHERE event_id = 'shared-after-move'")[0][0], 0)
+
     def test_wrong_secret_is_refused_and_dropped(self):
         agent._save_pending([])
         if self.server is None:

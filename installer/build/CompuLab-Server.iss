@@ -9,7 +9,9 @@
 ;
 ; Silent install (Python and MariaDB already installed; the MariaDB root
 ; password in the environment variable COMPULAB_DB_ROOT_PASSWORD):
-;   CompuLab-Server-Setup.exe /VERYSILENT /SERVERADDRESS=192.168.1.10 /PORT=8000
+;   CompuLab-Server-Setup.exe /VERYSILENT /SERVERADDRESS=192.168.1.10 /PORT=8000 /DBPORT=3306
+; (plus DJANGO_SUPERUSER_EMAIL / DJANGO_SUPERUSER_PASSWORD for the first
+; Administrator on a new installation)
 
 #ifndef Payload
   #error Payload is not defined: build with installer\build\build-installers.ps1
@@ -112,11 +114,15 @@ begin
   AddressPage := CreateInputQueryPage(wpSelectDir, 'Campus address',
     'How lab PCs and staff will reach this server',
     'Enter this server''s fixed campus IP address (reserve it in the router first), for example 192.168.1.10. ' +
-    'Leave it empty to pick from this computer''s addresses during the installation. The port is normally 8000.');
+    'Leave it empty to pick from this computer''s addresses during the installation. The port is normally 8000. ' +
+    'Database port: where MariaDB/MySQL listens on this computer, normally 3306 (another port only if you installed MariaDB on one, ' +
+    'e.g. because XAMPP uses 3306; CompuLab never uses or changes XAMPP).');
   AddressPage.Add('Campus IP address or computer name:', False);
   AddressPage.Add('Port:', False);
+  AddressPage.Add('Database port:', False);
   AddressPage.Values[0] := ExpandConstant('{param:SERVERADDRESS|}');
   AddressPage.Values[1] := ExpandConstant('{param:PORT|8000}');
+  AddressPage.Values[2] := ExpandConstant('{param:DBPORT|3306}');
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -136,6 +142,11 @@ begin
     if (P < 1) or (P > 65535) then
     begin
       MsgBox('The port must be a number from 1 to 65535 (normally 8000).', mbError, MB_OK);
+      Result := False;
+    end
+    else if (StrToIntDef(Trim(AddressPage.Values[2]), 0) < 1) or (StrToIntDef(Trim(AddressPage.Values[2]), 0) > 65535) then
+    begin
+      MsgBox('The database port must be a number from 1 to 65535 (normally 3306).', mbError, MB_OK);
       Result := False;
     end
     else if (Pos('://', AddressPage.Values[0]) > 0) or (Pos(':', AddressPage.Values[0]) > 0) or (Pos(' ', Trim(AddressPage.Values[0])) > 0) then
@@ -176,7 +187,11 @@ begin
   if (not WasInstalled) and (Trim(AddressPage.Values[0]) <> '') then
     Params := Params + ' -ServerAddress "' + Trim(AddressPage.Values[0]) + '"';
   if not WasInstalled then
+  begin
     Params := Params + ' -Port ' + IntToStr(StrToIntDef(Trim(AddressPage.Values[1]), 8000));
+    // An installed server keeps the DB_PORT in its .env (Repair/Update).
+    Params := Params + ' -DbPort ' + IntToStr(StrToIntDef(Trim(AddressPage.Values[2]), 3306));
+  end;
 #ifdef TestBuild
   Params := Params + ' ' + ExpandConstant('{param:PSARGS|}');
 #endif

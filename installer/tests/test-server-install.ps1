@@ -24,14 +24,16 @@
     6. uninstall removes the program files and keeps the data.
 #>
 [CmdletBinding()]
-param([string]$IsccPath = '', [switch]$KeepFiles)
+param([string]$IsccPath = '', [switch]$KeepFiles,
+      # Default: the last build's staged payload; stage-test-payload.ps1 makes one from the working tree.
+      [string]$Payload = '')
 
 # Database and setup programs log normal progress on stderr, which Windows
 # PowerShell 5.1 would turn into errors under 'Stop'; every check below
 # throws explicitly instead.
 $ErrorActionPreference = 'Continue'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$Payload = Join-Path $Repo 'installer\build\work\server-payload'
+if (-not $Payload) { $Payload = Join-Path $Repo 'installer\build\work\server-payload' }
 $Tmp = Join-Path $env:TEMP ("compulab-server-install-test-" + (Get-Date -Format 'HHmmss'))
 $App = Join-Path $Tmp 'CompuLab'
 $script:passed = 0; $script:failed = @()
@@ -95,13 +97,17 @@ try {
     }
     $setup = $builds['0.0.0']
     $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F0B2D52-3C61-4E1B-9A57-2B7C2B1D7E57}_is1'   # test build AppId
-    $psArgs = "-SkipServices -SkipFirewall -SkipBackupTask -DbServiceName none -DbPort $dbPort"
+    # The database port goes in through the setup's own "Database port" field
+    # (/DBPORT) on the first install; an update keeps the one in .env.
+    $psArgs = '-SkipServices -SkipFirewall -SkipBackupTask -DbServiceName none'
+    # A custom backup folder chosen on the first install must survive the update.
+    $customBackups = Join-Path $Tmp 'custom-backups'
     $env:COMPULAB_DB_ROOT_PASSWORD = $rootPw
     $env:DJANGO_SUPERUSER_EMAIL = 'installer.test.admin@gmail.com'
     $env:DJANGO_SUPERUSER_PASSWORD = $adminPw
-    function Invoke-Setup([string]$Log) {
+    function Invoke-Setup([string]$Log, [string]$ExtraPsArgs = '') {
         $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$App`"",
-            '/SERVERADDRESS=127.0.0.1', "/PORT=$webPort", "/PSARGS=`"$psArgs`"", "/LOG=`"$Log`"" -Wait -PassThru
+            '/SERVERADDRESS=127.0.0.1', "/PORT=$webPort", "/DBPORT=$dbPort", "/PSARGS=`"$psArgs $ExtraPsArgs`"", "/LOG=`"$Log`"" -Wait -PassThru
         return $p.ExitCode
     }
     function Get-DbCount([string]$Sql) {
@@ -110,9 +116,15 @@ try {
         [IO.File]::WriteAllText($cnf, "[client]`nuser=$($envv.DB_USER)`npassword=$($envv.DB_PASSWORD)`nhost=127.0.0.1`nport=$dbPort`n")
         try { return [int](& $mysql "--defaults-extra-file=$cnf" -N -B $envv.DB_NAME -e $Sql) } finally { Remove-Item $cnf -Force }
     }
+    function Invoke-DbSql([string]$Sql) {
+        $envv = Read-Env (Join-Path $App '.env')
+        $cnf = Join-Path $Tmp 'app.cnf'
+        [IO.File]::WriteAllText($cnf, "[client]`nuser=$($envv.DB_USER)`npassword=$($envv.DB_PASSWORD)`nhost=127.0.0.1`nport=$dbPort`n")
+        try { & $mysql "--defaults-extra-file=$cnf" $envv.DB_NAME -e $Sql } finally { Remove-Item $cnf -Force }
+    }
 
     Write-Host "`n1. Silent install with CompuLab-Server-Setup (test build)" -ForegroundColor Cyan
-    $code = Invoke-Setup (Join-Path $Tmp 'setup-1.log')
+    $code = Invoke-Setup (Join-Path $Tmp 'setup-1.log') "-BackupRoot $customBackups"
     $setupLog = Get-Content (Join-Path $Tmp 'setup-1.log') -Raw
     Test-Case 'setup finished and install-server.ps1 succeeded' {
         Assert-True ($code -eq 0) "setup exit code $code"
@@ -126,6 +138,19 @@ try {
         Assert-True ($e.DJANGO_DEBUG -eq 'False') 'DEBUG is not off'
         Assert-True ($e.SITE_URL -eq "http://127.0.0.1:$webPort") "SITE_URL $($e.SITE_URL)"
         Assert-True ($e.DJANGO_SECRET_KEY.Length -ge 50 -and $e.DB_PASSWORD.Length -ge 32 -and $e.PC_AGENT_SHARED_SECRET.Length -ge 40) 'weak or missing secrets'
+        Assert-True ($e.DB_PORT -eq "$dbPort") "DB_PORT $($e.DB_PORT) (the setup's Database port field)"
+        Assert-True ($e.COMPULAB_BACKUP_ROOT -eq $customBackups) "COMPULAB_BACKUP_ROOT $($e.COMPULAB_BACKUP_ROOT)"
+    }
+    Test-Case 'the first Administrator was created, verified, and can sign in' {
+        $log = Get-ChildItem (Join-Path $App 'logs') -Filter 'install-*.log' | Sort-Object Name | Select-Object -First 1
+        $t = Get-Content $log.FullName -Raw
+        Assert-True ($t -match 'RESULT: CREATED|Administrator in\*\*\*@gmail\.com created|OK: Administrator account: in\*\*\*@gmail\.com') 'no verified Administrator in the log'
+        $o = & (Join-Path $App 'venv\Scripts\python.exe') (Join-Path $App 'manage.py') ensure_admin --check 2>$null | Out-String
+        Assert-True ($LASTEXITCODE -eq 0 -and $o -match 'ADMIN_OK') $o
+    }
+    Test-Case 'the database port check names the server that owns the port' {
+        $log = Get-ChildItem (Join-Path $App 'logs') -Filter 'install-*.log' | Sort-Object Name | Select-Object -First 1
+        Assert-True ((Get-Content $log.FullName -Raw) -match "OK: Port $dbPort is served by .*mysqld") 'listener check missing'
     }
     Test-Case 'packages came from the bundled offline folder; Python reported as 64-bit' {
         $log = Get-ChildItem (Join-Path $App 'logs') -Filter 'install-*.log' | Sort-Object Name | Select-Object -First 1
@@ -178,12 +203,15 @@ try {
         foreach ($k in 'DJANGO_SECRET_KEY', 'DB_PASSWORD', 'PC_AGENT_SHARED_SECRET', 'SITE_URL') { Assert-True ($before[$k] -eq $after[$k]) "$k changed" }
         Assert-True ((Get-ItemProperty $uninstallKey -ErrorAction SilentlyContinue).DisplayVersion -eq '0.0.1-test') 'Apps list still shows the old version'
     }
-    Test-Case 'a backup was taken before updating' {
-        $b = Get-ChildItem (Join-Path $App 'backups') -Directory -Filter 'compulab-*' | Select-Object -First 1
-        Assert-True $b 'no backup folder'
+    Test-Case 'a backup was taken before updating, in the custom backup folder (not reset to the default)' {
+        $b = Get-ChildItem $customBackups -Directory -Filter 'compulab-*' | Select-Object -First 1
+        Assert-True $b "no backup folder in $customBackups"
         $sql = Join-Path $b.FullName 'database.sql'
         Assert-True ((Test-Path $sql) -and (Get-Item $sql).Length -gt 10000) 'database.sql missing or empty'
         Assert-True (Test-Path (Join-Path $b.FullName 'env.txt')) 'settings not backed up'
+        Assert-True (-not @(Get-ChildItem (Join-Path $App 'backups') -Directory -Filter 'compulab-*' -ErrorAction SilentlyContinue).Count) 'a backup went to C:\CompuLab\backups instead'
+        Assert-True ((Read-Env (Join-Path $App '.env')).COMPULAB_BACKUP_ROOT -eq $customBackups) 'the update reset the backup folder'
+        Assert-True ((Read-Env (Join-Path $App '.env')).DB_PORT -eq "$dbPort") 'the update changed the database port'
     }
     Test-Case 'old program files are cleaned up, data is not duplicated' {
         Assert-True (-not (Test-Path (Join-Path $App 'compulab\STALE_FILE_FROM_OLD_VERSION.py'))) 'stale file left behind'
@@ -192,13 +220,30 @@ try {
 
     Write-Host "`n4. Restore" -ForegroundColor Cyan
     Test-Case 'restore.ps1 brings back the backed-up data' {
-        $backup = Get-ChildItem (Join-Path $App 'backups') -Directory -Filter 'compulab-*' | Sort-Object Name | Select-Object -First 1
+        $backup = Get-ChildItem $customBackups -Directory -Filter 'compulab-*' | Sort-Object Name | Select-Object -First 1
         & (Join-Path $App 'venv\Scripts\python.exe') (Join-Path $App 'manage.py') shell -c "import datetime; from labs.models import Lab; Lab.objects.create(name='Added after backup', opening_time=datetime.time(7), closing_time=datetime.time(17))" 2>$null
         Assert-True ((Get-DbCount "SELECT COUNT(*) FROM labs_lab WHERE name = 'Added after backup'") -eq 1) 'marker not created'
         & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $App 'installer\server\restore.ps1') -BackupFolder $backup.FullName -Force *> (Join-Path $Tmp 'restore.log')
         Assert-True ($LASTEXITCODE -eq 0) "restore exit code $LASTEXITCODE (see restore.log)"
         Assert-True ((Get-DbCount "SELECT COUNT(*) FROM labs_lab WHERE name = 'Added after backup'") -eq 0) 'data after the backup is still there'
-        Assert-True (Test-Path (Join-Path $App 'backups\before-restore')) 'no safety backup before restoring'
+        Assert-True (Test-Path (Join-Path $customBackups 'before-restore')) 'no safety backup (in the backup folder) before restoring'
+    }
+    Test-Case '"Back Up CompuLab Now" (backup.ps1 -Log, no folder given) uses the configured backup folder and says so' {
+        $before = @(Get-ChildItem $customBackups -Directory -Filter 'compulab-*').Count
+        $o = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $App 'installer\server\backup.ps1') -Log 2>&1 | Out-String
+        Assert-True ($LASTEXITCODE -eq 0) "exit code $LASTEXITCODE"
+        Assert-True ($o -match [regex]::Escape("Backup folder: $customBackups (from .env")) 'destination not shown'
+        Assert-True ($o -match 'Backup saved in') 'result not shown'
+        Assert-True (@(Get-ChildItem $customBackups -Directory -Filter 'compulab-*').Count -eq $before + 1) 'no new backup in the configured folder'
+    }
+    Test-Case 'a backup never writes into an existing backup folder (same-second name taken)' {
+        $root = Join-Path $Tmp 'same-second'
+        $existing = Join-Path $root 'compulab-20261023-120000'
+        New-Item -ItemType Directory -Force $existing | Out-Null; Set-Content (Join-Path $existing 'marker.txt') 'existing backup'
+        $made = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $App 'installer\server\backup.ps1') -BackupRoot $root -Stamp '20261023-120000' 2>$null | Select-Object -Last 1
+        Assert-True ("$made" -like '*\compulab-20261023-120000-2') "backup went to '$made'"
+        Assert-True (Test-Path (Join-Path $made 'database.sql')) 'no database.sql in the new folder'
+        Assert-True ((@(Get-ChildItem $existing).Name -join ',') -eq 'marker.txt') 'the existing backup folder was changed'
     }
     Test-Case 'nightly backup command (backup.ps1 -Log, as the task runs it): logs, exit code 0, no password in the log' {
         $nightly = Join-Path $Tmp 'nightly'
@@ -240,6 +285,48 @@ try {
         $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -NonInteractive 2>&1 | Out-String
         Assert-True ($LASTEXITCODE -eq 1 -and $o -match 'Administrator') 'not refused'
     }
+    Test-Case 'database port with no MariaDB/MySQL on it: clear message and next step, exit code 1, .env unchanged' {
+        $nothing = Get-FreePort
+        $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -NonInteractive -SkipServices -SkipFirewall -SkipBackupTask -DbServiceName none -DbPort $nothing 2>&1 | Out-String
+        Assert-True ($LASTEXITCODE -eq 1 -and $o -match "No database server is listening on port $nothing" -and $o -match '-DbPort') "exit $LASTEXITCODE"
+        Assert-True ((Get-FileHash (Join-Path $App '.env')).Hash -eq $envHash) '.env changed'
+    }
+    Test-Case 'database port used by a program that is not a database: refused, nothing changed' {
+        $busy = Get-FreePort
+        $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $busy); $listener.Start()
+        try { $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -NonInteractive -SkipServices -SkipFirewall -SkipBackupTask -DbServiceName none -DbPort $busy 2>&1 | Out-String }
+        finally { $listener.Stop() }
+        Assert-True ($LASTEXITCODE -eq 1 -and $o -match 'not a MariaDB/MySQL server') "exit $LASTEXITCODE"
+        Assert-True ((Get-FileHash (Join-Path $App '.env')).Hash -eq $envHash) '.env changed'
+    }
+
+    Write-Host "`n5b. No working Administrator: the installer never reports success" -ForegroundColor Cyan
+    Invoke-DbSql 'UPDATE accounts_user SET is_active = 0 WHERE is_superuser = 1'
+    Test-Case 'unattended run without Administrator details: stops with the reason, exit code 1' {
+        $savedEmail = $env:DJANGO_SUPERUSER_EMAIL; $savedPassword = $env:DJANGO_SUPERUSER_PASSWORD
+        Remove-Item Env:\DJANGO_SUPERUSER_EMAIL, Env:\DJANGO_SUPERUSER_PASSWORD
+        try { $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -NonInteractive -SkipServices -SkipFirewall -SkipBackupTask -DbServiceName none 2>&1 | Out-String }
+        finally { $env:DJANGO_SUPERUSER_EMAIL = $savedEmail; $env:DJANGO_SUPERUSER_PASSWORD = $savedPassword }
+        Assert-True ($LASTEXITCODE -eq 1) "exit code $LASTEXITCODE"
+        Assert-True ($o -match 'deactivated' -and $o -match 'There is no Administrator account yet' -and $o -notmatch 'CompuLab is installed') 'unclear, or reported success'
+    }
+    Test-Case 'non-Gmail Administrator: not created, the reason shown, exit code 1, no password in the log' {
+        $saved = $env:DJANGO_SUPERUSER_EMAIL
+        $env:DJANGO_SUPERUSER_EMAIL = 'it.admin@school.edu.ph'
+        try { $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -NonInteractive -SkipServices -SkipFirewall -SkipBackupTask -DbServiceName none 2>&1 | Out-String }
+        finally { $env:DJANGO_SUPERUSER_EMAIL = $saved }
+        Assert-True ($LASTEXITCODE -eq 1 -and $o -match 'Gmail' -and $o -match 'The first Administrator account was not created') "exit $LASTEXITCODE"
+        Assert-True ($o -notmatch 'CompuLab is installed') 'reported success'
+        Assert-True ((Get-DbCount "SELECT COUNT(*) FROM accounts_user WHERE email = 'it.admin@school.edu.ph'") -eq 0) 'account created anyway'
+        $log = Get-ChildItem (Join-Path $App 'logs') -Filter 'install-*.log' | Sort-Object Name | Select-Object -Last 1
+        Assert-True ((Get-Content $log.FullName -Raw) -notmatch [regex]::Escape($adminPw)) 'password in the install log'
+    }
+    Invoke-DbSql 'UPDATE accounts_user SET is_active = 1 WHERE is_superuser = 1'
+    Test-Case 'repair with a working Administrator: no second account' {
+        $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -NonInteractive -SkipServices -SkipFirewall -SkipBackupTask -DbServiceName none 2>&1 | Out-String
+        Assert-True ($LASTEXITCODE -eq 0 -and $o -match 'OK: Administrator account:') "exit $LASTEXITCODE"
+        Assert-True ((Get-DbCount 'SELECT COUNT(*) FROM accounts_user WHERE is_superuser = 1') -eq 1) 'a second Administrator was created'
+    }
 
     Write-Host "`n6. Uninstall" -ForegroundColor Cyan
     Test-Case 'uninstall removes the program files and keeps the data' {
@@ -248,7 +335,8 @@ try {
         Start-Process $unins.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
         foreach ($i in 1..30) { if (-not (Test-Path (Join-Path $App 'manage.py'))) { break }; Start-Sleep 1 }   # the uninstaller finishes from a temp copy
         Assert-True (-not (Test-Path (Join-Path $App 'manage.py'))) 'program files still there'
-        foreach ($keep in '.env', 'backups', 'logs') { Assert-True (Test-Path (Join-Path $App $keep)) "$keep was deleted" }
+        foreach ($keep in '.env', 'logs') { Assert-True (Test-Path (Join-Path $App $keep)) "$keep was deleted" }
+        Assert-True (@(Get-ChildItem $customBackups -Directory -Filter 'compulab-*').Count -ge 1) 'backups deleted'
         Assert-True ((Get-DbCount 'SELECT COUNT(*) FROM accounts_user') -ge 1) 'database data lost'
     }
 } finally {

@@ -37,7 +37,7 @@ if (-not $Force) {
 }
 
 Write-Step 'Safety backup of the current data'
-if (-not $SafetyBackupRoot) { $SafetyBackupRoot = Join-Path $script:AppDir 'backups\before-restore' }
+if (-not $SafetyBackupRoot) { $SafetyBackupRoot = Join-Path (Get-ConfiguredBackupRoot).Path 'before-restore' }
 & "$PSScriptRoot\backup.ps1" -BackupRoot $SafetyBackupRoot | Out-Null
 
 Stop-CompuLabServices

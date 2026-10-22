@@ -36,7 +36,7 @@ Useful tools during the checks:
 - The site opens within about 2 minutes of the server booting, without anyone signing in on the
   server (services start automatically).
 - Both PCs show the CompuLab lock screen; NETWORK reads **Connected**.
-- PC status shows both PCs **Available**; the Connection column shows a recent "Last contact" and
+- PC power status shows both PCs **Available**; the Connection column shows a recent "Last contact" and
   the agent version (2.2.0); System status → Lab PC agents lists both with "Agent last called" a
   few seconds/minutes ago.
 
@@ -48,7 +48,7 @@ CompuLab, PC firewall rule missing (`agent-status.ps1`), or the PC is on another
 **Steps**: sign in as Admin, Instructor; create and approve a reservation for today; on lab PC 1
 enter the student ID and reservation code; use the PC a minute; press **Lock Now**.
 
-**Expected**: each step works; PC status shows PC 1 **In Use** by the student, then
+**Expected**: each step works; PC power status shows PC 1 **In Use** by the student, then
 **Available** after Lock Now; the activity log shows the unlock and the lock. The footer reads
 *"Local system operational; cloud synchronization not configured."* (or *"Local system
 operational."* when cloud sync is configured).
@@ -157,7 +157,7 @@ shows the remote address next to the campus address; the laptop's Tailscale app 
 ## 13. Access the application from outside the school network
 
 **Steps**: connect the laptop to a different internet connection (phone hotspot), Tailscale on.
-Open the remote address; sign in; open PC status; submit any form (e.g. mark a notification read).
+Open the remote address; sign in; open PC power status; submit any form (e.g. mark a notification read).
 
 **Expected**: the site opens (with a padlock in Serve mode); sign-in, pages and form submissions
 work exactly as on campus; the account's role limits still apply (e.g. an Instructor still cannot
@@ -191,6 +191,42 @@ events queued on PCs), last successful sync, campus and remote addresses. Stop t
 Worker** service: within 2 minutes System status and the Admin footer say *"Background worker
 requires attention: it is not running."*; start it again and the warning clears.
 
+## 17. Only student accounts are locked; IT can always get in
+
+**Steps**: on a lab PC installed with student account `student` (agent setup → Student accounts):
+(a) sign in as `student`; (b) Ctrl+Alt+Del → Switch user → sign in with an administrator account;
+(c) as administrator run `net localgroup "CompuLab Students"` in a Command Prompt and
+`"C:\Program Files\CompuLab Agent\tools\agent-status.ps1"` in PowerShell.
+
+**Expected**: (a) lock screen; (b) normal desktop, no lock screen, also when the CompuLab server is
+switched off; (c) the group lists only the student account(s); "Lock screen for: members of
+'CompuLab Students'". Updating the agent (same or newer setup, fields left empty) keeps all of this.
+
+## 18. Each PC uses its own agent secret
+
+**Steps**: System status → Lab PC agents → note the "Agent secret" column for the PC. PC power status
+→ the PC's row → **Agent config** (download), re-run the agent setup on that PC with the file, sign in
+as the student, wait a minute, refresh System status. Then lock/unlock the PC from PC power status.
+
+**Expected**: before: "shared" (older install) or "own secret downloaded, agent not yet reinstalled";
+after: **own**; lock/unlock still work. The downloaded file of PC A copied to PC B is refused (PC B's
+PC power status actions fail with "its agent secret does not match"; reinstall PC B with its own
+file afterwards). Only when every PC shows "own": `PC_AGENT_REQUIRE_PER_PC_SECRET=True` in `.env`,
+restart both services, and check that all PCs still lock/unlock.
+
+## 19. Emergency unlock page (only from the server PC)
+
+Not tested yet; record the result either way.
+
+**Steps**: (1) While CompuLab runs: PC power status → the PC's row → **Agent config**; open the file
+in Notepad and keep it open (do not save a copy elsewhere). (2) Sign in on the lab PC as the student
+(lock screen). (3) On the **server PC**, open `C:\CompuLab\lab_pc_agent\manual_unlock.html` in a
+browser; enter the lab PC's IP, port `5555` and the `secret` value from the file; click unlock.
+(4) Delete the downloaded file. (5) Repeat step 3 from another computer.
+
+**Expected**: (3) the lab PC unlocks; (5) it does **not** (the lab PC's firewall accepts port 5555 from
+the server only). If (3) fails, note the browser's message: the reliable recovery is scenario 17 (b).
+
 ---
 
 ## Checklist
@@ -213,3 +249,6 @@ requires attention: it is not running."*; start it again and the warning clears.
 | 14 | Remote access fails gracefully | |
 | 15 | LAN without remote access | |
 | 16 | Status page accurate | |
+| 17 | Only students locked; IT can get in | |
+| 18 | Own agent secret per PC | |
+| 19 | Emergency page from the server PC only | |

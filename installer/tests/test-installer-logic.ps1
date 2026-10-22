@@ -213,6 +213,78 @@ Test-Case 'database service choice: never XAMPP, a single real one, else the run
     Assert-Equal 'MySQL84' (Select-DbService @($maria, $mysql84))
     $maria2 = [pscustomobject]@{ Name = 'MariaDB2'; State = 'Stopped'; PathName = 'C:\Program Files\MariaDB 10.11\bin\mysqld.exe' }
     Assert-Throws { Select-DbService @($maria, $maria2) } 'DbServiceName'
+    # The service that owns the database port wins, also among several (but never XAMPP).
+    Assert-Equal 'MariaDB2' (Select-DbService @($maria, $maria2) 'MariaDB2')
+    Assert-True ($null -eq (Select-DbService @($xampp) 'mysql')) 'XAMPP chosen because it owns the port'
+}
+Test-Case 'database port check: no server, XAMPP or another program on the port is refused; MariaDB/MySQL accepted' {
+    Assert-True ((Test-DbListener $null '127.0.0.1' 3306) -match 'No database server is listening on port 3306') 'nothing listening'
+    $xamppL = @{ ProcessId = 1; ProcessPath = 'C:\xampp\mysql\bin\mysqld.exe'; ServiceName = 'mysql' }
+    $msg = Test-DbListener $xamppL '127.0.0.1' 3306
+    Assert-True ($msg -match 'XAMPP' -and $msg -match 'does not use, stop or change' -and $msg -match '3307') "xampp: $msg"
+    $other = @{ ProcessId = 2; ProcessPath = 'C:\Program Files\Some App\server.exe'; ServiceName = '' }
+    Assert-True ((Test-DbListener $other 'localhost' 3306) -match 'not a MariaDB/MySQL server') 'other program accepted'
+    foreach ($ok in 'C:\Program Files\MariaDB 11.4\bin\mysqld.exe', 'C:\Program Files\MariaDB 11.4\bin\mariadbd.exe', 'C:\Program Files\MySQL\MySQL Server 8.4\bin\mysqld.exe', '') {
+        Assert-True ($null -eq (Test-DbListener @{ ProcessId = 3; ProcessPath = $ok; ServiceName = 'MariaDB' } '127.0.0.1' 3307)) "refused $ok"
+    }
+    Assert-True ($null -eq (Test-DbListener $null '10.0.0.5' 3306)) 'a database on another computer is not checked here'
+}
+Test-Case 'repair cannot switch to another database name or user (installer check, before any change)' {
+    $text = Get-Content (Join-Path $Repo 'installer\server\install-server.ps1') -Raw
+    Assert-True ($text -match 'cannot be changed on an existing installation') 'guard missing'
+    Assert-True ($text -match "Set-DotEnvValue \`$pair\[1\]") 'explicit DbPort/DbHost change not written to .env'
+}
+Test-Case 'backup folder: format rules, writable check, and the nightly task line round-trips' {
+    Assert-True ($null -eq (Test-BackupRootFormat 'E:\CompuLabBackups')) 'drive path refused'
+    Assert-True ($null -eq (Test-BackupRootFormat '\\nas\share\CompuLab')) 'UNC refused'
+    foreach ($bad in '', 'backups', '\backups', 'E:backups', 'E:\Back|ups') { Assert-True (Test-BackupRootFormat $bad) "accepted '$bad'" }
+    $writable = Join-Path $Tmp 'backup root with space'
+    Assert-True ($null -eq (Test-BackupRoot $writable)) 'writable folder refused'
+    Assert-True (Test-Path $writable) 'folder not created'
+    Assert-Equal 0 @(Get-ChildItem $writable -Force).Count 'write test left a file behind'
+    $file = Join-Path $Tmp 'not-a-folder.txt'; Set-Content $file 'x'
+    Assert-True ((Test-BackupRoot (Join-Path $file 'sub')) -match 'Cannot write') 'path under a file accepted'
+    $d = New-BackupTaskDefinition 'C:\CompuLab\installer\server\backup.ps1' 'E:\My Backups'
+    Assert-Equal 'E:\My Backups' (Get-BackupRootFromTaskArguments $d.Action.Arguments)
+    Assert-Equal 'D:\B' (Get-BackupRootFromTaskArguments '-File x.ps1 -BackupRoot D:\B -Log')
+    Assert-True ($null -eq (Get-BackupRootFromTaskArguments '-File x.ps1 -Log')) 'no -BackupRoot'
+}
+Test-Case 'configured backup folder: .env value wins, otherwise the default (never silently reset)' {
+    [IO.File]::WriteAllLines($script:EnvFile, [string[]]@('SITE_URL=http://10.0.0.5:8000', 'COMPULAB_BACKUP_ROOT=E:\CompuLabBackups'))
+    $c = Get-ConfiguredBackupRoot
+    Assert-Equal 'E:\CompuLabBackups' $c.Path
+    Assert-True ($c.Source -match '\.env') $c.Source
+    [IO.File]::WriteAllLines($script:EnvFile, [string[]]@('SITE_URL=http://10.0.0.5:8000'))
+    $c = Get-ConfiguredBackupRoot
+    # No task named "CompuLab nightly backup" on a development PC: the default.
+    if (-not (Get-ScheduledTask -TaskName $script:BackupTaskName -ErrorAction SilentlyContinue)) { Assert-Equal $script:DefaultBackupRoot $c.Path }
+    Remove-Item $script:EnvFile
+    $text = Get-Content (Join-Path $Repo 'installer\server\install-server.ps1') -Raw
+    Assert-True ($text -match 'BackupRoot = \$configuredBackup\.Path') 'install-server.ps1 does not start from the configured folder'
+    Assert-True ($text -match "Set-DotEnvValue 'COMPULAB_BACKUP_ROOT'") 'install-server.ps1 does not record the folder'
+    foreach ($f in 'backup.ps1', 'update.ps1', 'restore.ps1') {
+        Assert-True ((Get-Content (Join-Path $Repo "installer\server\$f") -Raw) -match 'Get-ConfiguredBackupRoot') "$f ignores the configured folder"
+    }
+    Assert-True ((Get-Content (Join-Path $Repo 'installer\server\Backup Now.cmd') -Raw) -match 'backup\.ps1" -Log') 'Back Up Now does not log'
+}
+Test-Case 'first Administrator: email rules and the ensure_admin result line' {
+    Assert-True ($null -eq (Test-AdminEmail 'lab.admin.example@gmail.com')) 'gmail refused'
+    Assert-True ($null -eq (Test-AdminEmail ' Lab.Admin@Gmail.com ')) 'mixed case refused'
+    foreach ($bad in '', 'admin', 'admin@school.edu.ph', 'a b@gmail.com') { Assert-True (Test-AdminEmail $bad) "accepted '$bad'" }
+    $r = ConvertFrom-EnsureAdminOutput @('System check...', 'RESULT: CREATED: Administrator la***@gmail.com created.') 0
+    Assert-Equal 'CREATED|0' "$($r.Code)|$($r.ExitCode)"
+    $r = ConvertFrom-EnsureAdminOutput @('RESULT: INVALID: The password is not accepted: This password is too common.') 2
+    Assert-Equal 'INVALID|2' "$($r.Code)|$($r.ExitCode)"
+    $r = ConvertFrom-EnsureAdminOutput @('Traceback (most recent call last):', 'django.db.utils.OperationalError: no such table') 1
+    Assert-True ($r.Code -eq 'ERROR' -and $r.Message -match 'OperationalError') $r.Message
+    $r = ConvertFrom-EnsureAdminOutput @() 0
+    Assert-True ($r.ExitCode -ne 0) 'empty output treated as success'
+}
+Test-Case 'installer never reports success without a working Administrator (code check)' {
+    $text = Get-Content (Join-Path $Repo 'installer\server\install-server.ps1') -Raw
+    Assert-True ($text -notmatch 'createsuperuser') 'the unchecked createsuperuser call is back'
+    Assert-True ($text -match "Invoke-EnsureAdmin @\('--check'\)") 'no final check'
+    Assert-True ($text -match 'The first Administrator account was not created') 'no failure message'
 }
 
 Write-Host "`nAdministrator-only configuration, checked WITHOUT installing it" -ForegroundColor Cyan
@@ -276,6 +348,24 @@ Test-Case 'nightly backup task: daily 1:30 AM as SYSTEM, catches up a missed nig
     Assert-True ($a.Arguments -match '-File "([^"]+)"' -and (Test-Path $Matches[1])) "script path in '$($a.Arguments)'"
     Assert-True ($a.Arguments -match '-BackupRoot "E:\\CompuLab Backups"' -and $a.Arguments -match ' -Log$') $a.Arguments
 }
+Test-Case 'Server Status shortcut: offers the UAC prompt for the full report, otherwise runs the labelled limited report' {
+    $cmd = Get-Content (Join-Path $Repo 'installer\server\Server Status.cmd') -Raw
+    Assert-True ($cmd -match 'net session' -and $cmd -match 'choice /c FL' -and $cmd -match "Start-Process -FilePath '%~f0' -Verb RunAs") 'no elevation choice'
+    Assert-True ($cmd -match ':limited\s+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0server-status\.ps1"') 'limited path does not run the report'
+    $iss = Get-Content (Join-Path $Repo 'installer\build\CompuLab-Server.iss') -Raw
+    Assert-True ($iss -match 'CompuLab Server Status"; Filename: "\{app\}\\installer\\server\\Server Status\.cmd"') 'Start-menu shortcut target changed'
+}
+Test-Case 'server-status.ps1 without administrator rights: says LIMITED, skips admin-only checks, exits normally' {
+    if (Test-IsAdmin) { Write-Host '         (running as administrator: limited mode not exercised)' -ForegroundColor DarkYellow; return }
+    $copy = Join-Path $Tmp 'statusapp'
+    New-Item -ItemType Directory -Force (Join-Path $copy 'installer') | Out-Null
+    Copy-Item (Join-Path $Repo 'installer\server') (Join-Path $copy 'installer\server') -Recurse
+    $o = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $copy 'installer\server\server-status.ps1') 2>&1 | Out-String
+    Assert-True ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+    Assert-True ($o -match 'LIMITED REPORT') 'not labelled limited'
+    Assert-True ($o -match 'Firewall rule\s+needs administrator' -and $o -match 'Nightly backup task\s+needs administrator') $o
+    Assert-True ($o -match 'Backup folder\s+.*statusapp\\backups \(from default\)') 'backup folder not shown'
+}
 
 Write-Host "`nAgent installer logic" -ForegroundColor Cyan
 . (Join-Path $Repo 'installer\agent\agent-common.ps1')
@@ -320,9 +410,9 @@ Test-Case 'agent config writes keep the secret and other keys' {
     $c = Read-AgentConfig $f
     Assert-Equal ('z' * 40) $c.secret; Assert-Equal 'http://b:8000' $c.server_url; Assert-Equal 'PC 07' $c.pc_name
 }
-Test-Case 'agent start-up task (not registered): every sign-in, back within a minute, never stopped, one copy, standard rights' {
+Test-Case 'agent start-up task (not registered): sign-in of the given group, back within a minute, never stopped, one copy, standard rights' {
     $d = Join-Path $Tmp 'agentdir'   # holds a stand-in CompuLabAgent.exe (test above)
-    $def = New-AgentTaskDefinition $d ''
+    $def = New-AgentTaskDefinition $d 'S-1-5-32-545'
     $task = New-ScheduledTask @def
     $t = $task.Triggers[0]
     Assert-Equal 'MSFT_TaskLogonTrigger' $t.CimClass.CimClassName
@@ -332,15 +422,55 @@ Test-Case 'agent start-up task (not registered): every sign-in, back within a mi
     Assert-Equal 'IgnoreNew' $task.Settings.MultipleInstances
     Assert-Equal 'PT0S' $task.Settings.ExecutionTimeLimit
     Assert-True (-not $task.Settings.DisallowStartIfOnBatteries -and -not $task.Settings.StopIfGoingOnBatteries) 'battery rules stop the agent'
-    $sid = (New-Object Security.Principal.NTAccount($task.Principal.GroupId)).Translate([Security.Principal.SecurityIdentifier]).Value
+    $toSid = { param($id) if ("$id" -match '^S-1-') { "$id" } else { (New-Object Security.Principal.NTAccount($id)).Translate([Security.Principal.SecurityIdentifier]).Value } }
+    $sid = & $toSid $task.Principal.GroupId
     Assert-Equal 'S-1-5-32-545|Limited' "$sid|$($task.Principal.RunLevel)"
     Assert-Equal (Join-Path $d 'CompuLabAgent.exe') $task.Actions[0].Execute
     Assert-Equal $d $task.Actions[0].WorkingDirectory
-    $me = "$env:USERDOMAIN\$env:USERNAME"
-    $defOne = New-AgentTaskDefinition $d $me
-    $one = New-ScheduledTask @defOne
-    Assert-Equal "$me|Interactive|Limited" "$($one.Principal.UserId)|$($one.Principal.LogonType)|$($one.Principal.RunLevel)"
-    Assert-Equal 'PT1M' $one.Triggers[0].Repetition.Interval
+    # The student group case: the task targets exactly the group it is given
+    # (an existing built-in group stands in for "CompuLab Students" here).
+    $defGroup = New-AgentTaskDefinition $d 'S-1-5-32-555'
+    $g = New-ScheduledTask @defGroup
+    $gsid = & $toSid $g.Principal.GroupId
+    Assert-Equal 'S-1-5-32-555|Limited|PT1M' "$gsid|$($g.Principal.RunLevel)|$($g.Triggers[0].Repetition.Interval)"
+    Assert-True (-not $g.Triggers[0].UserId) 'trigger limited to one user'
+}
+Test-Case 'who gets the lock screen: students group by default, kept on repair/update, all users only on request' {
+    $none = @{ Kind = 'None'; Account = '' }
+    $r = Resolve-AgentScope -StudentAccounts @('') -Existing $none
+    Assert-Equal 'StudentGroup|0' "$($r.Scope)|$(@($r.AddAccounts).Count)"
+    $r = Resolve-AgentScope -StudentAccounts @('student1, LAB\student2;student1', '') -Existing $none
+    Assert-Equal 'StudentGroup|student1,LAB\student2' "$($r.Scope)|$($r.AddAccounts -join ',')"
+    # An update of an older install (task for every account) keeps that until told otherwise: no surprise unlocking or locking.
+    $r = Resolve-AgentScope -StudentAccounts @() -Existing @{ Kind = 'AllUsers'; Account = '' }
+    Assert-True ($r.Scope -eq 'AllUsers' -and $r.Reason -match 'administrators included') $r.Reason
+    $r = Resolve-AgentScope -StudentAccounts @('student') -Existing @{ Kind = 'AllUsers'; Account = '' }
+    Assert-Equal 'StudentGroup' $r.Scope
+    $r = Resolve-AgentScope -StudentAccounts @() -Existing @{ Kind = 'StudentGroup'; Account = 'CompuLab Students' }
+    Assert-True ($r.Scope -eq 'StudentGroup' -and $r.Reason -match 'kept') $r.Reason
+    $r = Resolve-AgentScope -StudentAccounts @() -Existing @{ Kind = 'SingleUser'; Account = 'LAB\student' }
+    Assert-Equal 'StudentGroup|LAB\student' "$($r.Scope)|$($r.AddAccounts -join ',')"
+    $r = Resolve-AgentScope -AllUsers -StudentAccounts @('student') -Existing $none
+    Assert-Equal 'AllUsers' $r.Scope
+}
+Test-Case 'student accounts must exist and must not be administrators' {
+    $known = @('student', "$env:COMPUTERNAME\student2", 'LAB\student3', 'itadmin')
+    $admins = @("$env:COMPUTERNAME\itadmin", 'Administrator')
+    Assert-Equal 0 (Get-StudentAccountProblems @('student', 'student2', ".\student", 'LAB\student3') $known $admins).Count
+    $p = Get-StudentAccountProblems @('itadmin', 'ghost') $known $admins
+    Assert-True ($p.Count -eq 2 -and $p[0] -match 'administrator account' -and $p[1] -match 'does not exist') ($p -join ' | ')
+    Assert-Equal 'a,b,c' ((ConvertTo-AccountList 'a, b;;c ,a') -join ',')
+}
+Test-Case 'agent installer: scope decided and checked before any change; uses the group SID for the task' {
+    $text = Get-Content (Join-Path $Repo 'installer\agent\install-agent.ps1') -Raw
+    $check = $text.IndexOf('Checking which Windows accounts get the lock screen'); $copy = $text.IndexOf('Installing the agent in')
+    Assert-True ($check -gt 0 -and $check -lt $copy) 'accounts are checked after files were changed'
+    Assert-True ($text -match 'Register-AgentTask \$InstallDir \$group\.Sid') 'task not bound to the students group'
+    Assert-True ($text -match 'the lock screen would start for nobody') 'empty group not refused'
+    $iss = Get-Content (Join-Path $Repo 'installer\build\CompuLab-Agent.iss') -Raw
+    Assert-True ($iss -match '-StudentAccounts' -and $iss -match "\{param:STUDENTS\|\}") 'setup does not pass the student accounts'
+    # Regression: the page's own check aborted every silent install ("Failed to proceed to next wizard page").
+    Assert-True ($iss -match 'StudentsPage\.ID\)[^\r\n]*not WizardSilent\(\)') 'the student page check runs in silent installs'
 }
 Test-Case 'agent firewall rules: port 5555 and ping from the server only; New-NetFirewallRule -WhatIf accepts them' {
     $specs = Get-AgentFirewallRuleSpecs @('192.168.1.10') 5555
@@ -399,6 +529,15 @@ Test-Case 'Inno Setup scripts call scripts that exist' {
             Assert-True (Test-Path (Join-Path $Repo $m.Groups[1].Value)) "$($iss.Name) -> missing $($m.Groups[1].Value)"
         }
     }
+}
+Test-Case 'the menu is called "PC power status" everywhere the operator is told where to click' {
+    $files = @(Get-ChildItem (Join-Path $Repo 'installer') -Recurse -Include *.ps1, *.iss, *.cmd, *.md |
+               Where-Object { $_.FullName -notmatch '\\installer\\(build\\(work|tools|\.venv)|dist|tests)\\' }) +
+             @(Get-ChildItem (Join-Path $Repo 'docs') -Filter 'COMPULAB_*.md') +
+             @(Get-Item (Join-Path $Repo 'docs\SCHOOL_DEPLOYMENT_GUIDE.md'), (Join-Path $Repo 'docs\MANUAL_VERIFICATION.md'), (Join-Path $Repo 'docs\RELEASE_READINESS.md'), (Join-Path $Repo 'README.md'))
+    $arrow = [string][char]0x2192   # the arrow used in the Markdown guides (kept out of this ASCII-only file)
+    $stale = @($files | Select-String -Pattern "\bPC status\s*(>|$arrow|->)" | ForEach-Object { "$($_.Filename):$($_.LineNumber)" })
+    Assert-True (-not $stale.Count) "old menu path in: $($stale -join ', ')"
 }
 
 Remove-Item $Tmp -Recurse -Force -ErrorAction SilentlyContinue

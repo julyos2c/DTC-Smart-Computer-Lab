@@ -149,7 +149,7 @@
   <div class="section-title">Lab PC agents</div>
   <div class="sys-table-wrap">
   <table class="table">
-    <thead><tr><th>PC</th><th>Lab</th><th>Status</th><th>Agent last called</th><th>Agent version</th><th>Queued on PC</th></tr></thead>
+    <thead><tr><th>PC</th><th>Lab</th><th>Status</th><th>Agent last called</th><th>Agent version</th><th>Queued on PC</th><th>Agent secret</th></tr></thead>
     <tbody>
     {% for pc in agent_pcs %}
       <tr>
@@ -159,13 +159,16 @@
         <td>{{ pc.agent_last_contact_at|date:"M d, H:i:s"|default:"never" }}</td>
         <td>{{ pc.agent_version|default:"—" }}</td>
         <td>{% if pc.agent_pending_events %}<span class="sys-warn">{{ pc.agent_pending_events }}</span>{% else %}0{% endif %}</td>
+        <td>{% if pc.agent_secret_in_use %}own{% elif pc.agent_secret %}<span class="sys-warn">own secret downloaded, agent not yet reinstalled</span>{% else %}<span class="sys-warn">shared (download Agent config and reinstall)</span>{% endif %}</td>
       </tr>
     {% empty %}
-      <tr><td colspan="6" class="sys-muted">No PCs with an IP address yet (Manage labs &rarr; PC &rarr; Edit).</td></tr>
+      <tr><td colspan="7" class="sys-muted">No PCs with an IP address yet (Manage labs &rarr; PC &rarr; Edit).</td></tr>
     {% endfor %}
     </tbody>
   </table>
   </div>
+  <p class="sys-small">Agent secrets: {{ agent_secrets.own }} of {{ agent_secrets.total }} PCs use their own secret{% if agent_secrets.pending %}, {{ agent_secrets.pending }} waiting for the agent setup to be re-run with the new Agent config{% endif %}{% if agent_secrets.shared %}, {{ agent_secrets.shared }} still on the shared secret{% endif %}.
+  {% if agent_secrets.shared_allowed %}The shared secret is still accepted for PCs that have not moved yet. When every PC uses its own secret, set PC_AGENT_REQUIRE_PER_PC_SECRET=True in .env and restart the services.{% else %}The shared secret is switched off.{% endif %}</p>
 </div>
 
 <div class="card">

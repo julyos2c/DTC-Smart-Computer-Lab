@@ -9,7 +9,13 @@
     env.txt        - a copy of .env (contains passwords: keep backups private)
   Keeps the newest 14 daily backups plus one per week for 8 weeks.
   Runs every night from the "CompuLab nightly backup" scheduled task
-  (install-server.ps1); can also be run by hand at any time.
+  (install-server.ps1); can also be run by hand at any time ("Back Up
+  CompuLab Now" in the Start menu).
+
+  Without -BackupRoot it uses the configured backup folder: COMPULAB_BACKUP_ROOT
+  in .env (set by install-server.ps1 -BackupRoot), else the nightly task's
+  folder, else C:\CompuLab\backups - so manual and nightly backups go to the
+  same place.
 
   Put BackupRoot on a SECOND disk, USB drive or network share: a backup on
   the same disk is lost together with the disk.
@@ -22,7 +28,10 @@
 [CmdletBinding()]
 param(
     [string]$BackupRoot = '',
-    [switch]$Log
+    [switch]$Log,
+    # The yyyyMMdd-HHmmss part of the new folder's name; default: now. Only
+    # for the installer tests (two backups with the same name).
+    [string]$Stamp = ''
 )
 
 . "$PSScriptRoot\common.ps1"
@@ -32,15 +41,23 @@ if ($Log) {
         Sort-Object Name -Descending | Select-Object -Skip 60 | Remove-Item -Force -ErrorAction SilentlyContinue
 }
 try {
-    if (-not $BackupRoot) { $BackupRoot = Join-Path $script:AppDir 'backups' }
+    if (-not $BackupRoot) {
+        $configured = Get-ConfiguredBackupRoot
+        $BackupRoot = $configured.Path
+        Write-Host "Backup folder: $BackupRoot (from $($configured.Source))"
+    }
+    $rootProblem = Test-BackupRoot $BackupRoot
+    if ($rootProblem) { throw $rootProblem }
     $envValues = Read-DotEnv
     $dump = Find-MySqlTool 'mysqldump.exe'
     if (-not $dump) { $dump = Find-MySqlTool 'mariadb-dump.exe' }
     if (-not $dump) { throw 'mysqldump.exe / mariadb-dump.exe not found (is MariaDB/MySQL still installed?).' }
 
-    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $stamp = if ($Stamp -match '^\d{8}-\d{6}$') { $Stamp } else { Get-Date -Format 'yyyyMMdd-HHmmss' }
     $target = Join-Path $BackupRoot "compulab-$stamp"
-    New-Item -ItemType Directory -Force -Path $target | Out-Null
+    # Never write into an existing backup (two runs in the same second).
+    for ($n = 2; Test-Path -LiteralPath $target; $n++) { $target = Join-Path $BackupRoot "compulab-$stamp-$n" }
+    New-Item -ItemType Directory -Path $target | Out-Null
 
     Write-Step "Backing up to $target"
     $cnf = New-MySqlDefaultsFile $envValues['DB_USER'] $envValues['DB_PASSWORD'] $envValues['DB_HOST'] $envValues['DB_PORT']
@@ -70,10 +87,12 @@ try {
     $weekly = $all | Group-Object { $_.CreationTime.AddDays(-[int]$_.CreationTime.DayOfWeek).ToString('yyyyMMdd') } |
         Select-Object -First 8 | ForEach-Object { $_.Group | Select-Object -First 1 }
     $keep += $weekly
+    $keep += Get-Item -LiteralPath $target   # never the backup just made
     foreach ($dir in $all) {
         if ($keep.FullName -notcontains $dir.FullName) { Remove-Item $dir.FullName -Recurse -Force }
     }
     Write-Ok "Done. Backups kept: $(@(Get-ChildItem $BackupRoot -Directory -Filter 'compulab-*').Count)"
+    Write-Host "Backup saved in $target" -ForegroundColor Green
     # The newest backup folder, for scripts that call this one (update, restore, tests).
     $target
 } catch {

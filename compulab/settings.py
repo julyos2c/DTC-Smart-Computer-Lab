@@ -348,6 +348,11 @@ if not PC_AGENT_SHARED_SECRET:
     # well-known string is ever accepted. Set it in .env to talk to agents.
     import secrets
     PC_AGENT_SHARED_SECRET = secrets.token_urlsafe(32)
+# Each PC gets its own agent secret when its Agent config is downloaded
+# (labs/agent_auth.py); the shared secret above keeps older installs working
+# until they are moved over. True = refuse the shared secret everywhere (set
+# it once System status shows every PC on its own secret).
+PC_AGENT_REQUIRE_PER_PC_SECRET = env_bool('PC_AGENT_REQUIRE_PER_PC_SECRET', False)
 PC_AGENT_TIMEOUT_SECONDS = 4
 
 # Legacy fallback: if PC_AGENT is not reachable (or you're not using the

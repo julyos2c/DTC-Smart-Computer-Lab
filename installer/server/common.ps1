@@ -18,6 +18,7 @@ $script:ServiceDir = Join-Path $script:AppDir 'service'
 $script:WebService = 'CompuLabWeb'
 $script:WorkerService = 'CompuLabWorker'
 $script:BackupTaskName = 'CompuLab nightly backup'
+$script:DefaultBackupRoot = Join-Path $script:AppDir 'backups'
 $script:DefaultAllowFrom = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10')
 
 function Write-Step([string]$Text) { Write-Host "`n==> $Text" -ForegroundColor Cyan }
@@ -47,6 +48,15 @@ function Invoke-Quiet([string]$Exe, [string[]]$Arguments, $InputText = $null) {
     try {
         if ($null -ne $InputText) { $InputText | & $Exe @Arguments 2>$null } else { & $Exe @Arguments 2>$null }
     } finally { $ErrorActionPreference = $previous }
+}
+
+function Invoke-Captured([string]$Exe, [string[]]$Arguments) {
+    # Runs a program and returns everything it printed (stdout and stderr)
+    # as text lines, without showing it. $LASTEXITCODE tells success.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $Exe @Arguments 2>&1 | ForEach-Object { "$_" } }
+    finally { $ErrorActionPreference = $previous }
 }
 
 function Invoke-Logged([string]$Exe, [string[]]$Arguments) {
@@ -147,7 +157,8 @@ function Test-InstallSettings([hashtable]$S) {
         if ($a -eq 'Any') { $problems += 'AllowFrom "Any" would open CompuLab to every network: list campus ranges instead.' }
         elseif (-not (Test-CidrOrAddress "$a")) { $problems += "AllowFrom entry '$a' is not an address or range like 192.168.0.0/16." }
     }
-    if ($S.AdminEmail -and "$($S.AdminEmail)" -notmatch '^[^@\s]+@gmail\.com$') { $problems += 'AdminEmail must be a @gmail.com address (CompuLab accepts Gmail addresses only).' }
+    if ($S.AdminEmail -and (Test-AdminEmail $S.AdminEmail)) { $problems += "AdminEmail: $(Test-AdminEmail $S.AdminEmail)" }
+    if ($S.BackupRoot -and (Test-BackupRootFormat "$($S.BackupRoot)")) { $problems += "BackupRoot: $(Test-BackupRootFormat "$($S.BackupRoot)")" }
     return ,$problems
 }
 
@@ -233,6 +244,61 @@ function Initialize-DotEnv([hashtable]$S, [string[]]$LanAddresses, [switch]$Work
     }
     Protect-EnvFile
     return $firstRun
+}
+
+# ---------------------------------------------------------------- backup location
+function Get-BackupRootFromTaskArguments([string]$Arguments) {
+    # The -BackupRoot of the nightly task's command line, or $null.
+    if ($Arguments -match '-BackupRoot\s+"([^"]+)"') { return $Matches[1] }
+    if ($Arguments -match '-BackupRoot\s+([^\s"]+)') { return $Matches[1] }
+    return $null
+}
+
+function Get-ConfiguredBackupRoot {
+    # Where backups go, as @{ Path; Source }: COMPULAB_BACKUP_ROOT in .env
+    # (written by install-server.ps1), else - for installations from before
+    # it was recorded - the nightly task's -BackupRoot, else C:\CompuLab\backups.
+    # Repair, Update, "Back Up CompuLab Now" and restore all use this, so a
+    # custom location is never silently replaced by the default.
+    try { $values = Read-DotEnv } catch { $values = @{} }
+    if ($values['COMPULAB_BACKUP_ROOT']) { return @{ Path = $values['COMPULAB_BACKUP_ROOT']; Source = '.env (COMPULAB_BACKUP_ROOT)' } }
+    try {
+        $task = Get-ScheduledTask -TaskName $script:BackupTaskName -ErrorAction Stop
+        $fromTask = Get-BackupRootFromTaskArguments ([string]$task.Actions[0].Arguments)
+        if ($fromTask) { return @{ Path = $fromTask; Source = 'the nightly backup task' } }
+    } catch { }
+    return @{ Path = $script:DefaultBackupRoot; Source = 'default' }
+}
+
+function Test-BackupRootFormat([string]$Path) {
+    # $null if the path has a usable form (drive letter or \\server\share),
+    # else why not. Pure; Test-BackupRoot also checks that it is writable.
+    if (-not $Path) { return 'No backup folder given.' }
+    if ($Path -notmatch '^[A-Za-z]:\\' -and $Path -notmatch '^\\\\[^\\]+\\[^\\]+') {
+        return "Backup folder '$Path' must be a full path such as E:\CompuLabBackups or \\server\share\CompuLab."
+    }
+    if ($Path.IndexOfAny([IO.Path]::GetInvalidPathChars()) -ge 0 -or $Path.Substring(2) -match '[<>:"|?*]') {
+        return "Backup folder '$Path' contains characters Windows does not allow."
+    }
+    return $null
+}
+
+function Test-BackupRoot([string]$Path) {
+    # $null if backups can be written to $Path (creates the folder if needed).
+    $problem = Test-BackupRootFormat $Path
+    if ($problem) { return $problem }
+    if ($Path -match '^([A-Za-z]:)\\' -and -not (Test-Path ($Matches[1] + '\'))) {
+        return "Drive $($Matches[1]) for the backup folder '$Path' does not exist (USB drive unplugged?)."
+    }
+    try {
+        New-Item -ItemType Directory -Force -Path $Path -ErrorAction Stop | Out-Null
+        $probe = Join-Path $Path ('.compulab-write-test-' + [guid]::NewGuid().ToString('N'))
+        [IO.File]::WriteAllText($probe, 'ok')
+        Remove-Item -LiteralPath $probe -Force
+    } catch {
+        return "Cannot write to the backup folder '$Path': $($_.Exception.Message)"
+    }
+    return $null
 }
 
 # ---------------------------------------------------------------- network
@@ -405,14 +471,16 @@ FLUSH PRIVILEGES;
 "@
 }
 
-function Select-DbService($Services) {
+function Select-DbService($Services, [string]$PortOwner = '') {
     # Picks the database service CompuLab depends on from objects with Name,
     # State ('Running'...) and PathName (as Win32_Service has them).
-    # XAMPP's MariaDB 10.4 is never chosen (too old, not meant as a service);
-    # with several candidates the single running one wins, otherwise the
+    # XAMPP's MariaDB 10.4 is never chosen (too old, not meant as a service).
+    # The service that owns the database port ($PortOwner) wins; otherwise
+    # with several candidates the single running one, otherwise the
     # installer asks for -DbServiceName instead of guessing.
     $candidates = @($Services | Where-Object { $_.Name -match '^(MariaDB|MySQL)' -and "$($_.PathName)" -notmatch '\\xampp\\' })
     if ($candidates.Count -eq 0) { return $null }
+    if ($PortOwner -and @($candidates | Where-Object { $_.Name -eq $PortOwner }).Count) { return $PortOwner }
     if ($candidates.Count -eq 1) { return $candidates[0].Name }
     $running = @($candidates | Where-Object { $_.State -eq 'Running' })
     if ($running.Count -eq 1) { return $running[0].Name }
@@ -420,9 +488,54 @@ function Select-DbService($Services) {
            'Run the installer again with -DbServiceName <the one CompuLab should use> (or "none").')
 }
 
-function Get-DbServiceName {
+function Get-DbServiceName([string]$PortOwner = '') {
     # The Windows service name of the local database server, if any.
-    return Select-DbService @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Select-Object Name, State, PathName)
+    return Select-DbService @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Select-Object Name, State, PathName) $PortOwner
+}
+
+function Get-ListenerInfo([int]$Port) {
+    # What listens on this TCP port: @{ ProcessId; ProcessPath; ServiceName }, or $null.
+    $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $conn) { return $null }
+    $procId = [int]$conn.OwningProcess
+    $svc = Get-CimInstance Win32_Service -Filter "ProcessId = $procId" -ErrorAction SilentlyContinue | Select-Object -First 1
+    $path = ''
+    try { $path = [string](Get-Process -Id $procId -ErrorAction Stop).Path } catch { }
+    if (-not $path -and $svc) { $path = [string]$svc.PathName }
+    return @{ ProcessId = $procId; ProcessPath = $path; ServiceName = $(if ($svc) { [string]$svc.Name } else { '' }) }
+}
+
+function Test-DbListener($Listener, [string]$DbHost, [int]$Port) {
+    # $null if CompuLab may use the database server listening on $Port of
+    # this computer, else what is wrong and what to do. Pure (tested).
+    # CompuLab never stops, changes or replaces another database: it refuses.
+    if ($DbHost -notin @('127.0.0.1', 'localhost')) { return $null }   # a database on another computer: not checked here
+    if (-not $Listener) {
+        return ("No database server is listening on port $Port of this computer. Start the MariaDB/MySQL service (Services app), " +
+                'or install MariaDB 11.4 LTS (it uses port 3306 unless you choose another). If your database uses another port, ' +
+                'give it with -DbPort <port> (setup: the "Database port" field).')
+    }
+    $path = "$($Listener.ProcessPath)"
+    if ($path -match '\\xampp\\') {
+        return ("Port $Port is used by XAMPP's database ($path). CompuLab does not use, stop or change XAMPP. " +
+                'Install MariaDB 11.4 LTS on another port (for example 3307: choose it in the MariaDB setup) and enter that port ' +
+                'as the "Database port" in the setup (or -DbPort 3307), or use a server computer without XAMPP.')
+    }
+    if ($path -and $path -notmatch '(?i)(mysqld|mariadbd)(\.exe)?\b') {
+        return "Port $Port is used by '$path', which is not a MariaDB/MySQL server. Free that port, or give the database's real port with -DbPort."
+    }
+    return $null
+}
+
+function Wait-DbListener([int]$Port, [int]$Seconds = 20) {
+    # A just-started database service needs a few seconds to open its port.
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        $l = Get-ListenerInfo $Port
+        if ($l) { return $l }
+        Start-Sleep -Seconds 1
+    } while ((Get-Date) -lt $deadline)
+    return $null
 }
 
 # ---------------------------------------------------------------- addresses
@@ -487,7 +600,7 @@ function Get-ServiceDefinitions([int]$Port) {
            Env = [ordered]@{ 'COMPULAB_BACKGROUND_TASKS' = 'False' } },
         @{ Id = $script:WorkerService; Name = 'CompuLab Worker'; Exe = $script:VenvPython;
            Args = 'manage.py run_worker';
-           Desc = 'CompuLab background work: PC status, email outbox, cloud sync, reminders, durable jobs.';
+           Desc = 'CompuLab background work: lab PC online/offline checks, email outbox, cloud sync, reminders, durable jobs.';
            Env = [ordered]@{ 'COMPULAB_BACKGROUND_TASKS' = 'False'; 'DJANGO_LOG_FILE_NAME' = 'worker.log' } }
     )
 }
@@ -559,6 +672,50 @@ function Start-CompuLabServices {
         if ($svc) { Start-Service -Name $name; Write-Ok "Started $name" }
         else { Write-Note "Service $name is not installed (run install-server.ps1)." }
     }
+}
+
+# ---------------------------------------------------------------- first Administrator
+function Test-AdminEmail([string]$Email) {
+    # $null if usable as the Administrator's sign-in, else why not. CompuLab
+    # accepts only @gmail.com addresses for every account
+    # (accounts/email_rules.py, an application rule); ensure_admin checks again.
+    $Email = "$Email".Trim()
+    if (-not $Email) { return 'Enter the email address the Administrator will sign in with.' }
+    if ($Email -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { return "'$Email' is not an email address." }
+    if ($Email -notmatch '^[^@\s]+@gmail\.com$') { return "'$Email' is not a @gmail.com address. CompuLab accepts only Gmail addresses for every account." }
+    return $null
+}
+
+function ConvertFrom-EnsureAdminOutput([string[]]$Lines, [int]$ExitCode) {
+    # The RESULT line of `manage.py ensure_admin` as @{ ExitCode; Code; Message }.
+    $line = @($Lines | Where-Object { "$_" -match '^RESULT: [A-Z_]+: ' }) | Select-Object -Last 1
+    if ("$line" -match '^RESULT: ([A-Z_]+): (.*)$') { return @{ ExitCode = $ExitCode; Code = $Matches[1]; Message = $Matches[2].Trim() } }
+    $tail = (@($Lines | Where-Object { "$_".Trim() }) | Select-Object -Last 3) -join ' | '
+    return @{ ExitCode = $(if ($ExitCode) { $ExitCode } else { 1 }); Code = 'ERROR'; Message = "manage.py ensure_admin failed (exit code $ExitCode): $tail" }
+}
+
+function Invoke-EnsureAdmin([string[]]$Arguments, [string]$Password = '') {
+    # Runs `manage.py ensure_admin`. The password reaches it only through
+    # the environment variable COMPULAB_ADMIN_PASSWORD of this one process
+    # (never on a command line, never in the install log).
+    Push-Location $script:AppDir
+    try {
+        if ($Password) { $env:COMPULAB_ADMIN_PASSWORD = $Password } else { Remove-Item Env:\COMPULAB_ADMIN_PASSWORD -ErrorAction SilentlyContinue }
+        $out = @(Invoke-Captured $script:VenvPython (@('manage.py', 'ensure_admin') + $Arguments))
+        $code = $LASTEXITCODE
+    } finally {
+        Remove-Item Env:\COMPULAB_ADMIN_PASSWORD -ErrorAction SilentlyContinue
+        Pop-Location
+    }
+    return ConvertFrom-EnsureAdminOutput $out $code
+}
+
+function Read-SecretText([string]$Prompt) {
+    # Read-Host -AsSecureString, returned as text for this process only.
+    $secure = Read-Host -AsSecureString $Prompt
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
 }
 
 function Invoke-Manage([string[]]$Arguments) {
