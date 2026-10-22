@@ -99,9 +99,6 @@ if ($dirty -and -not $AllowDirty) {
 }
 Write-Host "Building CompuLab setups $Version (commit $($commit.Substring(0, 7)) on $branch$(if ($dirty) { ', WITH UNCOMMITTED CHANGES' }))" -ForegroundColor Cyan
 if (Test-Path $Work) { Remove-Item -LiteralPath $Work -Recurse -Force }
-# Only the newest build is kept in installer\dist (each is ~75 MB).
-Get-ChildItem $Dist -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -like 'CompuLab-*' -or $_.Name -like 'SHA256SUMS-*' -or $_.Name -like 'BUILDINFO-*' -or $_.Name -like 'DISTRIBUTION-MANIFEST-*' } | Remove-Item -Force
 New-Item -ItemType Directory -Force $Work, $Dist | Out-Null
 
 # ------------------------------------------------------------ 0. Inno Setup
@@ -274,6 +271,11 @@ $utf8 = New-Object Text.UTF8Encoding $false
 [IO.File]::WriteAllText((Join-Path $serverPayload 'BUILDINFO.json'), $buildInfoJson, $utf8)
 [IO.File]::WriteAllText((Join-Path $agentPayload 'agent-bundle\BUILDINFO.json'), $buildInfoJson, $utf8)
 Write-Ok "Build record: commit $($commit.Substring(0, 7)), $(if ($dirty) { 'UNCOMMITTED CHANGES' } else { 'clean tree' })"
+
+# Only the newest build is kept in installer\dist (each is ~75 MB). The
+# previous one is removed only now that every check has passed.
+Get-ChildItem $Dist -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like 'CompuLab-*' -or $_.Name -like 'SHA256SUMS-*' -or $_.Name -like 'BUILDINFO-*' -or $_.Name -like 'DISTRIBUTION-MANIFEST-*' } | Remove-Item -Force
 
 # The same files as a zip, for installing from a USB stick without the .exe.
 $zip = Join-Path $Dist "CompuLab-Agent-Package-$Version.zip"
