@@ -156,11 +156,12 @@ begin
       'Choose a normal folder, for example C:\CompuLab.';
     Exit;
   end;
-  // Stop a running CompuLab before its files are replaced (update).
+  // Stop a running CompuLab before its files are replaced (update). net stop
+  // waits until the service has stopped (an error when it is not installed
+  // is fine).
   WasInstalled := IsInstalled();
-  Exec(ExpandConstant('{sys}\sc.exe'), 'stop CompuLabWorker', '', SW_HIDE, ewWaitUntilTerminated, Code);
-  Exec(ExpandConstant('{sys}\sc.exe'), 'stop CompuLabWeb', '', SW_HIDE, ewWaitUntilTerminated, Code);
-  Sleep(3000);
+  Exec(ExpandConstant('{sys}\net.exe'), 'stop CompuLabWorker /y', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Exec(ExpandConstant('{sys}\net.exe'), 'stop CompuLabWeb /y', '', SW_HIDE, ewWaitUntilTerminated, Code);
   Result := '';
 end;
 

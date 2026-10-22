@@ -15,10 +15,12 @@
   applied after a backup.
 
   What it does:
-    1. Checks Windows, PowerShell, the CompuLab files, Python 3.11-3.13 and
-       the database server (MariaDB 10.5+ / MySQL 8.0.11+; MariaDB 10.11 or
-       11.4 LTS recommended) and that the web port is free. Stops with a
-       clear message if something is missing; changes nothing until then.
+    1. Checks Windows, PowerShell, the CompuLab files, a 64-bit Python
+       3.11-3.13 (3.13 recommended) and the database server (MariaDB 10.5+ /
+       MySQL 8.0.11+; MariaDB 11.4 or 10.11 LTS recommended) and that the web
+       port is free. Stops with a clear message if something is missing;
+       changes nothing until then. It never installs, upgrades or replaces
+       Python or the database server.
     2. Creates the Python environment (venv) and installs the packages
        (from the bundled offline folder when present, else from the internet).
     3. Writes .env with random secrets and this server's campus address
@@ -149,15 +151,27 @@ try {
     Write-Step 'Checking Python'
     $python = Find-Python
     if (-not $python) {
-        throw 'Python 3.11, 3.12 or 3.13 was not found (3.13 recommended; 3.14 is not supported yet). Install it from python.org ("Install for all users", "Add python.exe to PATH") and run this again.'
+        $found = if ($script:PythonRejected.Count) { " Found instead: $($script:PythonRejected -join '; ')." } else { ' No Python was found.' }
+        throw ('A 64-bit Python 3.13 (or 3.12 / 3.11) is required.' + $found +
+               ' Install "Python 3.13 - Windows installer (64-bit)" from python.org: choose "Customize installation", tick "Install Python 3.13 for all users"' +
+               ' and "Add Python to environment variables", then run this setup again. (Python 3.14 is not supported yet; it can stay installed next to 3.13.)')
     }
-    Write-Ok "Python $($python.Version)"
+    Write-Ok "Python $($python.Version) 64-bit ($($python.BasePrefix))"
+    if (-not (Test-PythonForAllUsers $python.BasePrefix)) {
+        Write-Note "This Python is installed for one Windows account only ($($python.BasePrefix)). The CompuLab services use it, so they stop working if that account or its profile is removed."
+        Write-Note 'Recommended: install Python 3.13 64-bit "for all users" (python.org installer > Customize installation) and run this setup again.'
+    }
 
     Write-Step 'Checking the database server'
     $mysql = Find-MySqlTool 'mysql.exe'
     if (-not $mysql) { $mysql = Find-MySqlTool 'mariadb.exe' }
+    # This installer never installs, upgrades or replaces MariaDB/MySQL: it
+    # only uses the database server that is already installed.
     if (-not $mysql -and -not $SkipDatabaseSetup) {
-        throw 'The MariaDB/MySQL client (mysql.exe) was not found. Install MariaDB 10.11 or 11.4 LTS (as a Windows service) and run this again, or use -SkipDatabaseSetup if the database already exists elsewhere.'
+        throw ('No MariaDB or MySQL database server was found (mysql.exe / mariadb.exe). This setup does not install one. ' +
+               'Install MariaDB 11.4 LTS (or 10.11 LTS) 64-bit from mariadb.org (MSI package, keep "Install as service" ticked, choose a root password) ' +
+               '- or MySQL 8.0.11 or newer - then run this setup again. XAMPP''s MariaDB 10.4 is too old. ' +
+               '(-SkipDatabaseSetup if the CompuLab database already exists on another computer.)')
     }
     if ($mysql) { Write-Ok "Database client: $mysql" }
     $dbService = $null
@@ -166,12 +180,17 @@ try {
     }
     if ($dbService) {
         $svc = Get-Service $dbService -ErrorAction SilentlyContinue
-        if (-not $svc) { throw "The database service '$dbService' does not exist." }
+        if (-not $svc) { throw "The database service '$dbService' does not exist (Services app: check its name, then use -DbServiceName <name>)." }
         if ($svc.Status -ne 'Running') {
             if (-not (Test-IsAdmin)) { throw "The database service $dbService is stopped and starting it needs administrator rights." }
+            Write-Note "The database service $dbService is stopped: starting it (its settings and data are not changed)."
             Start-Service $dbService; Write-Ok "Started the $dbService service"
         } else { Write-Ok "Database service: $dbService (running)" }
-        if (Test-IsAdmin) { Set-Service $dbService -StartupType Automatic }
+        if ((Test-IsAdmin) -and $svc.StartType -ne 'Automatic') {
+            # CompuLab's services depend on it, so it has to start at boot too.
+            Set-Service $dbService -StartupType Automatic
+            Write-Note "Changed the start type of $dbService from $($svc.StartType) to Automatic (CompuLab needs it at boot). Nothing else about it was changed."
+        }
     } elseif ($S.DbHost -in @('127.0.0.1', 'localhost') -and $S.DbServiceName -eq 'auto') {
         Write-Note 'No MariaDB/MySQL Windows service was found. The database must start automatically at boot, or CompuLab will not start after a restart.'
     }
@@ -299,7 +318,8 @@ try {
             & $exe install
             if ($LASTEXITCODE -ne 0) { throw "Installing the $($d.Name) service failed." }
             # Windows' own recovery settings as a second safety net.
-            & sc.exe failure $d.Id reset= 3600 actions= restart/10000/restart/30000/restart/60000 | Out-Null
+            Invoke-Quiet 'sc.exe' (Get-ServiceRecoveryArgs $d.Id) | Out-Null
+            if ($LASTEXITCODE -ne 0) { Write-Note "Could not set Windows' restart-on-failure for $($d.Id) (sc.exe exit code $LASTEXITCODE); WinSW still restarts it." }
             Write-Ok "$($d.Name) service installed (starts automatically at boot)"
         }
         Start-CompuLabServices
@@ -309,8 +329,8 @@ try {
     if (-not $SkipFirewall) {
         Write-Step 'Opening the firewall for the campus network'
         Get-NetFirewallRule -DisplayName 'CompuLab Web' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-        New-NetFirewallRule -DisplayName 'CompuLab Web' -Direction Inbound -Protocol TCP -LocalPort $S.Port `
-            -RemoteAddress $S.AllowFrom -Action Allow -Profile Private, Domain | Out-Null
+        $rule = Get-WebFirewallRuleSpec ([int]$S.Port) $S.AllowFrom
+        New-NetFirewallRule @rule | Out-Null
         Write-Ok "Port $($S.Port) allowed from $($S.AllowFrom -join ', ') on Private/Domain networks"
         Write-Note 'The database port (3306) is NOT opened: only CompuLab on this computer uses it. Never forward any port on the router.'
         $profiles = Get-NetConnectionProfile -ErrorAction SilentlyContinue | Where-Object { $_.NetworkCategory -eq 'Public' -and $_.InterfaceAlias -notlike 'Tailscale*' }
@@ -320,13 +340,10 @@ try {
     # ------------------------------------------------------------ 9. backups
     if (-not $SkipBackupTask) {
         Write-Step 'Scheduling the nightly backup'
-        $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\backup.ps1`" -BackupRoot `"$($S.BackupRoot)`""
-        $trigger = New-ScheduledTaskTrigger -Daily -At '1:30AM'
-        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-        $taskSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable
-        Register-ScheduledTask -TaskName $script:BackupTaskName -Action $action -Trigger $trigger -Principal $principal -Settings $taskSettings -Force | Out-Null
+        $task = New-BackupTaskDefinition (Join-Path $PSScriptRoot 'backup.ps1') $S.BackupRoot
+        Register-ScheduledTask -TaskName $script:BackupTaskName @task -Force | Out-Null
         Write-Ok "Backups go to $($S.BackupRoot) every night at 1:30 AM, or at the next start-up if the server was off (keep them on a second disk or USB drive: -BackupRoot)"
+        Write-Note 'Each nightly run writes logs\backup-<time>.log. Run the task once now to test it: Task Scheduler > "CompuLab nightly backup" > Run.'
     }
 
     # ------------------------------------------------------------ 10. health
@@ -353,6 +370,10 @@ try {
     $exitCode = 1
     Write-Host "`nInstallation stopped: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host '  Nothing after this step was changed. Fix the problem above and run the installer again (it continues safely).' -ForegroundColor Red
+    $stopped = @($script:WebService, $script:WorkerService | Where-Object { $s = Get-Service $_ -ErrorAction SilentlyContinue; $s -and $s.Status -ne 'Running' })
+    if ($stopped.Count) {
+        Write-Host "  The CompuLab services are stopped ($($stopped -join ', ')), so the website is offline until the installer completes." -ForegroundColor Red
+    }
     if ($logPath) { Write-Host "  Full log: $logPath" -ForegroundColor Red }
 } finally {
     Stop-InstallLog

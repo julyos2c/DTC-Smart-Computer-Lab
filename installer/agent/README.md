@@ -61,9 +61,11 @@ to set or override the address.
   last-contact status (shared by every Windows account on the PC, kept across updates and
   reinstalls).
 - Opens port 5555 and ping **only for the CompuLab server's IP**.
-- Registers the task **CompuLab Agent**: starts at every Windows sign-in (so also after a restart),
-  restarts within a minute if it is closed or crashes. (The lock screen must run in the signed-in
-  desktop, so it is a logon task, not a Windows service.)
+- Registers the task **CompuLab Agent**: starts at every Windows sign-in (so also after a restart).
+  While someone is signed in the task repeats every minute and does nothing if the agent is
+  running, so a closed or crashed lock screen is back within about a minute. (The lock screen must
+  run in the signed-in desktop, so it is a logon task, not a Windows service.)
+- Needs no Python: the setup and the packaged agent run on a PC without Python.
 
 ## Checking a PC and changing its server address
 

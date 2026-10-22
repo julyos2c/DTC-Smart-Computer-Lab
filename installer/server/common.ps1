@@ -1,8 +1,9 @@
 # Shared helpers for the CompuLab server scripts. Dot-source it:
 #   . "$PSScriptRoot\common.ps1"
 # Works with Windows PowerShell 5.1 (built into Windows 10/11).
-# The pure functions here (settings, .env, validation, service XML) are
-# covered by installer\tests\Installer.Tests.ps1.
+# The pure functions here (settings, .env, validation, service XML, the
+# firewall / scheduled task / service recovery definitions) are covered by
+# installer\tests\test-installer-logic.ps1.
 
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1 may default to old TLS versions; https checks
@@ -61,6 +62,8 @@ function Invoke-Logged([string]$Exe, [string[]]$Arguments) {
 # Python code passed to `python -c` must not contain double quotes: Windows
 # PowerShell 5.1 drops them when starting a program.
 $script:PyVersionCode = 'import sys; print(*sys.version_info[:2], sep=chr(46))'
+# One line "major.minor|bits|base folder", e.g. 3.13|64|C:\Program Files\Python313
+$script:PyProbeCode = 'import sys; print(*sys.version_info[:2], sep=chr(46), end=chr(124)); print(64 if sys.maxsize > 2**32 else 32, sys.base_prefix, sep=chr(124))'
 
 function New-RandomSecret([int]$Length = 50) {
     $chars = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789-_'
@@ -270,16 +273,45 @@ function Wait-Healthy([string]$Url = 'http://127.0.0.1:8000/healthz', [int]$Seco
 }
 
 # ---------------------------------------------------------------- Python
+function ConvertFrom-PythonProbe([string]$Text) {
+    # Parses the output of $PyProbeCode: @{ Version; Bits; BasePrefix } or $null.
+    if ("$Text".Trim() -notmatch '^(\d+\.\d+)\|(32|64)\|(.+)$') { return $null }
+    return @{ Version = $Matches[1]; Bits = [int]$Matches[2]; BasePrefix = $Matches[3].Trim() }
+}
+
+function Test-PythonSupported([hashtable]$Probe) {
+    # $null when this Python can run the server, else the reason it can't.
+    # 64-bit 3.11-3.13 only: the bundled packages are built for those
+    # (win_amd64), and production runs 3.13.
+    if (-not $Probe) { return 'not a working Python' }
+    if ([version]$Probe.Version -lt [version]'3.11' -or [version]$Probe.Version -ge [version]'3.14') { return "Python $($Probe.Version) is not supported (needs 3.11-3.13; 3.13 recommended)" }
+    if ($Probe.Bits -ne 64) { return "Python $($Probe.Version) is the 32-bit version (needs the 64-bit Windows installer)" }
+    return $null
+}
+
+function Test-PythonForAllUsers([string]$BasePrefix) {
+    # A Python installed "just for me" lives in that user's profile; the
+    # CompuLab services (LocalSystem) then depend on that one account.
+    return -not ($BasePrefix -like "$env:SystemDrive\Users\*" -or ($env:USERPROFILE -and $BasePrefix -like "$env:USERPROFILE\*"))
+}
+
 function Find-Python {
-    # The first Python 3.11-3.13 found (3.13 is what production runs), as
-    # an array: the program and its arguments. $null if none.
-    foreach ($candidate in @('py -3.13', 'py -3.12', 'py -3.11', 'python')) {
+    # The first 64-bit Python 3.11-3.13 found (3.13 first: production runs
+    # it), as @{ Command (program + arguments); Version; BasePrefix }.
+    # $null if none; $script:PythonRejected then says what was found instead.
+    $script:PythonRejected = @()
+    foreach ($candidate in @('py -3.13-64', 'py -3.13', 'py -3.12-64', 'py -3.12', 'py -3.11-64', 'py -3.11', 'python')) {
         $parts = $candidate.Split(' ')
         try {
-            $version = Invoke-Quiet $parts[0] (@($parts | Select-Object -Skip 1) + @('-c', $script:PyVersionCode))
-            if ($LASTEXITCODE -eq 0 -and $version -match '^\d+\.\d+$' -and [version]$version -ge [version]'3.11' -and [version]$version -lt [version]'3.14') {
-                return @{ Command = $parts; Version = $version }
-            }
+            # Collect the output first: Select-Object -First in the same
+            # pipeline would stop python early and leave $LASTEXITCODE at -1.
+            $out = @(Invoke-Quiet $parts[0] (@($parts | Select-Object -Skip 1) + @('-c', $script:PyProbeCode)))
+            if ($LASTEXITCODE -ne 0 -or -not $out.Count) { continue }
+            $probe = ConvertFrom-PythonProbe ([string]$out[0])
+            if (-not $probe) { continue }
+            $why = Test-PythonSupported $probe
+            if (-not $why) { return @{ Command = $parts; Version = $probe.Version; BasePrefix = $probe.BasePrefix } }
+            if ($script:PythonRejected -notcontains $why) { $script:PythonRejected += $why }
         } catch { }
     }
     return $null
@@ -373,12 +405,24 @@ FLUSH PRIVILEGES;
 "@
 }
 
+function Select-DbService($Services) {
+    # Picks the database service CompuLab depends on from objects with Name,
+    # State ('Running'...) and PathName (as Win32_Service has them).
+    # XAMPP's MariaDB 10.4 is never chosen (too old, not meant as a service);
+    # with several candidates the single running one wins, otherwise the
+    # installer asks for -DbServiceName instead of guessing.
+    $candidates = @($Services | Where-Object { $_.Name -match '^(MariaDB|MySQL)' -and "$($_.PathName)" -notmatch '\\xampp\\' })
+    if ($candidates.Count -eq 0) { return $null }
+    if ($candidates.Count -eq 1) { return $candidates[0].Name }
+    $running = @($candidates | Where-Object { $_.State -eq 'Running' })
+    if ($running.Count -eq 1) { return $running[0].Name }
+    throw ("Several database services are installed ($(($candidates | ForEach-Object { $_.Name }) -join ', ')). " +
+           'Run the installer again with -DbServiceName <the one CompuLab should use> (or "none").')
+}
+
 function Get-DbServiceName {
     # The Windows service name of the local database server, if any.
-    $svc = Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(MariaDB|MySQL)' } |
-        Sort-Object @{ Expression = { $_.Status -eq 'Running' }; Descending = $true }, Name | Select-Object -First 1
-    if ($svc) { return $svc.Name }
-    return $null
+    return Select-DbService @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Select-Object Name, State, PathName)
 }
 
 # ---------------------------------------------------------------- addresses
@@ -473,6 +517,33 @@ $dependXml  <onfailure action="restart" delay="10 sec"/>
   <log mode="roll-by-size"><sizeThreshold>5120</sizeThreshold><keepFiles>5</keepFiles></log>
 </service>
 "@
+}
+
+function Get-ServiceRecoveryArgs([string]$ServiceId) {
+    # sc.exe arguments for Windows' own recovery settings (a second safety net
+    # behind WinSW's <onfailure>): restart after 10 s, 30 s, then every 60 s;
+    # the failure count resets after an hour without failures.
+    return @('failure', $ServiceId, 'reset=', '3600', 'actions=', 'restart/10000/restart/30000/restart/60000')
+}
+
+function Get-WebFirewallRuleSpec([int]$Port, [string[]]$AllowFrom) {
+    # Parameters for New-NetFirewallRule: the web port only, only from the
+    # campus / VPN ranges, only on Private and Domain networks.
+    return @{ DisplayName = 'CompuLab Web'; Direction = 'Inbound'; Protocol = 'TCP'; LocalPort = $Port
+              RemoteAddress = $AllowFrom; Action = 'Allow'; Profile = @('Private', 'Domain') }
+}
+
+function New-BackupTaskDefinition([string]$BackupScript, [string]$BackupRoot) {
+    # The parts of the "CompuLab nightly backup" task, without registering it:
+    # 1:30 AM as SYSTEM, or as soon as possible after a missed run (server
+    # off); stopped if it hangs for more than 2 hours; each run writes
+    # logs\backup-<time>.log (backup.ps1 -Log).
+    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$BackupScript`" -BackupRoot `"$BackupRoot`" -Log"
+    $trigger = New-ScheduledTaskTrigger -Daily -At '1:30AM'
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $taskSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2) -MultipleInstances IgnoreNew
+    return @{ Action = $action; Trigger = $trigger; Principal = $principal; Settings = $taskSettings }
 }
 
 function Stop-CompuLabServices {

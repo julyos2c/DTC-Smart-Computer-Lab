@@ -10,22 +10,34 @@ You need two files (built with `installer\build\build-installers.ps1`, see the e
 | `CompuLab-Server-Setup-<version>.exe` | once, on the server computer |
 | `CompuLab-Agent-Setup-<version>.exe` | on every student lab PC |
 
-Both are unsigned: Windows shows "Windows protected your PC" → **More info** → **Run anyway**.
+With them comes `DISTRIBUTION-MANIFEST-<version>.md`: sizes, SHA-256 hashes, supported Windows versions.
+
+**Before running a setup:** copy it to the computer's own disk (not a mapped network drive) and check
+its hash against the manifest: `certutil -hashfile CompuLab-Server-Setup-<version>.exe SHA256`. The
+setups are **not code-signed**, so Windows shows "Windows protected your PC / Unknown publisher":
+only when the hash matched, click **More info** → **Run anyway**. Do not turn SmartScreen or the
+antivirus off.
+
+The first installation should be supervised: tick the checklist in `docs\RELEASE_READINESS.md`.
 
 ---
 
 ## Part 1 — the main server (once)
 
-**Choose the computer.** An always-on desktop with Windows 10/11 (64-bit), 8 GB RAM, wired network.
-Not a student PC. Give it a **fixed IP address** in the router (DHCP reservation), e.g.
-`192.168.1.10`, and set its network to **Private** (Settings → Network).
+**Choose the computer.** An always-on desktop with Windows 11 (64-bit; Windows 10 22H2 or Windows
+Server 2016+ also work), 8 GB RAM, wired network. Not a student PC. Give it a **fixed IP address** in
+the router (DHCP reservation), e.g. `192.168.1.10`, and set its network to **Private** (Settings →
+Network).
 
-**Install two free programs first** (needs internet once):
+**Install two free programs first** (needs internet once). The CompuLab setup checks them and stops
+with an explanation if one is missing or unsuitable; it never installs or replaces them itself.
 
-1. **Python 3.13** — python.org → Downloads → Windows installer (64-bit). Tick **Add python.exe to
-   PATH** and choose **Customize → Install for all users**.
-2. **MariaDB 11.4** — mariadb.org → Download → MariaDB Server (MSI). Choose a strong **root
-   password** and write it down; keep **Install as service** ticked.
+1. **Python 3.13, 64-bit** — python.org → Downloads → "Windows installer (64-bit)". Choose
+   **Customize installation**, tick **Install Python 3.13 for all users** and **Add Python to
+   environment variables**. (3.14 and 32-bit Python are not supported.)
+2. **MariaDB 11.4 LTS** (10.11 LTS also works) — mariadb.org → Download → MariaDB Server (MSI,
+   64-bit). Choose a strong **root password** and write it down; keep **Install as service** ticked.
+   MySQL 8.0.11 or newer works too; XAMPP's MariaDB is too old.
 
 **Run `CompuLab-Server-Setup.exe`** and answer:
 
@@ -44,8 +56,9 @@ safely and never deletes data).
 
 What it set up for you: the two Windows services **CompuLab Web** and **CompuLab Worker** (they start
 automatically after every restart), the firewall rule (campus addresses only), a nightly backup at
-1:30 AM to `C:\CompuLab\backups`, and Start-menu shortcuts (**CompuLab Server Status**, **Back Up
-CompuLab Now**, **Repair CompuLab Server**).
+1:30 AM to `C:\CompuLab\backups` (each run writes `C:\CompuLab\logs\backup-<time>.log`), and
+Start-menu shortcuts (**CompuLab Server Status**, **Back Up CompuLab Now**, **Repair CompuLab
+Server**).
 
 **Recommended next:** point the nightly backups at a second disk or USB drive (run
 `installer\server\install-server.ps1 -BackupRoot E:\CompuLabBackups` as Administrator), and set up
@@ -63,7 +76,8 @@ without email and without internet.
    stick. It finds the config file by itself. A console window ends with **"The CompuLab agent is
    installed"** and the agent's self-test result.
 4. Sign out of Windows and back in: the CompuLab lock screen appears. In CompuLab, PC status shows the
-   PC as **Available**.
+   PC as **Available**. If the lock screen is ever closed or crashes, it comes back within about a
+   minute.
 
 No Python is needed on lab PCs. Students should use a **standard** (non-administrator) Windows
 account.
@@ -107,5 +121,8 @@ CompuLab-Agent-Setup.exe /VERYSILENT /CONFIG="\\server\share\agents\PC-01.json"
 powershell -ExecutionPolicy Bypass -File installer\build\build-installers.ps1 -InstallInnoSetup
 ```
 
-Needs Python 3.13 and internet; writes the files to `installer\dist\` with a `SHA256SUMS` list.
-Automated tests: `installer\tests\` (see `installer\README.md`).
+Needs Python 3.13, internet and a committed working tree (it refuses uncommitted changes); writes the
+setups, the agent zip, `SHA256SUMS-<version>.txt`, `BUILDINFO-<version>.json` and
+`DISTRIBUTION-MANIFEST-<version>.md` to `installer\dist\`. Check a copy of them at any time with
+`installer\build\verify-dist.ps1 -Dist <folder>`. Automated tests: `installer\tests\` (see
+`installer\README.md`).

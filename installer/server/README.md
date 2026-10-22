@@ -14,12 +14,17 @@ Do this once, on the computer that will be the CompuLab server. Allow about an h
 
 | Program | Where | Notes |
 |---|---|---|
-| Python 3.12 (or 3.11+) | python.org → Downloads → Windows installer (64-bit) | Tick **Add python.exe to PATH** and **Install for all users** |
-| MariaDB 11.4 LTS (or 10.11 LTS) | mariadb.org → Download → MariaDB Server, MSI | Choose a strong **root password** and write it down safely. Keep "Install as service" ticked. Do *not* enable remote root access. |
+| Python 3.13, 64-bit (3.12 / 3.11 64-bit also accepted) | python.org → Downloads → Windows installer (64-bit) | **Customize installation**: tick **Install for all users** and **Add Python to environment variables**. 3.14 and 32-bit Python are refused; a per-user Python gets a warning (the services would depend on that account). |
+| MariaDB 11.4 LTS (or 10.11 LTS; 10.5+; or MySQL 8.0.11+) | mariadb.org → Download → MariaDB Server, MSI | Choose a strong **root password** and write it down safely. Keep "Install as service" ticked. Do *not* enable remote root access. |
 | WinSW-x64.exe | github.com/winsw/winsw/releases (v2.12.0) | **Only for a plain folder copy**: save it as `installer\server\bin\WinSW-x64.exe`. `CompuLab-Server-Setup.exe` already contains it (and the Python packages, so the install needs no internet). |
 
 Do **not** use XAMPP for the server: it is not a supervised service and its MariaDB is too old for
 the current Django version.
+
+The CompuLab installer never installs, upgrades or replaces Python or the database server. It only
+uses the ones installed: if the database service is stopped it starts it, and if it is not set to
+start automatically it changes that (CompuLab needs it at boot) and says so. With several MariaDB /
+MySQL services on the computer it asks for `-DbServiceName` instead of guessing.
 
 ## 3-4. Install
 
@@ -63,7 +68,8 @@ The installer:
   restart themselves if they stop: **CompuLab Web** (the website) and **CompuLab Worker** (PC
   status, email, cloud sync, reminders);
 - opens the web port for private campus/VPN addresses only (never the database port);
-- schedules a nightly backup at 1:30 AM.
+- schedules a nightly backup at 1:30 AM (as SYSTEM; a missed night runs at the next start-up; each
+  run writes `logs\backup-<time>.log`, and a failure shows as Last Run Result 0x1 in Task Scheduler).
 
 It works without internet (after the packages are installed), email, Tailscale or a cloud
 server: those are optional and added later. Running it again later is safe (it keeps your
@@ -114,7 +120,7 @@ in `.env`; easier: in CompuLab, PC status → **Agent config** downloads a ready
 | Remote access (Tailscale) | `... installer\server\configure-remote-access.ps1` (see `installer\REMOTE_ACCESS.md`) |
 | Stop / start | Services app → CompuLab Web / CompuLab Worker, or `Stop-Service CompuLabWeb,CompuLabWorker` |
 | Test run without services | `... installer\server\run-foreground.ps1` |
-| Logs | `logs\compulab.log` (website), `logs\worker.log` (background), `logs\CompuLab*.log` (service wrapper) |
+| Logs | `logs\compulab.log` (website), `logs\worker.log` (background), `logs\CompuLab*.log` (service wrapper), `logs\install-*.log`, `logs\backup-*.log` (nightly backups) |
 | Health | `http://<server>:8000/healthz` answers `ok`; Admins: **System status** page |
 | Manual checks after installing | `docs\MANUAL_VERIFICATION.md` |
 

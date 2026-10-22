@@ -24,7 +24,9 @@ $values = Read-DotEnv
 Write-Host "`nCompuLab server status ($env:COMPUTERNAME)" -ForegroundColor Cyan
 
 Write-Host "`n1. Windows services"
-$db = Get-DbServiceName
+# The database service CompuLab Web depends on (set by install-server.ps1).
+$db = @((Get-Service $script:WebService -ErrorAction SilentlyContinue).ServicesDependedOn | Where-Object { $_ } | ForEach-Object { $_.Name }) | Select-Object -First 1
+if (-not $db) { try { $db = Get-DbServiceName } catch { Show 'Database service' $null $_.Exception.Message } }
 if ($db) { $s = Get-Service $db; Show 'Database service' ($s.Status -eq 'Running') "$db is $($s.Status) (start type $($s.StartType))" }
 else { Show 'Database service' $null 'No MariaDB/MySQL service found (external database?)' }
 foreach ($name in $script:WebService, $script:WorkerService) {

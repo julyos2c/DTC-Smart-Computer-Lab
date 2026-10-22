@@ -16,9 +16,10 @@
     1. silent install: settings, Python environment, database, migrations,
        first Administrator, install log without passwords;
     2. the installed site answers (/healthz, login page, /healthz/ready);
-    3. running the setup again (repair / update): secrets kept, a backup is
-       made first, nothing duplicated;
-    4. restore.ps1 brings back the backed-up data;
+    3. updating with a newer setup version: secrets kept, a backup is made
+       first, nothing duplicated, the new version registered;
+    4. restore.ps1 brings back the backed-up data; the nightly backup
+       command (backup.ps1 -Log) logs and reports success and failure;
     5. invalid settings and a busy port stop the installer before any change;
     6. uninstall removes the program files and keeps the data.
 #>
@@ -85,10 +86,15 @@ try {
     Write-Host "    $(& $mysql "--defaults-extra-file=$rootCnf" -N -e 'SELECT VERSION()')"
 
     # ------------------------------------------------------------ test build of the setup
-    $out = Join-Path $Tmp 'out'
-    & $iscc /Q /DTestBuild "/DPayload=$Payload" '/DAppVersion=0.0.0-test' '/DFileVersion=0.0.0.1' "/DOutputDir=$out" (Join-Path $Repo 'installer\build\CompuLab-Server.iss') | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Compiling the test build failed.' }
-    $setup = Get-ChildItem $out -Filter '*.exe' | Select-Object -First 1
+    $builds = @{}
+    foreach ($v in '0.0.0', '0.0.1') {
+        $out = Join-Path $Tmp "out-$v"
+        & $iscc /Q /DTestBuild "/DPayload=$Payload" "/DAppVersion=$v-test" "/DFileVersion=$v.1" "/DOutputDir=$out" (Join-Path $Repo 'installer\build\CompuLab-Server.iss') | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Compiling the test build $v failed." }
+        $builds[$v] = Get-ChildItem $out -Filter '*.exe' | Select-Object -First 1
+    }
+    $setup = $builds['0.0.0']
+    $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F0B2D52-3C61-4E1B-9A57-2B7C2B1D7E57}_is1'   # test build AppId
     $psArgs = "-SkipServices -SkipFirewall -SkipBackupTask -DbServiceName none -DbPort $dbPort"
     $env:COMPULAB_DB_ROOT_PASSWORD = $rootPw
     $env:DJANGO_SUPERUSER_EMAIL = 'installer.test.admin@gmail.com'
@@ -121,9 +127,18 @@ try {
         Assert-True ($e.SITE_URL -eq "http://127.0.0.1:$webPort") "SITE_URL $($e.SITE_URL)"
         Assert-True ($e.DJANGO_SECRET_KEY.Length -ge 50 -and $e.DB_PASSWORD.Length -ge 32 -and $e.PC_AGENT_SHARED_SECRET.Length -ge 40) 'weak or missing secrets'
     }
-    Test-Case 'packages came from the bundled offline folder' {
+    Test-Case 'packages came from the bundled offline folder; Python reported as 64-bit' {
         $log = Get-ChildItem (Join-Path $App 'logs') -Filter 'install-*.log' | Sort-Object Name | Select-Object -First 1
-        Assert-True ((Get-Content $log.FullName -Raw) -match 'OK: Packages installed \(offline package folder\)') 'not installed offline'
+        $t = Get-Content $log.FullName -Raw
+        Assert-True ($t -match 'OK: Packages installed \(offline package folder\)') 'not installed offline'
+        Assert-True ($t -match 'OK: Python 3\.1[123] 64-bit') 'Python line missing'
+    }
+    Test-Case 'no developer tests or build tools installed; build record present' {
+        $tests = @(Get-ChildItem $App -Recurse -File -Include 'tests.py', 'test_*.py' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\venv\\' })
+        Assert-True ($tests.Count -eq 0) "test modules installed: $(($tests | Select-Object -First 5 | ForEach-Object { $_.FullName.Substring($App.Length + 1) }) -join ', ')"
+        foreach ($d in 'installer\tests', 'installer\build', 'lab_pc_agent\tests') { Assert-True (-not (Test-Path (Join-Path $App $d))) "$d installed" }
+        $b = Get-Content (Join-Path $App 'BUILDINFO.json') -Raw | ConvertFrom-Json
+        Assert-True ($b.commit -match '^[0-9a-f]{40}$' -and $b.version) "BUILDINFO: $($b | ConvertTo-Json -Compress)"
     }
     Test-Case 'database created, every migration applied, one Administrator' {
         $expected = @(Get-ChildItem $App -Recurse -Filter '0*.py' | Where-Object { $_.Directory.Name -eq 'migrations' -and $_.FullName -notmatch '\\venv\\' }).Count
@@ -152,14 +167,16 @@ try {
     }
     Stop-Process -Id $web.Id -Force; $web = $null
 
-    Write-Host "`n3. Running the setup again (repair / update)" -ForegroundColor Cyan
+    Write-Host "`n3. Updating with a newer setup (0.0.0 -> 0.0.1)" -ForegroundColor Cyan
     $before = Read-Env (Join-Path $App '.env')
     Add-Content (Join-Path $App 'compulab\STALE_FILE_FROM_OLD_VERSION.py') '# should be removed by an update'
+    $setup = $builds['0.0.1']
     $code = Invoke-Setup (Join-Path $Tmp 'setup-2.log')
-    Test-Case 'repair succeeded and kept every secret' {
-        Assert-True ($code -eq 0 -and (Get-Content (Join-Path $Tmp 'setup-2.log') -Raw) -notmatch 'install-server.ps1 failed') 'repair failed'
+    Test-Case 'update succeeded, kept every secret and registered the new version' {
+        Assert-True ($code -eq 0 -and (Get-Content (Join-Path $Tmp 'setup-2.log') -Raw) -notmatch 'install-server.ps1 failed') 'update failed'
         $after = Read-Env (Join-Path $App '.env')
         foreach ($k in 'DJANGO_SECRET_KEY', 'DB_PASSWORD', 'PC_AGENT_SHARED_SECRET', 'SITE_URL') { Assert-True ($before[$k] -eq $after[$k]) "$k changed" }
+        Assert-True ((Get-ItemProperty $uninstallKey -ErrorAction SilentlyContinue).DisplayVersion -eq '0.0.1-test') 'Apps list still shows the old version'
     }
     Test-Case 'a backup was taken before updating' {
         $b = Get-ChildItem (Join-Path $App 'backups') -Directory -Filter 'compulab-*' | Select-Object -First 1
@@ -182,6 +199,24 @@ try {
         Assert-True ($LASTEXITCODE -eq 0) "restore exit code $LASTEXITCODE (see restore.log)"
         Assert-True ((Get-DbCount "SELECT COUNT(*) FROM labs_lab WHERE name = 'Added after backup'") -eq 0) 'data after the backup is still there'
         Assert-True (Test-Path (Join-Path $App 'backups\before-restore')) 'no safety backup before restoring'
+    }
+    Test-Case 'nightly backup command (backup.ps1 -Log, as the task runs it): logs, exit code 0, no password in the log' {
+        $nightly = Join-Path $Tmp 'nightly'
+        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $App 'installer\server\backup.ps1') -BackupRoot $nightly -Log *> (Join-Path $Tmp 'nightly.out')
+        Assert-True ($LASTEXITCODE -eq 0) "exit code $LASTEXITCODE"
+        Assert-True (Test-Path (Join-Path (Get-ChildItem $nightly -Directory | Select-Object -First 1).FullName 'database.sql')) 'no backup made'
+        $log = Get-ChildItem (Join-Path $App 'logs') -Filter 'backup-*.log' | Sort-Object Name | Select-Object -Last 1
+        Assert-True $log 'no logs\backup-*.log'
+        $t = Get-Content $log.FullName -Raw
+        Assert-True ($t -match 'Done\. Backups kept') 'log does not show the result'
+        Assert-True ($t -notmatch [regex]::Escape((Read-Env (Join-Path $App '.env')).DB_PASSWORD)) 'database password in the backup log'
+    }
+    Test-Case 'nightly backup failure: exit code 1 (Task Scheduler shows it) and the reason in the log' {
+        $notADir = Join-Path $Tmp 'not-a-folder'; Set-Content $notADir 'x'
+        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $App 'installer\server\backup.ps1') -BackupRoot (Join-Path $notADir 'sub') -Log *> (Join-Path $Tmp 'nightly-fail.out')
+        Assert-True ($LASTEXITCODE -eq 1) "exit code $LASTEXITCODE"
+        $log = Get-ChildItem (Join-Path $App 'logs') -Filter 'backup-*.log' | Sort-Object Name | Select-Object -Last 1
+        Assert-True ((Get-Content $log.FullName -Raw) -match 'Backup FAILED') 'failure not in the log'
     }
 
     Write-Host "`n5. The installer stops before changing anything" -ForegroundColor Cyan

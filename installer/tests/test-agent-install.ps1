@@ -8,9 +8,13 @@
 
   Needs: a build (installer\build\build-installers.ps1) and Inno Setup 6.
   A small stand-in CompuLab server (fake_compulab_server.py) answers the
-  agent. Checks, using a test build of CompuLab-Agent-Setup.exe:
-    1. silent install with an Agent config file: files, settings, self-test;
-    2. running the setup again keeps the settings and the queued events;
+  agent. The setups and the packaged agent run with a PATH that contains no
+  Python (like a fresh lab PC). Checks, using test builds of
+  CompuLab-Agent-Setup.exe (version 0.0.0-test, then 0.0.1-test):
+    1. silent install with an Agent config file: files, settings, self-test,
+       build record, no Python used;
+    2. running the setup again keeps the settings and the queued events, and
+       so does updating to the newer setup version;
     3. an unusable config file is refused and the installed one is kept;
     4. the packaged CompuLabAgent.exe: self-test with the server down and up,
        and --flush delivers queued events in order, emptying the queue;
@@ -56,27 +60,40 @@ function Start-FakeServer([string]$Name) {
     return $servers[$Name]
 }
 function Stop-FakeServer([string]$Name) { if ($servers[$Name]) { Stop-Process -Id $servers[$Name].Proc.Id -Force -ErrorAction SilentlyContinue } }
+# A fresh lab PC has no Python: the setups and the packaged agent run with
+# only Windows' own folders on PATH (py.exe lives in C:\Windows, left out).
+$NoPythonPath = "$env:SystemRoot\System32;$env:SystemRoot\System32\Wbem;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+function Invoke-WithoutPython([scriptblock]$Body) {
+    $oldPath = $env:PATH; $oldHome = $env:PYTHONHOME; $oldPyPath = $env:PYTHONPATH
+    $env:PATH = $NoPythonPath; $env:PYTHONHOME = $null; $env:PYTHONPATH = $null
+    try { & $Body } finally { $env:PATH = $oldPath; $env:PYTHONHOME = $oldHome; $env:PYTHONPATH = $oldPyPath }
+}
 function Invoke-AgentExe([string[]]$Arguments) {
     $old = $env:COMPULAB_AGENT_DATA_DIR; $env:COMPULAB_AGENT_DATA_DIR = $DataDir
-    try { return (Start-Process (Join-Path $AgentDir 'CompuLabAgent.exe') -ArgumentList $Arguments -Wait -PassThru -WindowStyle Hidden).ExitCode }
+    try { return Invoke-WithoutPython { (Start-Process (Join-Path $AgentDir 'CompuLabAgent.exe') -ArgumentList $Arguments -Wait -PassThru -WindowStyle Hidden).ExitCode } }
     finally { $env:COMPULAB_AGENT_DATA_DIR = $old }
 }
+$UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{3A9E5C1F-7B2D-4E8A-B6C4-91D0F2E77E57}_is1'   # test build AppId
 function New-QueueItem([string]$Id, [string]$Secret) {
     return @{ path = '/labs/api/pc-agent-end-session/'; queued_at = [double]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 30)
               body = @{ reason = 'manual'; secret = $Secret; event_id = $Id; agent_version = 'test' } }
 }
 
 try {
-    $out = Join-Path $Tmp 'out'
-    & $iscc /Q /DTestBuild "/DPayload=$Payload" '/DAppVersion=0.0.0-test' '/DFileVersion=0.0.0.1' "/DOutputDir=$out" (Join-Path $Repo 'installer\build\CompuLab-Agent.iss') | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Compiling the agent test build failed.' }
-    $setup = (Get-ChildItem $out -Filter '*.exe' | Select-Object -First 1).FullName
+    $builds = @{}
+    foreach ($v in '0.0.0', '0.0.1') {
+        $out = Join-Path $Tmp "out-$v"
+        & $iscc /Q /DTestBuild "/DPayload=$Payload" "/DAppVersion=$v-test" "/DFileVersion=$v.1" "/DOutputDir=$out" (Join-Path $Repo 'installer\build\CompuLab-Agent.iss') | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Compiling the agent test build $v failed." }
+        $builds[$v] = (Get-ChildItem $out -Filter '*.exe' | Select-Object -First 1).FullName
+    }
+    $setup = $builds['0.0.0']
     # No quotes: they would reach install-agent.ps1 literally (the test folder has no spaces).
     $psArgs = "-InstallDir $AgentDir -DataDir $DataDir -SkipFirewall -SkipTask"
     function Invoke-Setup([string]$Log, [string]$Config = '') {
         $a = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$AgentDir`"", "/PSARGS=`"$psArgs`"", "/LOG=`"$Log`"")
         if ($Config) { $a += "/CONFIG=`"$Config`"" }
-        Start-Process $setup -ArgumentList $a -Wait | Out-Null
+        Invoke-WithoutPython { Start-Process $setup -ArgumentList $a -Wait | Out-Null }
         return (Get-Content $Log -Raw) -notmatch 'install-agent.ps1 failed'
     }
 
@@ -101,6 +118,19 @@ try {
         Assert-True ($t -match 'starts, reads its settings and can write its queue; server: answers') 'self-test line missing'
         Assert-True ($t -notmatch [regex]::Escape($secret)) 'the secret appears in the install log'
     }
+    Test-Case 'installed and self-tested with no Python on the PATH (packaged agent, no Python check)' {
+        Assert-True (-not (Invoke-WithoutPython { Get-Command python.exe, python3.exe, py.exe -ErrorAction SilentlyContinue })) 'the test PATH still finds a Python'
+        $log = Get-ChildItem $DataDir -Filter 'install-*.log' | Sort-Object Name | Select-Object -Last 1
+        $t = Get-Content $log.FullName -Raw
+        Assert-True ($t -match 'Packaged agent \(no Python needed\)') 'not installed in packaged mode'
+        Assert-True ($t -notmatch 'OK: Python \d') 'the installer looked for Python'
+        Assert-True (Test-Path (Join-Path $AgentDir '_internal\python3*.dll')) 'the bundle does not carry its own Python runtime'
+        Assert-True (-not (Test-Path (Join-Path $AgentDir 'venv'))) 'a Python environment was created'
+    }
+    Test-Case 'build record installed next to the agent' {
+        $b = Read-Json (Join-Path $AgentDir 'BUILDINFO.json')
+        Assert-True ($b.commit -match '^[0-9a-f]{40}$' -and $b.version) "BUILDINFO: $($b | ConvertTo-Json -Compress)"
+    }
     Test-Case 'lab users can read but not change the agent settings' {
         $rules = (Get-Acl (Join-Path $AgentDir 'agent_config.local.json')).Access | Where-Object { $_.IdentityReference.Value -match 'Users$' }
         Assert-True ($rules) 'no rule for Users'
@@ -118,6 +148,15 @@ try {
         Assert-True (@(Read-Json $queue).Count -eq 2) 'queue lost'
         $log = Get-ChildItem $DataDir -Filter 'install-*.log' | Sort-Object Name | Select-Object -Last 1
         Assert-True ((Get-Content $log.FullName -Raw) -match '2 queued event\(s\) kept') 'install log does not mention the queue'
+    }
+    $setup = $builds['0.0.1']
+    $ok = Invoke-Setup (Join-Path $Tmp 'setup-update.log')
+    Test-Case 'update 0.0.0 -> 0.0.1 without a config file: settings unchanged, 2 queued events kept, new version registered' {
+        Assert-True $ok 'update failed'
+        Assert-True ((Get-FileHash (Join-Path $AgentDir 'agent_config.local.json')).Hash -eq $cfgHash) 'settings changed by the update'
+        Assert-True (@(Read-Json $queue).Count -eq 2) 'queue lost by the update'
+        Assert-True ((Get-ItemProperty $UninstallKey -ErrorAction SilentlyContinue).DisplayVersion -eq '0.0.1-test') 'Apps list still shows the old version'
+        Assert-True (Test-Path (Join-Path $AgentDir 'CompuLabAgent.exe')) 'program missing after update'
     }
 
     Write-Host "`n3. An unusable config file is refused" -ForegroundColor Cyan

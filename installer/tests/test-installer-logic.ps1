@@ -6,9 +6,17 @@
       powershell -ExecutionPolicy Bypass -File installer\tests\test-installer-logic.ps1
 
   Exit code 0 = all passed. Covers settings validation, .env creation and
-  repair (secrets kept), database SQL, version checks, the WinSW service
-  definition, agent configuration validation, and file-format rules for the
-  scripts (ASCII-only .ps1, CRLF .cmd, every script parses).
+  repair (secrets kept), database SQL, Python / database version checks, the
+  database service choice, agent configuration validation, and file-format
+  rules for the scripts (ASCII-only .ps1, CRLF .cmd, every script parses).
+
+  It also checks the configuration that needs administrator rights to
+  install - the WinSW service definitions, Windows service recovery, the
+  firewall rules (New-NetFirewallRule -WhatIf), the nightly backup task and
+  the agent start-up task (New-ScheduledTask objects, never registered) -
+  WITHOUT installing any of it. That proves what the installers ask Windows
+  for; whether Windows then runs it correctly on a real machine is in
+  docs\RELEASE_READINESS.md (administrator checks).
 #>
 $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -177,6 +185,97 @@ Test-Case 'Invoke-Quiet returns output and survives programs that write to stder
     Assert-True ("$out" -match 'to-stdout') "output: $out"
     Assert-True ($LASTEXITCODE -eq 3) "exit code $LASTEXITCODE"
 }
+Test-Case 'Python check: 64-bit 3.11-3.13 accepted; 3.14, 3.10 and 32-bit refused with the reason' {
+    Assert-Equal '3.13' (ConvertFrom-PythonProbe '3.13|64|C:\Program Files\Python313').Version
+    Assert-True ($null -eq (ConvertFrom-PythonProbe 'Python was not found; run without arguments to install')) 'garbage parsed'
+    Assert-True ($null -eq (Test-PythonSupported (ConvertFrom-PythonProbe '3.13|64|C:\Program Files\Python313'))) '3.13 64-bit refused'
+    Assert-True ($null -eq (Test-PythonSupported (ConvertFrom-PythonProbe '3.11|64|C:\Python311'))) '3.11 64-bit refused'
+    Assert-True ((Test-PythonSupported (ConvertFrom-PythonProbe '3.14|64|C:\Python314')) -match 'not supported') '3.14 accepted'
+    Assert-True ((Test-PythonSupported (ConvertFrom-PythonProbe '3.10|64|C:\Python310')) -match 'not supported') '3.10 accepted'
+    Assert-True ((Test-PythonSupported (ConvertFrom-PythonProbe '3.13|32|C:\Python313-32')) -match '32-bit') '32-bit accepted'
+}
+Test-Case 'Python installed for one Windows account only is noticed (the services would depend on that profile)' {
+    Assert-True (Test-PythonForAllUsers 'C:\Program Files\Python313') 'all-users install not recognised'
+    Assert-True (-not (Test-PythonForAllUsers "$env:SystemDrive\Users\someone\AppData\Local\Programs\Python\Python313")) 'per-user install not noticed'
+}
+Test-Case 'the real Python probe runs on this PC (no quotes for PowerShell 5.1 to drop)' {
+    $py = Find-Python
+    if ($py) { Assert-True ($py.Version -match '^3\.1[123]$' -and $py.BasePrefix) "found $($py.Version) at '$($py.BasePrefix)'" }
+    else { Write-Host "         (no 64-bit Python 3.11-3.13 here; rejected: $($script:PythonRejected -join '; '))" -ForegroundColor DarkYellow }
+}
+Test-Case 'database service choice: never XAMPP, a single real one, else the running one, else ask (no guessing)' {
+    $xampp = [pscustomobject]@{ Name = 'mysql'; State = 'Running'; PathName = 'C:\xampp\mysql\bin\mysqld.exe --defaults-file=c:\xampp\mysql\bin\my.ini mysql' }
+    $maria = [pscustomobject]@{ Name = 'MariaDB'; State = 'Stopped'; PathName = '"C:\Program Files\MariaDB 11.4\bin\mysqld.exe" "--defaults-file=C:\Program Files\MariaDB 11.4\data\my.ini" "MariaDB"' }
+    $mysql84 = [pscustomobject]@{ Name = 'MySQL84'; State = 'Running'; PathName = '"C:\Program Files\MySQL\MySQL Server 8.4\bin\mysqld.exe" --defaults-file="C:\ProgramData\MySQL\MySQL Server 8.4\my.ini" MySQL84' }
+    $other = [pscustomobject]@{ Name = 'Spooler'; State = 'Running'; PathName = 'C:\Windows\System32\spoolsv.exe' }
+    Assert-True ($null -eq (Select-DbService @($xampp, $other))) 'XAMPP chosen'
+    Assert-Equal 'MariaDB' (Select-DbService @($xampp, $maria, $other))
+    Assert-Equal 'MySQL84' (Select-DbService @($maria, $mysql84))
+    $maria2 = [pscustomobject]@{ Name = 'MariaDB2'; State = 'Stopped'; PathName = 'C:\Program Files\MariaDB 10.11\bin\mysqld.exe' }
+    Assert-Throws { Select-DbService @($maria, $maria2) } 'DbServiceName'
+}
+
+Write-Host "`nAdministrator-only configuration, checked WITHOUT installing it" -ForegroundColor Cyan
+Write-Host '  (These prove the definitions are what the installer asks Windows for, not that Windows accepted them on a real install.)' -ForegroundColor DarkGray
+Test-Case 'service recovery (sc.exe failure): restart after 10 s, 30 s, 60 s; count resets after 1 hour' {
+    $a = Get-ServiceRecoveryArgs 'CompuLabWeb'
+    Assert-Equal 'failure|CompuLabWeb|reset=|3600|actions=|restart/10000/restart/30000/restart/60000' ($a -join '|')
+    Assert-True (Test-Path "$env:SystemRoot\System32\sc.exe") 'sc.exe missing'
+}
+Test-Case 'WinSW definition values are ones WinSW 2.x accepts (start mode, delays, log mode)' {
+    foreach ($d in Get-ServiceDefinitions 8000) {
+        [xml]$x = New-WinSWXml $d 'MariaDB' 'C:\CompuLab\logs'
+        Assert-True ($x.service.startmode -in @('Automatic', 'Manual', 'Boot', 'System', 'Disabled')) "startmode $($x.service.startmode)"
+        Assert-Equal 'true' $x.service.delayedAutoStart
+        foreach ($f in @($x.service.onfailure)) { Assert-True ($f.action -eq 'restart' -and $f.delay -match '^\d+ sec$') "onfailure $($f.action) $($f.delay)" }
+        Assert-True ($x.service.resetfailure -match '^\d+ (hour|min|sec)$') "resetfailure $($x.service.resetfailure)"
+        Assert-Equal 'roll-by-size' $x.service.log.mode
+        Assert-True ($x.service.workingdirectory -and $x.service.logpath) 'working directory / log path missing'
+    }
+}
+Test-Case 'WinSW-x64.exe loads a generated definition ("status" of a never-installed probe service)' {
+    $winswExe = @((Join-Path $Repo 'installer\server\bin\WinSW-x64.exe'), (Join-Path $Repo 'installer\build\work\server-payload\installer\server\bin\WinSW-x64.exe')) |
+        Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $winswExe) { Write-Host '         (no WinSW-x64.exe here - run a build: not exercised)' -ForegroundColor DarkYellow; return }
+    $probeDir = Join-Path $Tmp 'winsw'; New-Item -ItemType Directory -Force $probeDir | Out-Null
+    $def = (Get-ServiceDefinitions 8000)[0]
+    $def.Id = 'CompuLabTestProbe' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Copy-Item $winswExe (Join-Path $probeDir 'probe.exe')
+    [IO.File]::WriteAllText((Join-Path $probeDir 'probe.xml'), (New-WinSWXml $def 'MariaDB' $probeDir), (New-Object Text.UTF8Encoding $false))
+    $out = Invoke-Quiet (Join-Path $probeDir 'probe.exe') @('status')
+    Assert-True ($LASTEXITCODE -eq 0 -and "$out" -match 'NonExistent') "WinSW said '$out' (exit $LASTEXITCODE)"
+    Assert-True (-not (Get-Service $def.Id -ErrorAction SilentlyContinue)) 'a service was created'
+}
+Test-Case 'web firewall rule: web port only, campus/VPN ranges only, Private+Domain; New-NetFirewallRule -WhatIf accepts it' {
+    $spec = Get-WebFirewallRuleSpec 8000 $script:DefaultAllowFrom
+    Assert-Equal 'Inbound|TCP|8000|Allow' "$($spec.Direction)|$($spec.Protocol)|$($spec.LocalPort)|$($spec.Action)"
+    Assert-Equal 'Private,Domain' ($spec.Profile -join ',')
+    Assert-Equal ($script:DefaultAllowFrom -join ',') ($spec.RemoteAddress -join ',')
+    Assert-True ($spec.RemoteAddress -notcontains 'Any' -and $spec.LocalPort -ne 3306) 'too open'
+    $before = @(Get-NetFirewallRule -DisplayName $spec.DisplayName -ErrorAction SilentlyContinue).Count
+    New-NetFirewallRule @spec -WhatIf 3>$null 6>$null | Out-Null
+    Assert-Equal $before @(Get-NetFirewallRule -DisplayName $spec.DisplayName -ErrorAction SilentlyContinue).Count 'WhatIf created a rule'
+    # The -WhatIf check is real: an invalid value is refused (prefixes like 'Privat' would bind).
+    $broken = $spec.Clone(); $broken.Profile = 'Campus'
+    Assert-Throws { New-NetFirewallRule @broken -WhatIf -ErrorAction Stop 6>$null | Out-Null } ''
+}
+Test-Case 'nightly backup task: daily 1:30 AM as SYSTEM, catches up a missed night, 2 h limit, writes a log' {
+    $script = Join-Path $Repo 'installer\server\backup.ps1'
+    $d = New-BackupTaskDefinition $script 'E:\CompuLab Backups'
+    $task = New-ScheduledTask @d
+    $t = $task.Triggers[0]
+    Assert-Equal 'MSFT_TaskDailyTrigger' $t.CimClass.CimClassName
+    # StartBoundary is stored in UTC (e.g. 17:30Z in UTC+8): 1:30 AM local time.
+    $at = ([datetime]$t.StartBoundary).ToLocalTime().ToString('HH:mm')
+    Assert-True ($at -eq '01:30' -and $t.DaysInterval -eq 1) "trigger at $at ($($t.StartBoundary)) every $($t.DaysInterval) day(s)"
+    Assert-Equal 'SYSTEM|ServiceAccount|Highest' "$($task.Principal.UserId)|$($task.Principal.LogonType)|$($task.Principal.RunLevel)"
+    Assert-True ($task.Settings.StartWhenAvailable) 'a missed night is not caught up'
+    Assert-Equal 'PT2H' $task.Settings.ExecutionTimeLimit
+    $a = $task.Actions[0]
+    Assert-True (Test-Path $a.Execute) "program $($a.Execute) missing"
+    Assert-True ($a.Arguments -match '-File "([^"]+)"' -and (Test-Path $Matches[1])) "script path in '$($a.Arguments)'"
+    Assert-True ($a.Arguments -match '-BackupRoot "E:\\CompuLab Backups"' -and $a.Arguments -match ' -Log$') $a.Arguments
+}
 
 Write-Host "`nAgent installer logic" -ForegroundColor Cyan
 . (Join-Path $Repo 'installer\agent\agent-common.ps1')
@@ -221,6 +320,35 @@ Test-Case 'agent config writes keep the secret and other keys' {
     $c = Read-AgentConfig $f
     Assert-Equal ('z' * 40) $c.secret; Assert-Equal 'http://b:8000' $c.server_url; Assert-Equal 'PC 07' $c.pc_name
 }
+Test-Case 'agent start-up task (not registered): every sign-in, back within a minute, never stopped, one copy, standard rights' {
+    $d = Join-Path $Tmp 'agentdir'   # holds a stand-in CompuLabAgent.exe (test above)
+    $def = New-AgentTaskDefinition $d ''
+    $task = New-ScheduledTask @def
+    $t = $task.Triggers[0]
+    Assert-Equal 'MSFT_TaskLogonTrigger' $t.CimClass.CimClassName
+    Assert-Equal 'PT1M' $t.Repetition.Interval
+    Assert-True ([string]::IsNullOrEmpty($t.Repetition.Duration)) "repetition ends after $($t.Repetition.Duration)"
+    Assert-True (-not $t.Repetition.StopAtDurationEnd) 'repetition end would stop the agent'
+    Assert-Equal 'IgnoreNew' $task.Settings.MultipleInstances
+    Assert-Equal 'PT0S' $task.Settings.ExecutionTimeLimit
+    Assert-True (-not $task.Settings.DisallowStartIfOnBatteries -and -not $task.Settings.StopIfGoingOnBatteries) 'battery rules stop the agent'
+    $sid = (New-Object Security.Principal.NTAccount($task.Principal.GroupId)).Translate([Security.Principal.SecurityIdentifier]).Value
+    Assert-Equal 'S-1-5-32-545|Limited' "$sid|$($task.Principal.RunLevel)"
+    Assert-Equal (Join-Path $d 'CompuLabAgent.exe') $task.Actions[0].Execute
+    Assert-Equal $d $task.Actions[0].WorkingDirectory
+    $me = "$env:USERDOMAIN\$env:USERNAME"
+    $defOne = New-AgentTaskDefinition $d $me
+    $one = New-ScheduledTask @defOne
+    Assert-Equal "$me|Interactive|Limited" "$($one.Principal.UserId)|$($one.Principal.LogonType)|$($one.Principal.RunLevel)"
+    Assert-Equal 'PT1M' $one.Triggers[0].Repetition.Interval
+}
+Test-Case 'agent firewall rules: port 5555 and ping from the server only; New-NetFirewallRule -WhatIf accepts them' {
+    $specs = Get-AgentFirewallRuleSpecs @('192.168.1.10') 5555
+    Assert-Equal 2 $specs.Count
+    Assert-Equal 'Inbound|TCP|5555|192.168.1.10' "$($specs[0].Direction)|$($specs[0].Protocol)|$($specs[0].LocalPort)|$($specs[0].RemoteAddress -join ',')"
+    Assert-Equal 'ICMPv4|8|192.168.1.10' "$($specs[1].Protocol)|$($specs[1].IcmpType)|$($specs[1].RemoteAddress -join ',')"
+    foreach ($s in $specs) { New-NetFirewallRule @s -WhatIf 6>$null | Out-Null }
+}
 
 Write-Host "`nScript files" -ForegroundColor Cyan
 Test-Case 'every installer .ps1 is ASCII-only (Windows PowerShell 5.1 misreads UTF-8 without BOM)' {
@@ -236,7 +364,7 @@ Test-Case 'every installer .ps1 parses' {
     }
     Assert-True (-not $errors) ($errors -join '; ')
 }
-Test-Case 'installer scripts avoid the two Windows PowerShell 5.1 pitfalls' {
+Test-Case 'installer scripts avoid the Windows PowerShell 5.1 pitfalls (quotes in python -c, stderr, Select -First)' {
     $scripts = Get-ChildItem (Join-Path $Repo 'installer\server'), (Join-Path $Repo 'installer\agent') -Filter *.ps1
     foreach ($f in $scripts) {
         $n = 0
@@ -245,6 +373,9 @@ Test-Case 'installer scripts avoid the two Windows PowerShell 5.1 pitfalls' {
             if ($line -match "-c '[^']*print\(`"") { throw "$($f.Name):$n passes double-quoted Python code (PowerShell 5.1 drops the quotes)" }
             if ($line -match '^\s*[^#].*&\s*\$\S+.*2>(\$null|&1)' -and $line -notmatch '& \$Exe @Arguments 2>') {   # inside Invoke-Quiet / Invoke-Logged themselves
                 throw "$($f.Name):$n redirects a program's stderr outside Invoke-Quiet (fatal under ErrorActionPreference Stop)"
+            }
+            if ($line -match '(Invoke-Quiet|Invoke-Logged)\b[^#]*\|\s*Select-Object\s+-First') {
+                throw "$($f.Name):$n pipes a program into Select-Object -First (stops it early: exit code -1)"
             }
         }
     }

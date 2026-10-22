@@ -1,8 +1,8 @@
 # Shared helpers for the lab PC agent scripts. Dot-source it:
 #   . "$PSScriptRoot\agent-common.ps1"
 # Works with Windows PowerShell 5.1 (built into Windows 10/11).
-# The pure functions (config validation, launch command) are covered by
-# installer\tests\Installer.Tests.ps1.
+# The pure functions (config validation, launch command, task and firewall
+# definitions) are covered by installer\tests\test-installer-logic.ps1.
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -157,17 +157,19 @@ function Set-AgentFirewall([string]$ServerUrl, [int]$AgentPort = 5555) {
         Write-Note "Could not resolve $serverHost; firewall rules not created. Run set-agent-server.ps1 again when the server is reachable."
         return
     }
-    New-NetFirewallRule -DisplayName 'CompuLab Agent' -Direction Inbound -Protocol TCP -LocalPort $AgentPort `
-        -RemoteAddress $serverIps -Action Allow -Profile Any | Out-Null
-    New-NetFirewallRule -DisplayName 'CompuLab ping' -Direction Inbound -Protocol ICMPv4 -IcmpType 8 `
-        -RemoteAddress $serverIps -Action Allow -Profile Any | Out-Null
+    foreach ($spec in Get-AgentFirewallRuleSpecs $serverIps $AgentPort) { New-NetFirewallRule @spec | Out-Null }
     Write-Ok "Port $AgentPort and ping accept the CompuLab server ($($serverIps -join ', ')) only"
 }
 
-function Register-AgentTask([string]$InstallDir, [string]$LabUser) {
-    # Starts the lock screen at every Windows sign-in (also after a restart)
-    # and restarts it within a minute if it stops. A logon task, not a
-    # service: the lock screen must run in the signed-in user's desktop.
+function New-AgentTaskDefinition([string]$InstallDir, [string]$LabUser) {
+    # The parts of the "CompuLab Agent" task, without registering anything
+    # (installer\tests\test-installer-logic.ps1 checks them without admin rights).
+    # Starts the lock screen at every Windows sign-in (also after a restart).
+    # A logon task, not a service: the lock screen must run in the signed-in
+    # user's desktop. A logon trigger cannot "restart the program when it
+    # exits", so the trigger repeats every minute while the user is signed in:
+    # with MultipleInstances IgnoreNew a repeat does nothing while the agent
+    # runs, and brings it back within about a minute if it was closed or crashed.
     $launch = Get-AgentLaunch $InstallDir
     $action = if ($launch.Args) { New-ScheduledTaskAction -Execute $launch.Exe -Argument $launch.Args -WorkingDirectory $InstallDir }
               else { New-ScheduledTaskAction -Execute $launch.Exe -WorkingDirectory $InstallDir }
@@ -178,7 +180,25 @@ function Register-AgentTask([string]$InstallDir, [string]$LabUser) {
         $trigger = New-ScheduledTaskTrigger -AtLogOn
         $taskPrincipal = New-ScheduledTaskPrincipal -GroupId 'S-1-5-32-545' -RunLevel Limited   # BUILTIN\Users
     }
+    # No duration = repeat for as long as the user is signed in.
+    $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1)).Repetition
+    $trigger.Repetition.StopAtDurationEnd = $false
     $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
-    Register-ScheduledTask -TaskName $script:AgentTaskName -Action $action -Trigger $trigger -Principal $taskPrincipal -Settings $taskSettings -Force | Out-Null
+    return @{ Action = $action; Trigger = $trigger; Principal = $taskPrincipal; Settings = $taskSettings }
+}
+
+function Register-AgentTask([string]$InstallDir, [string]$LabUser) {
+    $definition = New-AgentTaskDefinition $InstallDir $LabUser
+    Register-ScheduledTask -TaskName $script:AgentTaskName @definition -Force | Out-Null
+}
+
+function Get-AgentFirewallRuleSpecs([string[]]$ServerIps, [int]$AgentPort = 5555) {
+    # Parameters for New-NetFirewallRule (checked by the tests with -WhatIf).
+    return @(
+        @{ DisplayName = 'CompuLab Agent'; Direction = 'Inbound'; Protocol = 'TCP'; LocalPort = $AgentPort
+           RemoteAddress = $ServerIps; Action = 'Allow'; Profile = 'Any' },
+        @{ DisplayName = 'CompuLab ping'; Direction = 'Inbound'; Protocol = 'ICMPv4'; IcmpType = 8
+           RemoteAddress = $ServerIps; Action = 'Allow'; Profile = 'Any' }
+    )
 }
