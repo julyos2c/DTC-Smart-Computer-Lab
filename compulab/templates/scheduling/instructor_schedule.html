@@ -236,6 +236,10 @@
     <div class="is-modal-row"><span>Time</span><span id="imTime"></span></div>
     <div class="is-modal-row"><span>Status</span><span id="imStatus"></span></div>
     <div class="is-modal-row"><span>Code</span><span id="imCode" style="font-family:var(--font-mono)"></span></div>
+    <form method="post" id="imCancelForm" style="margin-top:14px; display:none;">
+      {% csrf_token %}
+      <button type="submit" class="action-btn danger" style="width:100%; justify-content:center;" id="imCancelBtn">Cancel this reservation</button>
+    </form>
   </div>
 </div>
 
@@ -318,6 +322,24 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('imTime').textContent = p.time || '';
     document.getElementById('imStatus').textContent = p.status || '';
     document.getElementById('imCode').textContent = p.code || '—';
+    var cancelForm = document.getElementById('imCancelForm');
+    if (p.cancelUrl) {
+      cancelForm.action = p.cancelUrl;
+      cancelForm.style.display = '';
+      document.getElementById('imCancelBtn').textContent = p.cancelLabel || 'Cancel this reservation';
+      cancelForm.onsubmit = function (e) {
+        e.preventDefault();
+        compulabConfirmSubmit(cancelForm, {
+          title: (p.cancelLabel || 'Cancel this reservation') + '?',
+          text: p.subject + ' (' + p.lab + ', ' + (p.time || '') + '). The lab staff will be notified and the slot freed.',
+          confirmButtonText: 'Yes, cancel it'
+        });
+        return false;
+      };
+    } else {
+      cancelForm.style.display = 'none';
+      cancelForm.removeAttribute('action');
+    }
     modal.classList.add('open');
   }
 

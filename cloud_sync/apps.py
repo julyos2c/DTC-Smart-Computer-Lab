@@ -6,9 +6,12 @@ class CloudSyncConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
 
     def ready(self):
-        from compulab.background import should_start_background_tasks
-        if not should_start_background_tasks():
+        # Sending is done by the CompuLab worker loop (system/worker.py ->
+        # cloud_sync.sync.run_once), so it runs wherever the worker runs and
+        # recovers with it. Here we only start recording changes, and only
+        # when a cloud receiver is configured.
+        from django.conf import settings
+        if not getattr(settings, 'CLOUD_SYNC_ENABLED', False):
             return
-
-        from cloud_sync.sync import start_cloud_sync_worker
-        start_cloud_sync_worker()
+        from cloud_sync import signals
+        signals.connect(getattr(settings, 'CLOUD_SYNC_OBJECT_TYPES', ()))

@@ -6,7 +6,7 @@
 {% block content %}
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media=\'all\'">
 
 <style>
   :root{
@@ -361,6 +361,7 @@
           <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px 12px; margin-top:8px;">
             <a href="{% url 'resend_verification' %}" class="lg-forgot">Resend verification email</a>
             <a href="{% url 'password_reset' %}" class="lg-forgot">Forgot password?</a>
+            <a href="{% url 'activate_account' %}" class="lg-forgot">Have a one-time code from an Administrator?</a>
           </div>
 
           <button type="submit">

@@ -1,0 +1,111 @@
+{% extends base_template|default:"base.html" %}
+{% block title %}Email outbox{% endblock %}
+
+{% block content %}
+<style>
+  .eo-tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .eo-note { font-size:12px; color:var(--text-dim); line-height:1.6; }
+  .eo-err { font-size:11.5px; color:var(--text-dim); font-family:var(--font-mono); }
+  .eo-actions { display:flex; gap:6px; flex-wrap:wrap; }
+  .eo-actions form { display:inline; }
+</style>
+
+<div class="page-header">
+  <div>
+    <h1>Email outbox</h1>
+    <div class="sub">Every email goes through this queue, so pages never wait for the internet and nothing is lost while it is down</div>
+  </div>
+  <a href="{% url 'system_status' %}" class="action-btn"><svg class="btn-icon"><use href="#icon-shield"/></svg> System status</a>
+</div>
+
+{% if summary.smtp_configured %}
+  {% if summary.internet.ok is False or summary.smtp.ok is False %}
+  <div class="card" style="border-left:3px solid var(--amber);">
+    <b>Email can't be delivered right now</b>
+    <span class="eo-note">({% if summary.internet.ok is False %}internet offline{% else %}email server unreachable{% endif %}{% if summary.smtp.since %} since {{ summary.smtp.since|date:"M d, H:i" }}{% endif %}).</span>
+    <div class="eo-note">Waiting emails are sent automatically when it is back. To activate a new staff account now, use <b>Users &rarr; Approve in person</b>.</div>
+  </div>
+  {% elif email_hint %}
+  <div class="card" style="border-left:3px solid var(--amber);">
+    <b>Emails are failing</b> <span class="eo-err">{{ summary.last_email_error }}</span>
+    <div class="eo-note">{{ email_hint }}</div>
+  </div>
+  {% endif %}
+{% else %}
+  <div class="card" style="border-left:3px solid var(--amber);">
+    <b>No email server is configured.</b>
+    <div class="eo-note">Emails are "sent" to the server console only. Set EMAIL_HOST_USER and EMAIL_HOST_PASSWORD in the server's <code>.env</code> (see <code>installer/server/README.md</code>) to deliver real email.</div>
+  </div>
+{% endif %}
+
+<div class="eo-tabs">
+  <a href="?show=waiting" class="action-btn{% if show == 'waiting' %} primary{% endif %}">Waiting <span class="count">{{ counts.waiting }}</span></a>
+  <a href="?show=problems" class="action-btn{% if show == 'problems' %} primary{% endif %}">Rejected / expired <span class="count">{{ counts.problems }}</span></a>
+  <a href="?show=sent" class="action-btn{% if show == 'sent' %} primary{% endif %}">Sent <span class="count">{{ counts.sent }}</span></a>
+  <a href="?show=cancelled" class="action-btn{% if show == 'cancelled' %} primary{% endif %}">Cancelled <span class="count">{{ counts.cancelled }}</span></a>
+</div>
+
+<div class="card">
+  <table class="table">
+    <thead>
+      <tr><th>Queued</th><th>To</th><th>Type</th><th>Subject</th><th>Status</th><th>Attempts</th><th>Last error</th><th></th></tr>
+    </thead>
+    <tbody>
+    {% for row in rows %}
+      <tr>
+        <td>{{ row.created_at|date:"M d, H:i" }}</td>
+        <td>{{ row.to_email }}{% if row.user %}<div class="eo-note">{{ row.user.display_name }}</div>{% endif %}</td>
+        <td>{{ row.get_category_display }}</td>
+        <td>{% if row.render_mode == 'render_at_send' %}<span class="eo-note">Contains a one-time link — created when sent</span>{% else %}{{ row.subject|truncatechars:60 }}{% endif %}</td>
+        <td>
+          {{ row.get_status_display }}
+          {% if row.status == 'retry' %}<div class="eo-note">next try {{ row.next_attempt_at|date:"H:i" }}</div>{% endif %}
+          {% if row.status == 'sent' %}<div class="eo-note">{{ row.sent_at|date:"M d, H:i" }}</div>{% endif %}
+        </td>
+        <td>{{ row.attempts }}</td>
+        <td class="eo-err">{{ row.last_error|default:"—" }}</td>
+        <td>
+          <div class="eo-actions">
+            {% if row.status != 'sent' %}
+            <form method="post" action="{% url 'email_outbox_retry' row.pk %}">{% csrf_token %}<input type="hidden" name="show" value="{{ show }}">
+              <button type="submit" class="action-btn small" title="Send again now"><svg class="btn-icon"><use href="#icon-refresh"/></svg> Retry</button>
+            </form>
+            {% endif %}
+            {% if row.is_active %}
+            <form method="post" action="{% url 'email_outbox_cancel' row.pk %}">{% csrf_token %}<input type="hidden" name="show" value="{{ show }}">
+              <button type="submit" class="action-btn small" title="Don't send this email"><svg class="btn-icon"><use href="#icon-x"/></svg> Cancel</button>
+            </form>
+            {% endif %}
+            {% if row.category == 'verification' and row.user and row.user.approval_status == 'pending' %}
+              <a href="{% url 'user_detail' row.user.pk %}" class="action-btn small" title="Give this person a one-time activation code instead">Approve in person…</a>
+            {% endif %}
+            {% if row.status == 'dead' and row.user %}
+              <a href="{% url 'user_update' row.user.pk %}" class="action-btn small js-modal-link">Fix address</a>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="8" class="eo-note">Nothing here.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  {% if is_paginated %}
+  <div class="form-actions" style="margin-top:12px;">
+    {% if page_obj.has_previous %}<a class="action-btn small" href="?show={{ show }}&page={{ page_obj.previous_page_number }}">&larr; Newer</a>{% endif %}
+    <span class="eo-note">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+    {% if page_obj.has_next %}<a class="action-btn small" href="?show={{ show }}&page={{ page_obj.next_page_number }}">Older &rarr;</a>{% endif %}
+  </div>
+  {% endif %}
+
+  <p class="eo-note" style="margin-top:12px;">
+    "Sent" means the mail server accepted the message, not that it reached the inbox. If someone says an email never
+    arrived, check their Spam folder and the sending mailbox for a "Mail Delivery Subsystem" bounce.
+    Email (SMTP) cannot guarantee exactly-once delivery: if the connection drops right after the mail server accepted a
+    message but before it confirmed, the outbox retries and the person may get the same email twice. Duplicate queueing
+    of the same email is prevented; this rare double delivery is not. Email is separate from cloud sync: a sent email
+    says nothing about whether data reached the cloud.
+  </p>
+</div>
+{% endblock %}

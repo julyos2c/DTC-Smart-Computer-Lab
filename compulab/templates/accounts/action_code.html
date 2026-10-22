@@ -1,0 +1,52 @@
+{% extends base_template|default:"base.html" %}
+{% block title %}One-time code{% endblock %}
+
+{% block content %}
+<style>
+  .code-card { max-width:560px; }
+  .code-box { font-family:var(--font-mono); font-size:30px; font-weight:700; letter-spacing:0.12em;
+              padding:18px 20px; border:2px dashed var(--border); border-radius:12px; text-align:center;
+              margin:14px 0; user-select:all; }
+  .code-steps { font-size:13px; line-height:1.7; padding-left:18px; margin:8px 0 0; }
+  .code-note { font-size:12px; color:var(--text-dim); line-height:1.6; }
+  @media print {
+    .sidebar, .app-navbar, .app-footer, .no-print { display:none !important; }
+    .code-box { border-color:#000; }
+  }
+</style>
+
+<div class="page-header no-print">
+  <div>
+    <h1>{% if purpose == 'activate' %}Activation code{% else %}Password reset code{% endif %}</h1>
+    <div class="sub">For {{ target_user.display_name }} — shown only once</div>
+  </div>
+  <a href="{% url 'users' %}" class="action-btn"><svg class="btn-icon"><use href="#icon-x"/></svg> Done</a>
+</div>
+
+<div class="card code-card">
+  <div class="section-title">
+    {% if purpose == 'activate' %}Give this code to {{ target_user.display_name }} in person{% else %}Give this reset code to {{ target_user.display_name }} in person{% endif %}
+  </div>
+  <div class="code-note">Account: <b>{{ target_user.email }}</b> ({{ target_user.get_role_display }})</div>
+
+  <div class="code-box">{{ code }}</div>
+
+  <div class="code-note">Valid until <b>{{ expires_at|date:"M d, Y H:i" }}</b>. It works once, only for this account, and stops working after 5 wrong tries or if you issue a new one.</div>
+
+  <ol class="code-steps">
+    <li>On any computer on the campus network, open <b>{{ activate_url }}</b> (or the sign-in page &rarr; "Have a one-time code?").</li>
+    <li>Enter the email <b>{{ target_user.email }}</b> and this code.</li>
+    <li>Choose a new password. {% if purpose == 'activate' %}The account is then approved and can sign in right away.{% else %}They can then sign in with it.{% endif %}</li>
+  </ol>
+
+  <p class="code-note" style="margin-top:14px;">
+    This code is not stored anywhere readable and will not be shown again. If it is lost, issue a new one from the user's page —
+    the old one stops working. Never send it by chat or email; hand it over in person after checking the person's school ID.
+  </p>
+
+  <div class="form-actions no-print" style="margin-top:14px;">
+    <button type="button" class="action-btn" onclick="window.print()">Print</button>
+    <a href="{% url 'user_detail' target_user.pk %}" class="action-btn">Back to {{ target_user.display_name }}</a>
+  </div>
+</div>
+{% endblock %}

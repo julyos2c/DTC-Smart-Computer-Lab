@@ -21,7 +21,7 @@ from django.urls import reverse_lazy, reverse
 from accounts.mixins import RoleRequiredMixin, ModalFormMixin, ModalDetailMixin, is_modal_request, bulk_delete
 from accounts.models import ActivityLog
 from accounts.forms import email_domain_error, AdminUserCreateForm, AdminUserUpdateForm, AdminSetPasswordForm, ProfileUpdateForm, ProfilePasswordChangeForm, StudentImportForm, SetPasswordOnVerifyForm, CompulabAuthenticationForm, ResendVerificationForm
-from accounts import verification
+from accounts import lifecycle, verification
 from accounts.verification import email_verification_token, requires_verification, resend_cooldown_remaining
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
@@ -61,7 +61,9 @@ class CompulabLoginView(LoginView):
             return self.form_invalid(form)
         if requires_verification(user):
             # Backstop only: VerifiedEmailBackend already refuses these.
-            form.add_error(None, CompulabAuthenticationForm.error_messages['unverified'])
+            reason = verification.sign_in_block_reason(user)
+            form.add_error(None, CompulabAuthenticationForm.error_messages[
+                'rejected' if reason == 'rejected' else 'unverified'])
             return self.form_invalid(form)
         # successful login clears any failed-attempt counter for this account
         cache.delete(f'failed_login:{user.email.lower()}')
@@ -135,14 +137,33 @@ class CompulabPasswordResetView(PasswordResetView):
     # instead is the same fix send_verification_email() already applies
     # for the account-verification email, for the same reason: links need
     # to work from a phone checking Gmail, not just from this computer.
-    @property
-    def extra_email_context(self):
-        return {
-            'domain': settings.SITE_DOMAIN,
-            'protocol': 'https' if self.request.is_secure() else 'http',
-            'logo_url': f'{settings.SITE_URL}{static("img/logo.jpg")}',
-            'header_bg_url': f'{settings.SITE_URL}{static("img/login-bg.jpg")}',
-        }
+    #
+    # The email is now queued in the outbox (notifications/outbox.py) and
+    # rendered by the worker at send time, with the same templates and the
+    # same SITE_URL-based domain, so the reset link's lifetime starts when
+    # it is actually delivered and the form never waits on SMTP.
+    def get_context_data(self, **kwargs):
+        from system.connectivity import email_probably_unavailable
+        ctx = super().get_context_data(**kwargs)
+        ctx['email_unavailable'] = email_probably_unavailable()
+        return ctx
+
+    def form_valid(self, form):
+        from notifications import outbox
+        from system.connectivity import email_probably_unavailable
+        if email_probably_unavailable():
+            # A reset link that arrives hours later is useless; send the
+            # person to an Admin for a one-time reset code instead.
+            return render(self.request, 'registration/password_reset_form.html', {
+                'form': form, 'email_unavailable': True, 'offline_refused': True,
+            })
+        # Same answer whether or not the address exists. Only accounts with
+        # a verified mailbox get email resets (an account approved in person
+        # whose email isn't verified yet asks an Admin for a reset code).
+        for user in form.get_users(form.cleaned_data['email']):
+            if user.role != 'student' and outbox.email_allowed_for(user):
+                outbox.queue_password_reset(user)
+        return redirect(self.get_success_url())
 
 
 class CompulabPasswordResetConfirmView(PasswordResetConfirmView):
@@ -602,6 +623,14 @@ class UsersListView(RoleRequiredMixin, ListView):
             qs = qs.filter(is_active=True)
         elif status == 'inactive':
             qs = qs.filter(is_active=False)
+        elif status == 'pending':
+            qs = qs.exclude(role='student').filter(
+                is_superuser=False, email_verified=False, approval_status='pending',
+            )
+        elif status == 'unverified':
+            qs = qs.exclude(role='student').filter(email_verified=False, approval_status='approved')
+        elif status == 'rejected':
+            qs = qs.exclude(role='student').filter(is_superuser=False, approval_status='rejected')
         if department in dict(DEPARTMENT_CHOICES):
             qs = qs.filter(department=department)
         if q:
@@ -646,64 +675,44 @@ class UsersListView(RoleRequiredMixin, ListView):
         ]
 
         ctx['recent_activities'] = ActivityLog.objects.filter(
-            action__in=['register', 'activate', 'deactivate', 'delete', 'reset_password']
+            action__in=['register', 'activate', 'deactivate', 'delete', 'reset_password',
+                        'approve_account', 'reject_account', 'issue_activation_code', 'redeem_activation_code',
+                        'issue_reset_code', 'redeem_reset_code', 'email_verified']
         ).select_related('actor').order_by('-created_at')[:6]
+        ctx['pending_approval_count'] = User.objects.exclude(role='student').filter(
+            is_superuser=False, email_verified=False, approval_status='pending',
+        ).count()
 
         return ctx
 
 
-# emails a one-click verification link to a newly created (or re-sent)
+# queues a one-click verification link for a newly created (or re-sent)
 # Admin/Lab In-Charge/Instructor account
-def send_verification_email(user):
-    """Emails a signed, time-limited verification link (see
-    accounts/verification.py) to an Admin/Lab In-Charge/Instructor
-    account. Sending a new link invalidates any earlier one. Returns True
-    only if the SMTP server accepted the message — that is not proof it
-    reached the inbox, and the account stays unverified until the link is
-    clicked."""
-    previous_sent_at = user.email_verification_sent_at
-    sent_at = timezone.now()
-    if previous_sent_at and sent_at <= previous_sent_at:
-        # coarse clocks: keep it strictly increasing so the new link always
-        # differs from (and supersedes) the previous one
-        sent_at = previous_sent_at + datetime.timedelta(microseconds=1)
-    user.email_verification_sent_at = sent_at
-    user.save(update_fields=['email_verification_sent_at'])
-    try:
-        uid = urlsafe_base64_encode(force_bytes(user.pk))
-        token = email_verification_token.make_token(user)
-        # Built from SITE_URL (the public https:// address), not from the
-        # request, so the link works from the recipient's phone and is the
-        # same whichever host the admin happened to be using.
-        verify_url = settings.SITE_URL + reverse('verify_email', kwargs={'uidb64': uid, 'token': token})
-        context = {
-            'user': user,
-            'verify_url': verify_url,
-            'resend_url': settings.SITE_URL + reverse('resend_verification'),
-            'expiry_hours': settings.EMAIL_VERIFICATION_TIMEOUT // 3600,
-            'site_url': settings.SITE_URL,
-            'logo_url': f'{settings.SITE_URL}{static("img/logo.jpg")}',
-        }
-        text_body = render_to_string('emails/verify_email.txt', context)
-        html_body = render_to_string('emails/verify_email.html', context)
-        message = EmailMultiAlternatives(
-            subject='Verify your CompuLab email address',
-            body=text_body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[user.email],
+def send_verification_email(user, created_by=None):
+    """Queues the signed, time-limited verification link (see
+    accounts/verification.py) in the email outbox. The link itself is only
+    generated when the worker actually sends it, and sending a new link
+    invalidates any earlier one. Returns the outbox row (or None if the
+    account has no email). Never waits for SMTP, so it works offline: the
+    email simply goes out when the internet is back."""
+    from notifications import outbox
+    return outbox.queue_verification(user, created_by=created_by)
+
+
+def _verification_queued_message(user):
+    """Wording shown to the Admin after a verification email was queued."""
+    from system.connectivity import email_probably_unavailable
+    if email_probably_unavailable():
+        return (
+            f'The internet or email server is unavailable right now, so the verification email to {user.email} '
+            f'is queued and will go out automatically when it is back. To let {user.display_name} sign in now, '
+            f'use "Approve in person" on the Users list and hand them the one-time activation code.'
         )
-        message.attach_alternative(html_body, 'text/html')
-        message.send(fail_silently=False)
-        return True
-    except Exception:
-        # Never block account creation over an email problem, but log the
-        # reason (no link or token in the log), and restore the previous
-        # timestamp so the last link that did go out keeps working and the
-        # resend cooldown doesn't kick in for an email that never left.
-        logger.exception('Failed to send verification email to user #%s', user.pk)
-        user.email_verification_sent_at = previous_sent_at
-        user.save(update_fields=['email_verification_sent_at'])
-        return False
+    return (
+        f'A verification email to {user.email} is queued and will be sent within a few seconds '
+        f'(see Email outbox). {user.display_name} can sign in once they click the link, or after you approve '
+        f'them in person.'
+    )
 
 
 # emails a newly-created Student account to let them know their account
@@ -711,39 +720,18 @@ def send_verification_email(user):
 # Students never log in with email/password (they use their Student ID at
 # a lab PC), so there's no verification link here — just a heads-up.
 def send_student_welcome_email(user):
-    """Notifies a newly registered Student via their Gmail that their
-    CompuLab account has been created. Silently no-ops if the student
-    has no email on file. Everything here — including template
-    rendering — is wrapped in try/except: an email hiccup (bad template
-    context, missing static manifest entry, SMTP error, etc.) must never
-    bubble up and turn an already-successful account creation into a
-    500 response."""
+    """Queues the 'your student account was created' email in the outbox.
+    No-ops if the student has no email on file, and never raises: an
+    email hiccup must not turn an already-successful account creation
+    into an error page."""
+    from notifications import outbox
     if not user.email:
-        return
-    try:
-        logo_url = f'{settings.SITE_URL}{static("img/logo.jpg")}'
-        context = {'user': user, 'logo_url': logo_url}
-        text_body = render_to_string('emails/student_welcome.txt', context)
-        html_body = render_to_string('emails/student_welcome.html', context)
-        message = EmailMultiAlternatives(
-            subject='Your CompuLab student account has been created',
-            body=text_body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[user.email],
-        )
-        message.attach_alternative(html_body, 'text/html')
-        # fail_silently=False here (not True) so a real SMTP/auth problem
-        # actually raises and gets caught + logged just below — with
-        # fail_silently=True the failure gets swallowed *inside* .send()
-        # itself, before our except block ever sees it, which is why "no
-        # email arrived" can happen with nothing showing up anywhere.
-        message.send(fail_silently=False)
-    except Exception:
-        # Still never blocks account creation (the account was already
-        # saved before this function ran), but now the real reason shows
-        # up in the server console/logs — check here first if a student
-        # says they never got the email.
-        logger.exception('Failed to send student welcome email to %s', user.email)
+        return None
+    context = {'user': user, 'logo_url': f'{settings.SITE_URL}{static("img/logo.jpg")}'}
+    return outbox.queue_template(
+        user.email, 'Your CompuLab student account has been created', 'emails/student_welcome', context,
+        category='welcome', user=user,
+    )
 
 
 # admin create new user
@@ -770,18 +758,13 @@ class UserCreateView(RoleRequiredMixin, ModalFormMixin, CreateView):
         )
         if self.object.role != 'student' and self.object.email:
             # Verification links are only meaningful for accounts that
-            # actually log in with email — never Students.
-            if send_verification_email(self.object):
-                messages.success(self.request, 'User registered. A verification email was sent to their Gmail.')
-            else:
-                messages.warning(
-                    self.request,
-                    'User registered, but the verification email could not be sent. They can\'t log in until '
-                    'verified — use "Resend verification" on the Users list once email is working.'
-                )
+            # actually log in with email — never Students. Queued, so this
+            # works the same with or without internet.
+            send_verification_email(self.object, created_by=self.request.user)
+            messages.success(self.request, f'User registered. {_verification_queued_message(self.object)}')
         elif self.object.role == 'student' and self.object.email:
             send_student_welcome_email(self.object)
-            messages.success(self.request, 'Student registered. A notification was sent to their Gmail.')
+            messages.success(self.request, 'Student registered. A welcome email to their Gmail is queued.')
         else:
             messages.success(self.request, 'User registered.')
         return response
@@ -804,15 +787,138 @@ def user_resend_verification(request, pk):
         elif cooldown:
             messages.info(request, f'A verification email was sent to {target.email} moments ago. '
                                    f'Please wait {cooldown} seconds before sending another.')
-        elif send_verification_email(target):
+        else:
+            send_verification_email(target, created_by=request.user)
             messages.success(
                 request,
-                f'Verification email re-sent to {target.email}. If you get a "Mail Delivery Subsystem" '
-                f'bounce, the address is wrong — use Edit user to correct it.'
+                f'{_verification_queued_message(target)} If you get a "Mail Delivery Subsystem" bounce, '
+                f'the address is wrong — use Edit user to correct it.'
             )
-        else:
-            messages.error(request, 'The verification email could not be sent. Check the server log and the email settings in .env.')
     return redirect('users')
+
+
+# ------------------------------------------------------------------ #
+# In-person approval and one-time codes (work without internet).
+# See accounts/lifecycle.py for the rules.
+# ------------------------------------------------------------------ #
+def _lifecycle_target(request, pk):
+    _require_admin(request)
+    target = get_object_or_404(User, pk=pk)
+    if not lifecycle.can_manage_lifecycle(request.user, target):
+        raise PermissionDenied
+    return target
+
+
+def _render_code(request, target, purpose, code, expires_at):
+    return render(request, 'accounts/action_code.html', {
+        'target_user': target,
+        'purpose': purpose,
+        'code': code,
+        'expires_at': expires_at,
+        'activate_url': settings.SITE_URL + reverse('activate_account'),
+        # Opened from the user popup: show the code inside the popup.
+        'base_template': 'partials/bare.html' if is_modal_request(request) else 'base.html',
+    })
+
+
+@login_required
+def user_approve_in_person(request, pk):
+    """Admin has checked the person's identity (school ID) face to face:
+    issue a one-time activation code they use to set their own password.
+    The code is shown once, on this response only (never in a URL, email
+    or log). POST only."""
+    target = _lifecycle_target(request, pk)
+    if request.method != 'POST':
+        return redirect('user_detail', pk=pk)
+    if target.approval_status == 'rejected':
+        messages.error(request, f'{target.display_name}\'s account was rejected. Reopen it first.')
+        return redirect('user_detail', pk=pk)
+    if not target.is_active:
+        messages.error(request, f'{target.display_name}\'s account is disabled. Activate it first.')
+        return redirect('user_detail', pk=pk)
+    code, expires_at = lifecycle.issue_code(target, 'activate', request.user, ip=request.META.get('REMOTE_ADDR'))
+    return _render_code(request, target, 'activate', code, expires_at)
+
+
+@login_required
+def user_issue_reset_code(request, pk):
+    """Offline-friendly password reset: after checking identity in person,
+    the Admin gives the user a one-time code; the user chooses their own
+    new password at /accounts/activate/ (the Admin never knows it)."""
+    target = _lifecycle_target(request, pk)
+    if request.method != 'POST':
+        return redirect('user_detail', pk=pk)
+    if requires_verification(target):
+        messages.info(request, f'{target.display_name} hasn\'t been approved yet — use "Approve in person" instead.')
+        return redirect('user_detail', pk=pk)
+    code, expires_at = lifecycle.issue_code(target, 'reset_password', request.user, ip=request.META.get('REMOTE_ADDR'))
+    return _render_code(request, target, 'reset_password', code, expires_at)
+
+
+class UserRejectView(RoleRequiredMixin, ModalFormMixin, FormView):
+    """Mark a pending account as not approved: it can't sign in, any
+    unused codes are revoked and its queued verification email is
+    cancelled. Reversible with Reopen."""
+    allowed_roles = ['admin']
+    template_name = 'accounts/user_reject.html'
+
+    def get_form_class(self):
+        from accounts.forms import RejectAccountForm
+        return RejectAccountForm
+
+    def dispatch(self, request, *args, **kwargs):
+        if request.user.is_authenticated:
+            self.target_user = _lifecycle_target(request, kwargs['pk'])
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        ctx['target_user'] = self.target_user
+        return ctx
+
+    def form_valid(self, form):
+        lifecycle.reject(self.target_user, self.request.user, form.cleaned_data.get('reason', ''))
+        messages.success(self.request, f'{self.target_user.display_name}\'s account was rejected. They can\'t sign in.')
+        return super().form_valid(form)
+
+    def get_success_url(self):
+        return reverse('users')
+
+
+@login_required
+def user_reopen(request, pk):
+    target = _lifecycle_target(request, pk)
+    if request.method == 'POST' and target.approval_status == 'rejected':
+        lifecycle.reopen(target, request.user)
+        messages.success(request, f'{target.display_name}\'s account is pending approval again.')
+    return redirect('user_detail', pk=pk)
+
+
+ACTIVATE_ATTEMPTS_PER_HOUR_PER_IP = 20
+
+
+@require_http_methods(['GET', 'POST'])
+def activate_account(request):
+    """Public page: email + one-time code from an Admin + a new password.
+    Activates a new staff account, or resets a forgotten password, with no
+    email or internet involved."""
+    from accounts.forms import ActivateWithCodeForm
+    form = ActivateWithCodeForm(request.POST or None)
+    if request.method == 'POST' and form.is_valid():
+        ip = request.META.get('REMOTE_ADDR') or 'unknown'
+        if not _within_limit(f'activate_code:ip:{ip}', ACTIVATE_ATTEMPTS_PER_HOUR_PER_IP, 3600):
+            form.add_error(None, 'Too many attempts from this computer. Please wait an hour or ask a Lab Administrator.')
+        else:
+            try:
+                user, purpose = lifecycle.redeem_code(
+                    form.cleaned_data['email'], form.cleaned_data['code'], form.cleaned_data['password1'],
+                )
+            except lifecycle.CodeError as error:
+                form.add_error(None, str(error))
+            else:
+                notify_service.send_password_changed_email(user)
+                return render(request, 'accounts/activate.html', {'done': True, 'purpose': purpose, 'activated_user': user})
+    return render(request, 'accounts/activate.html', {'form': form})
 
 
 # handles the link clicked from the verification email
@@ -838,8 +944,8 @@ def verify_email(request, uidb64, token):
             form = SetPasswordOnVerifyForm(user, request.POST)
             if form.is_valid():
                 user.set_password(form.cleaned_data['password1'])
-                user.email_verified = True
-                user.save(update_fields=['password', 'email_verified'])
+                user.save(update_fields=['password'])
+                lifecycle.mark_email_verified(user)
                 return render(request, 'accounts/verify_email_result.html', {'state': 'password_set'})
         else:
             form = SetPasswordOnVerifyForm(user)
@@ -854,8 +960,7 @@ def verify_email(request, uidb64, token):
     # the account already had a password before the email changed. Either
     # way, no password step needed — just mark the (possibly new) email
     # as verified.
-    user.email_verified = True
-    user.save(update_fields=['email_verified'])
+    lifecycle.mark_email_verified(user)
     return render(request, 'accounts/verify_email_result.html', {'state': 'verified'})
 
 
@@ -890,8 +995,8 @@ def resend_verification(request):
                 pass  # an email went out recently; don't send another
             elif not _within_limit('verify_resend:site', RESEND_HOURLY_LIMIT_SITEWIDE, 3600):
                 state = 'resend_busy'
-            elif not send_verification_email(user):
-                state = 'resend_failed'
+            else:
+                send_verification_email(user)
         return render(request, 'accounts/verify_email_result.html', {'state': state})
     return render(request, 'accounts/verify_email_result.html', {'state': 'resend', 'form': form})
 
@@ -908,7 +1013,14 @@ class UserDetailView(RoleRequiredMixin, ModalDetailMixin, DetailView):
     context_object_name = 'target_user'
 
     def get_queryset(self):
-        return User.objects.exclude(role='student')
+        return User.objects.exclude(role='student').select_related('approved_by')
+
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        target = self.object
+        ctx['can_manage_lifecycle'] = lifecycle.can_manage_lifecycle(self.request.user, target)
+        ctx['needs_approval'] = requires_verification(target)
+        return ctx
 
 
 # admin edit existing user
@@ -939,18 +1051,16 @@ class UserUpdateView(RoleRequiredMixin, ModalFormMixin, UpdateView):
         # so a fresh link has to go out, or this account would be stuck
         # unable to log in (email_verified was just reset to False).
         if getattr(form, 'email_changed', False) and self.object.email:
-            if send_verification_email(self.object):
-                messages.info(
-                    self.request,
-                    f'{self.object.display_name}\'s email was changed — a verification link was sent to the new address. '
-                    f'This account can\'t log in until it\'s verified.'
-                )
+            send_verification_email(self.object, created_by=self.request.user)
+            if requires_verification(self.object):
+                access = 'This account can\'t sign in until the new address is verified or you approve it in person.'
             else:
-                messages.warning(
-                    self.request,
-                    f'{self.object.display_name}\'s email was changed, but the verification email could not be sent. '
-                    f'This account can\'t log in until it\'s verified — use "Resend verification" once email is working.'
-                )
+                access = ('It was approved in person, so it can keep signing in; emails to it are held until the '
+                          'new address is verified.')
+            messages.info(
+                self.request,
+                f'{self.object.display_name}\'s email was changed. {_verification_queued_message(self.object)} {access}'
+            )
         return response
 
 

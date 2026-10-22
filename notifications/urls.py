@@ -12,4 +12,7 @@ urlpatterns = [
     path('read-all/', views.mark_all_read, name='mark_all_read'),
     path('compose/', views.NotificationComposeView.as_view(), name='notification_compose'),
     path('settings/', views.NotificationSettingsView.as_view(), name='notification_settings'),
+    path('email-outbox/', views.EmailOutboxView.as_view(), name='email_outbox'),
+    path('email-outbox/<int:pk>/retry/', views.email_outbox_retry, name='email_outbox_retry'),
+    path('email-outbox/<int:pk>/cancel/', views.email_outbox_cancel, name='email_outbox_cancel'),
 ]

@@ -1,6 +1,13 @@
 # Secrets — never commit these
 .env
 lab_pc_agent/agent_config.local.json
+lab_pc_agent/pending_callbacks.json*
+lab_pc_agent/agent_status.json*
+
+# Server installer: downloaded service wrapper, generated services, backups
+installer/server/bin/*.exe
+/service/
+/backups/
 
 # Python
 __pycache__/

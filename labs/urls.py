@@ -59,6 +59,7 @@ urlpatterns = [
     path('manage/pc/import/template/', views.pc_import_template, name='pc_import_template'),
     path('manage/pc/<int:pk>/edit/', views.PCEditView.as_view(), name='pc_edit'),
     path('manage/pc/<int:pk>/delete/', views.PCDeleteView.as_view(), name='pc_delete'),
+    path('manage/pc/<int:pk>/agent-config/', views.pc_agent_config_download, name='pc_agent_config'),
 
     path('inventory/<int:pk>/', views.InventoryDetailView.as_view(), name='inventory_detail'),
     path('inventory/status/', views.InventoryStatusListView.as_view(), name='inventory_status_list'),

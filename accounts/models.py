@@ -36,6 +36,8 @@ class UserManager(BaseUserManager):
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
         extra_fields.setdefault('role', 'admin')
+        extra_fields.setdefault('approval_status', 'approved')
+        extra_fields.setdefault('approval_method', 'superuser_bootstrap')
         if not email:
             raise ValueError('Superuser must have an email address.')
         if extra_fields.get('is_staff') is not True:
@@ -122,6 +124,31 @@ class User(AbstractUser):
         help_text='When the latest verification email was sent. Only the link in that email '
                    'is valid, and it rate-limits resends (see accounts/verification.py).'
     )
+    email_verified_at = models.DateTimeField(
+        null=True, blank=True, editable=False,
+        help_text='When the owner proved they control this mailbox (clicked the emailed link).',
+    )
+
+    # Administrator approval is recorded separately from email ownership, so
+    # an account can be activated in person while the campus is offline
+    # (accounts/lifecycle.py). Signing in needs a verified email OR approval.
+    APPROVAL_CHOICES = [
+        ('pending', 'Pending'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    ]
+    APPROVAL_METHOD_CHOICES = [
+        ('email_link', 'Email verification link'),
+        ('in_person_code', 'In person (activation code)'),
+        ('superuser_bootstrap', 'Created on the server'),
+        ('migrated', 'Existing account'),
+    ]
+    approval_status = models.CharField(max_length=10, choices=APPROVAL_CHOICES, default='pending')
+    approval_method = models.CharField(max_length=20, choices=APPROVAL_METHOD_CHOICES, blank=True, default='')
+    approved_by = models.ForeignKey(
+        'self', null=True, blank=True, on_delete=models.SET_NULL, related_name='approved_accounts',
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f'{self.display_name} ({self.role})'
@@ -169,6 +196,36 @@ class User(AbstractUser):
         return ' — '.join(parts)
 
 
+class AccountActionCode(models.Model):
+    """A one-time code an Admin hands to one specific person, in person, so
+    they can set their own password without email: 'activate' for a new
+    staff account (also approves it), 'reset_password' for a forgotten
+    password. Only an HMAC of the code is stored; the plain code is shown
+    once to the Admin and never stored, logged or emailed."""
+    PURPOSE_CHOICES = [
+        ('activate', 'Account activation'),
+        ('reset_password', 'Password reset'),
+    ]
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='action_codes')
+    purpose = models.CharField(max_length=20, choices=PURPOSE_CHOICES)
+    code_hash = models.CharField(max_length=64)
+    issued_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name='issued_action_codes',
+    )
+    issued_at = models.DateTimeField(auto_now_add=True)
+    issued_from_ip = models.GenericIPAddressField(null=True, blank=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    failed_attempts = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ['-issued_at']
+
+    def __str__(self):
+        return f'{self.get_purpose_display()} code for {self.user}'
+
+
 class ActivityLog(models.Model):
     ACTION_CHOICES = [
         ('register', 'User Registered'),
@@ -181,6 +238,14 @@ class ActivityLog(models.Model):
         ('pc_lock', 'Lab PC Locked'),
         ('pc_shutdown', 'Lab PC Shutdown'),
         ('pc_restart', 'Lab PC Restarted'),
+        ('approve_account', 'Account Approved'),
+        ('reject_account', 'Account Rejected'),
+        ('issue_activation_code', 'Activation Code Issued'),
+        ('redeem_activation_code', 'Account Activated with Code'),
+        ('issue_reset_code', 'Reset Code Issued'),
+        ('redeem_reset_code', 'Password Reset with Code'),
+        ('email_verified', 'Email Verified'),
+        ('reservation_cancelled', 'Reservation Cancelled'),
     ]
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -188,7 +253,7 @@ class ActivityLog(models.Model):
         on_delete=models.SET_NULL,
         related_name='actions_performed'
     )
-    action = models.CharField(max_length=20, choices=ACTION_CHOICES)
+    action = models.CharField(max_length=30, choices=ACTION_CHOICES)
     target_identifier = models.CharField(
         max_length=150,
         help_text='Email (Admin/Lab In-Charge/Instructor) or Student/Instructor ID '

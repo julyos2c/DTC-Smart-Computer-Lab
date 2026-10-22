@@ -1,0 +1,6 @@
+# Lab PC agent (lab_pc_agent/agent.py). The agent itself only needs the
+# Python standard library (tkinter included); these improve it:
+#   Pillow       - draws the college logo and background image on the lock screen
+#   uiautomation - reads the browser address bar for the PC activity log (optional)
+Pillow>=10.0
+uiautomation>=2.0; sys_platform == "win32"

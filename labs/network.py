@@ -253,6 +253,8 @@ def refresh_pc_statuses(pcs):
         previous_status = pc.status
 
         if reachable:
+            pc.last_seen_at = now
+            update_fields.append('last_seen_at')
             # don't clobber a manually-flagged "in_use" or "issue" status with
             # "online" — only step in when the machine looks plain online/offline
             if pc.status in ('online', 'offline') or pc.status is None:
@@ -538,8 +540,9 @@ def start_background_status_checker():
                 auto_lock_after_hours()
             except Exception:
                 # A transient DB hiccup or ping failure shouldn't kill the
-                # background loop — just try again next interval.
-                pass
+                # background loop — log it and try again next interval.
+                import logging
+                logging.getLogger('compulab.worker').exception('PC status check failed')
             finally:
                 # Each Django DB connection is only meant to be used by the
                 # thread/request that opened it; close it out here so this

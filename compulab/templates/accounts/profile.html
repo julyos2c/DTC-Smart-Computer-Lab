@@ -67,6 +67,11 @@
         <label class="form-label">Email Address</label>
         <div class="static-value">{{ object.email }}</div>
         <span class="helptext">Email can't be changed here — contact an Admin if it needs to be updated.</span>
+        {% if not object.email_verified and not object.is_superuser %}
+        <span class="helptext" style="color:#e0a030;">Email not verified yet — open the verification email when the campus is online.
+          Until then CompuLab won't email you, and "Forgot password?" won't work for this account (ask an Admin for a reset code instead).
+          <a href="{% url 'resend_verification' %}">Send a new verification link</a></span>
+        {% endif %}
       </div>
       {% endif %}
 

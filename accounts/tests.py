@@ -1,5 +1,9 @@
 """Email verification: registration (Admin > Add user), signed links,
-login blocking on every route, resend rate limits and SMTP failures."""
+login blocking on every route, resend rate limits and SMTP failures.
+
+Emails go through the durable outbox (notifications/outbox.py): views only
+queue them and the worker sends them. flush() below runs the worker's
+dispatch step so the tests can inspect what was actually sent."""
 import datetime
 import re
 from smtplib import SMTPException
@@ -16,8 +20,15 @@ from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 
 from accounts.verification import EmailVerificationTokenGenerator, email_verification_token
+from notifications import outbox
 
 User = get_user_model()
+
+
+def flush():
+    """Send everything queued, as the background worker would."""
+    outbox.resume()
+    outbox.dispatch_due(limit=100)
 PASSWORD = 'Str0ng-Test-Pass!'
 NEW_PASSWORD = 'An0ther-Str0ng-Pass!'
 
@@ -49,6 +60,7 @@ class EmailVerificationTests(TestCase):
 
     def setUp(self):
         cache.clear()
+        outbox.resume()
 
     # --- helpers -------------------------------------------------------
     def register(self, email='new.instructor@gmail.com', role='instructor', **extra):
@@ -57,6 +69,7 @@ class EmailVerificationTests(TestCase):
         data.update(extra)
         response = self.client.post(reverse('user_create'), data, follow=True)
         self.client.logout()
+        flush()
         return response
 
     def unverified_admin(self, email='pending.admin@gmail.com'):
@@ -69,6 +82,7 @@ class EmailVerificationTests(TestCase):
         from accounts.views import send_verification_email
         mail.outbox.clear()
         self.assertTrue(send_verification_email(user))
+        flush()
         return link_path(mail.outbox[-1])
 
     # --- registration ----------------------------------------------------
@@ -88,7 +102,7 @@ class EmailVerificationTests(TestCase):
         html = message.alternatives[0][0]
         self.assertIn('Verify Email Address', html)
         self.assertNotIn(PASSWORD, message.body + html)
-        self.assertContains(response, 'A verification email was sent')
+        self.assertContains(response, 'A verification email to new.instructor@gmail.com is queued')
 
     def test_students_get_no_verification_email(self):
         from accounts.constants import DEPARTMENT_CHOICES
@@ -243,8 +257,10 @@ class EmailVerificationTests(TestCase):
         user = self.unverified_admin()
         response = self.client.post(reverse('resend_verification'), {'email': user.email.upper()})
         self.assertContains(response, 'Check Your Inbox')
+        flush()
         self.assertEqual(len(mail.outbox), 1)
         self.client.post(reverse('resend_verification'), {'email': user.email})
+        flush()
         self.assertEqual(len(mail.outbox), 1)  # within the cooldown
 
     def test_public_resend_daily_cap_per_account(self):
@@ -252,6 +268,7 @@ class EmailVerificationTests(TestCase):
         for _ in range(7):
             User.objects.filter(pk=user.pk).update(email_verification_sent_at=None)
             self.client.post(reverse('resend_verification'), {'email': user.email})
+            flush()
         self.assertEqual(len(mail.outbox), 5)
 
     def test_public_resend_gives_same_answer_and_sends_nothing_for_other_addresses(self):
@@ -259,6 +276,7 @@ class EmailVerificationTests(TestCase):
         for email in ('nobody@gmail.com', self.admin.email, 'student.x@gmail.com'):
             response = self.client.post(reverse('resend_verification'), {'email': email})
             self.assertContains(response, 'Check Your Inbox')
+        flush()
         self.assertEqual(mail.outbox, [])
 
     def test_resend_page_loads(self):
@@ -269,24 +287,47 @@ class EmailVerificationTests(TestCase):
         self.client.force_login(self.admin)
         url = reverse('user_resend_verification', args=[user.pk])
         self.client.post(url)
+        flush()
         response = self.client.post(url, follow=True)
+        flush()
         self.assertEqual(len(mail.outbox), 1)
         self.assertContains(response, 'Please wait')
 
     # --- SMTP failures -------------------------------------------------------
     @override_settings(EMAIL_BACKEND='accounts.tests.FailingEmailBackend')
-    def test_registration_with_smtp_failure_does_not_claim_email_was_sent(self):
+    def test_registration_with_smtp_failure_queues_and_retries(self):
+        from notifications.models import EmailOutbox
         response = self.register()
         user = User.objects.get(email='new.instructor@gmail.com')
-        self.assertContains(response, 'could not be sent')
-        self.assertNotContains(response, 'A verification email was sent')
+        self.assertContains(response, 'is queued')  # never claims it was sent
         self.assertFalse(user.email_verified)
+        # The failed attempt must not leave a "sent" timestamp behind (that
+        # would start a resend cooldown for an email that never left).
         self.assertIsNone(user.email_verification_sent_at)
+        row = EmailOutbox.objects.get(user=user, category='verification')
+        self.assertEqual(row.status, 'retry')
+        self.assertEqual(row.attempts, 1)
+        self.assertIn('SMTPException', row.last_error)
 
     @override_settings(EMAIL_BACKEND='accounts.tests.FailingEmailBackend')
-    def test_public_resend_with_smtp_failure_reports_it(self):
+    def test_public_resend_with_smtp_failure_is_kept_for_retry(self):
+        from notifications.models import EmailOutbox
         user = self.unverified_admin()
         response = self.client.post(reverse('resend_verification'), {'email': user.email})
-        self.assertContains(response, 'Email Not Sent')
+        self.assertContains(response, 'Check Your Inbox')
+        flush()
         user.refresh_from_db()
         self.assertIsNone(user.email_verification_sent_at)
+        self.assertEqual(EmailOutbox.objects.get(user=user).status, 'retry')
+
+    def test_page_never_waits_for_smtp(self):
+        """Registering only queues the email: nothing is sent until the
+        worker runs, so a slow or dead mail server can't hold up the page."""
+        self.client.force_login(self.admin)
+        self.client.post(reverse('user_create'), {
+            'first_name': 'Q', 'last_name': 'User', 'email': 'queued.only@gmail.com',
+            'role': 'instructor', 'id_number': '',
+        })
+        self.assertEqual(mail.outbox, [])
+        flush()
+        self.assertEqual(len(mail.outbox), 1)

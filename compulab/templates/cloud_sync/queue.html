@@ -1,0 +1,136 @@
+{% extends base_template|default:"base.html" %}
+{% block title %}Cloud sync{% endblock %}
+
+{% block content %}
+<style>
+  .cs-tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .cs-note { font-size:12px; color:var(--text-dim); line-height:1.6; }
+  .cs-err { font-size:11.5px; color:var(--text-dim); font-family:var(--font-mono); word-break:break-word; }
+  .cs-actions { display:flex; gap:6px; flex-wrap:wrap; }
+  .cs-actions form { display:inline; }
+  .cs-kv td:first-child { color:var(--text-dim); width:220px; }
+</style>
+
+<div class="page-header">
+  <div>
+    <h1>Cloud sync</h1>
+    <div class="sub">Changes this campus server publishes to an optional cloud copy. The campus server stays the only place where data is changed.</div>
+  </div>
+  <a href="{% url 'system_status' %}" class="action-btn"><svg class="btn-icon"><use href="#icon-shield"/></svg> System status</a>
+</div>
+
+{% if not sync.enabled %}
+<div class="card" style="border-left:3px solid var(--blue);">
+  <b>Cloud synchronization is not configured.</b>
+  <div class="cs-note">
+    Everything works on the campus network without it, and nothing is queued while it is off. To publish to a cloud copy,
+    a receiver that implements <code>cloud_sync/PROTOCOL.md</code> must exist first; then set <code>CLOUD_SERVER_URL</code>
+    and <code>CLOUD_SYNC_API_KEY</code> in the server's <code>.env</code>, restart both CompuLab services and run
+    <code>manage.py cloud_sync_backfill --yes</code> once.
+  </div>
+</div>
+{% else %}
+<div class="card">
+  <table class="table cs-kv">
+    <tr><td>Cloud receiver</td><td><code>{{ sync.endpoint }}</code>
+      {% if summary.cloud.ok %}<span style="color:var(--green); font-weight:600;">● reachable</span>
+      {% elif summary.cloud.ok is False %}<span style="color:var(--red); font-weight:600;">● unreachable</span> <span class="cs-note">{{ summary.cloud.detail }}</span>
+      {% else %}<span class="cs-note">not checked yet</span>{% endif %}</td></tr>
+    <tr><td>Last successful sync</td><td>{{ sync.last_success_at|date:"M d, H:i:s"|default:"never" }}</td></tr>
+    <tr><td>Waiting / sending</td><td>{{ sync.pending }} / {{ sync.processing }}{% if sync.oldest_pending_at %} <span class="cs-note">(oldest from {{ sync.oldest_pending_at|date:"M d, H:i" }})</span>{% endif %}</td></tr>
+    <tr><td>Failed / conflicts</td><td>{{ sync.failed }} / {{ sync.conflict }}</td></tr>
+    <tr><td>Published record types</td><td>{{ sync.object_types|join:", "|default:"none" }}</td></tr>
+    {% if sync.paused_reason %}
+    <tr><td>Paused</td><td style="color:var(--red);">{{ sync.paused_detail }}</td></tr>
+    {% elif sync.next_attempt_at %}
+    <tr><td>Next attempt</td><td>{{ sync.next_attempt_at|date:"H:i:s" }} <span class="cs-note">(waiting after: {{ sync.last_error }})</span></td></tr>
+    {% elif sync.last_error %}
+    <tr><td>Last error</td><td class="cs-err">{{ sync.last_error }} ({{ sync.last_error_at|date:"M d, H:i" }})</td></tr>
+    {% endif %}
+    {% if sync.enqueue_failures %}
+    <tr><td>Changes not queued</td><td style="color:var(--amber);">{{ sync.enqueue_failures }} change{{ sync.enqueue_failures|pluralize }} could not be queued (see logs\compulab.log). Run <code>manage.py cloud_sync_backfill --yes</code> to queue current snapshots.</td></tr>
+    {% endif %}
+  </table>
+  <div class="cs-actions" style="margin-top:12px;">
+    <form method="post" action="{% url 'cloud_sync_retry_now' %}">{% csrf_token %}<input type="hidden" name="show" value="{{ show }}">
+      <button type="submit" class="action-btn small"><svg class="btn-icon"><use href="#icon-refresh"/></svg> Retry now</button>
+    </form>
+    {% if counts.problems %}
+    <form method="post" action="{% url 'cloud_sync_retry_failed' %}">{% csrf_token %}<input type="hidden" name="show" value="{{ show }}">
+      <button type="submit" class="action-btn small">Retry all failed</button>
+    </form>
+    {% endif %}
+  </div>
+  <p class="cs-note" style="margin-top:10px;">
+    Sync resumes by itself when the internet and the cloud receiver are back; "Retry now" only skips the wait.
+    A refused API key or a wrong address pauses sync until <code>.env</code> is corrected (the pause lifts by itself after the services restart with new values).
+  </p>
+</div>
+{% endif %}
+
+<div class="cs-tabs">
+  <a href="?show=waiting" class="action-btn{% if show == 'waiting' %} primary{% endif %}">Waiting <span class="count">{{ counts.waiting }}</span></a>
+  <a href="?show=problems" class="action-btn{% if show == 'problems' %} primary{% endif %}">Failed / conflicts <span class="count">{{ counts.problems }}</span></a>
+  <a href="?show=synced" class="action-btn{% if show == 'synced' %} primary{% endif %}">Synced <span class="count">{{ counts.synced }}</span></a>
+  <a href="?show=other" class="action-btn{% if show == 'other' %} primary{% endif %}">Replaced / resolved <span class="count">{{ counts.other }}</span></a>
+</div>
+
+<div class="card">
+  <table class="table">
+    <thead><tr><th>#</th><th>Queued</th><th>Record</th><th>Change</th><th>Status</th><th>Attempts</th><th>Detail</th><th></th></tr></thead>
+    <tbody>
+    {% for row in rows %}
+      <tr>
+        <td>{{ row.id }}</td>
+        <td>{{ row.created_at|date:"M d, H:i:s" }}</td>
+        <td>{{ row.get_object_type_display }} #{{ row.local_id }}</td>
+        <td>{{ row.get_operation_display }}{% if row.force %} <span class="cs-note">(overwrite cloud copy)</span>{% endif %}</td>
+        <td>
+          {{ row.get_status_display }}
+          {% if row.status == 'synced' %}<div class="cs-note">{{ row.synced_at|date:"M d, H:i:s" }}</div>{% endif %}
+          {% if row.status == 'pending' and row.next_attempt_at %}<div class="cs-note">next try {{ row.next_attempt_at|date:"H:i" }}</div>{% endif %}
+          {% if row.status == 'resolved' %}<div class="cs-note">by {{ row.resolved_by.display_name|default:"an Admin" }}, {{ row.resolved_at|date:"M d, H:i" }}</div>{% endif %}
+        </td>
+        <td>{{ row.attempts }}</td>
+        <td class="cs-err">{{ row.last_error|default:"—" }}
+          {% if row.status == 'conflict' and row.remote_detail %}<div>Cloud says: {% for k, v in row.remote_detail.items %}{{ k }}={{ v }}{% if not forloop.last %}; {% endif %}{% endfor %}</div>{% endif %}
+        </td>
+        <td>
+          <div class="cs-actions">
+            {% if row.status == 'failed' %}
+            <form method="post" action="{% url 'cloud_sync_item_retry' row.pk %}">{% csrf_token %}<input type="hidden" name="show" value="{{ show }}">
+              <button type="submit" class="action-btn small">Retry</button>
+            </form>
+            {% elif row.status == 'conflict' %}
+            <form method="post" action="{% url 'cloud_sync_item_resolve' row.pk %}">{% csrf_token %}<input type="hidden" name="show" value="{{ show }}"><input type="hidden" name="keep" value="local">
+              <button type="submit" class="action-btn small" title="Send the campus copy again and replace the cloud copy">Keep campus copy</button>
+            </form>
+            <form method="post" action="{% url 'cloud_sync_item_resolve' row.pk %}">{% csrf_token %}<input type="hidden" name="show" value="{{ show }}"><input type="hidden" name="keep" value="cloud">
+              <button type="submit" class="action-btn small" title="Leave the cloud copy as it is">Keep cloud copy</button>
+            </form>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="8" class="cs-note">Nothing here.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  {% if is_paginated %}
+  <div class="form-actions" style="margin-top:12px;">
+    {% if page_obj.has_previous %}<a class="action-btn small" href="?show={{ show }}&page={{ page_obj.previous_page_number }}">&larr; Previous</a>{% endif %}
+    <span class="cs-note">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+    {% if page_obj.has_next %}<a class="action-btn small" href="?show={{ show }}&page={{ page_obj.next_page_number }}">Next &rarr;</a>{% endif %}
+  </div>
+  {% endif %}
+
+  <p class="cs-note" style="margin-top:12px;">
+    Conflict policy: this campus server is authoritative. A conflict means the cloud copy of a record was edited since it was
+    last synced. "Keep campus copy" sends this server's version again and asks the cloud to overwrite its copy;
+    "Keep cloud copy" leaves the cloud version and stops sending this change (the next local change to the same record is
+    sent normally). Nothing on this campus server is ever overwritten by the cloud.
+  </p>
+</div>
+{% endblock %}

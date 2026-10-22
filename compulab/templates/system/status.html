@@ -1,0 +1,190 @@
+{% extends base_template|default:"base.html" %}
+{% block title %}System status{% endblock %}
+
+{% block content %}
+<style>
+  .sys-small{font-size:12px;color:var(--text-dim);} .sys-muted{color:var(--text-dim);}
+  .sys-note{font-size:12px;color:var(--text-dim);line-height:1.6;}
+  .sys-ok{color:var(--green);font-weight:600;} .sys-bad{color:var(--red);font-weight:600;} .sys-warn{color:var(--amber);font-weight:600;}
+  .sys-banner{border-left:3px solid var(--green);} .sys-banner.warn,.sys-banner.info{border-left-color:var(--amber);} .sys-banner.bad{border-left-color:var(--red);}
+  .sys-actions{display:flex;gap:8px;flex-wrap:wrap;} .sys-actions form{display:inline;}
+  .sys-table-wrap{overflow-x:auto;}
+</style>
+<div class="page-header">
+  <div>
+    <h1>System status</h1>
+    <div class="sub">What the CompuLab server can reach right now, and what is waiting to be sent</div>
+  </div>
+  <div class="sys-actions">
+    <form method="post" action="{% url 'system_recheck' %}">{% csrf_token %}
+      <button type="submit" class="action-btn" title="Run the connectivity checks now (normally every minute)"><svg class="btn-icon"><use href="#icon-refresh"/></svg> Check again</button>
+    </form>
+    <a href="{% url 'email_outbox' %}" class="action-btn"><svg class="btn-icon"><use href="#icon-send"/></svg> Email outbox{% if summary.emails_waiting %}<span class="count">{{ summary.emails_waiting }}</span>{% endif %}</a>
+    <a href="{% url 'cloud_sync_queue' %}" class="action-btn">Cloud sync{% if summary.sync.pending %}<span class="count">{{ summary.sync.pending }}</span>{% endif %}</a>
+  </div>
+</div>
+
+<div class="card sys-banner {{ summary.headline_level }}">
+  <b>{{ summary.headline }}</b>
+</div>
+
+{% if summary.worker_attention %}
+<div class="card" style="border-left:3px solid var(--amber);">
+  <b>Background worker requires attention.</b>
+  <p class="sys-small" style="margin:6px 0 0; line-height:1.6;">
+    {% if not summary.worker_alive %}
+      It has not completed a cycle for more than two minutes{% if summary.worker.checked_at %} (last: {{ summary.worker.checked_at|date:"M d, H:i:s" }}){% endif %}.
+      While it is stopped, emails and cloud changes stay queued, PC status stops refreshing and Override switches only happen while a web page process is up.
+      On the server, open <i>Services</i> and start (or restart) <b>CompuLab Worker</b>, or run <code>installer\server\server-status.ps1</code>.
+      For a single-process install set <code>COMPULAB_BACKGROUND_TASKS=True</code> in <code>.env</code> instead.
+    {% else %}
+      It is running but not keeping up: {{ summary.worker_problems|join:"; " }}.
+      Restart <b>CompuLab Worker</b> in <i>Services</i> and check <code>logs\worker.log</code> for errors.
+    {% endif %}
+  </p>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="section-title">Connectivity</div>
+  <div class="sys-table-wrap">
+  <table class="table">
+    <thead><tr><th>Check</th><th>State</th><th>Since</th><th>Last OK</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Local server (this website)</td>
+        <td><span class="sys-ok">● Running</span></td>
+        <td>—</td><td>now</td>
+        <td class="sys-small">You are seeing this page, so the web service answers. Each page also re-checks it from your computer every 30 seconds (see the footer).</td>
+      </tr>
+    {% for label, probe, help in probes %}
+      <tr>
+        <td>{{ label }}</td>
+        <td>
+          {% if probe.ok is None %}<span class="sys-muted">Not configured / not checked yet</span>
+          {% elif probe.ok %}<span class="sys-ok">● OK</span>
+          {% else %}<span class="sys-bad">● Unavailable</span>{% endif %}
+        </td>
+        <td>{{ probe.since|date:"M d, H:i"|default:"—" }}</td>
+        <td>{{ probe.last_ok_at|date:"M d, H:i"|default:"—" }}</td>
+        <td class="sys-small">{{ probe.detail|default:"—" }}<div>{{ help }}</div></td>
+      </tr>
+    {% endfor %}
+      <tr>
+        <td>Background worker</td>
+        <td>{% if summary.worker_alive and not summary.worker_problems %}<span class="sys-ok">● Running</span>{% elif summary.worker_alive %}<span class="sys-warn">● Needs attention</span>{% else %}<span class="sys-bad">● Not running</span>{% endif %}</td>
+        <td>—</td>
+        <td>{{ summary.worker.checked_at|date:"M d, H:i:s"|default:"—" }}</td>
+        <td class="sys-small">Mode: {{ background_mode }}{% if summary.worker.detail %} ({{ summary.worker.detail }}){% endif %}</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="sys-note" style="margin-top:10px;">
+    Everything on the campus network keeps working without the internet: sign-in, reservations, PC unlocking, rosters,
+    attendance and reports. Only email and the optional cloud sync need the internet. While it is down, both wait in their
+    own queues and resume automatically (separately from each other) when it returns; staff accounts can be activated in
+    person with a one-time code instead (Users &rarr; Approve in person).
+  </p>
+</div>
+
+<div class="card">
+  <div class="section-title">Queues</div>
+  <div class="sys-table-wrap">
+  <table class="table">
+    <thead><tr><th>Queue</th><th>Waiting</th><th>Needs attention</th><th>Last success</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><a href="{% url 'email_outbox' %}">Email outbox</a></td>
+        <td>{{ summary.emails_waiting }}</td>
+        <td>{% if summary.emails_dead %}<a class="sys-warn" href="{% url 'email_outbox' %}?show=problems">{{ summary.emails_dead }} rejected</a>{% else %}0{% endif %}</td>
+        <td>—</td>
+        <td class="sys-small">
+          {% if not summary.smtp_configured %}No email server configured: emails are written to the log only (installer\server\configure-email.ps1).
+          {% elif summary.last_email_error %}Last error: <code>{{ summary.last_email_error }}</code>{% if email_hint %}<div>{{ email_hint }}</div>{% endif %}
+          {% else %}Sending normally.{% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td><a href="{% url 'cloud_sync_queue' %}">Cloud sync</a></td>
+        {% if summary.sync.enabled %}
+        <td>{{ summary.sync.pending }}{% if summary.sync.processing %} (+{{ summary.sync.processing }} sending){% endif %}</td>
+        <td>{% if summary.sync.failed or summary.sync.conflict %}<a class="sys-warn" href="{% url 'cloud_sync_queue' %}?show=problems">{{ summary.sync.failed }} failed, {{ summary.sync.conflict }} conflict{{ summary.sync.conflict|pluralize }}</a>{% else %}0{% endif %}</td>
+        <td>{{ summary.sync.last_success_at|date:"M d, H:i"|default:"never" }}</td>
+        <td class="sys-small">
+          To <code>{{ summary.sync.endpoint }}</code>.
+          {% if summary.sync.paused_reason %}<span class="sys-bad">Paused:</span> {{ summary.sync.paused_detail }}
+          {% elif summary.sync.next_attempt_at %}Retrying at {{ summary.sync.next_attempt_at|date:"H:i:s" }} after: {{ summary.sync.last_error }}
+          {% elif summary.sync.pending %}Sending.{% else %}Up to date.{% endif %}
+        </td>
+        {% else %}
+        <td>—</td><td>—</td><td>—</td>
+        <td class="sys-small">Cloud synchronization not configured. This server is the only copy of the data (back it up nightly); nothing is queued.</td>
+        {% endif %}
+      </tr>
+      <tr>
+        <td>Lab PC agents</td>
+        <td>{% if summary.agents.pending_events %}{{ summary.agents.pending_events }} event{{ summary.agents.pending_events|pluralize }} on PCs{% else %}0{% endif %}</td>
+        <td>{% if summary.agents.offline %}<span class="sys-warn">{{ summary.agents.offline }} PC{{ summary.agents.offline|pluralize }} offline</span>{% else %}0{% endif %}</td>
+        <td>{{ summary.agents.last_agent_contact|date:"M d, H:i"|default:"never" }}</td>
+        <td class="sys-small">{{ summary.agents.agents_recent }} of {{ summary.agents.pcs }} PCs with an IP address called the server in the last 10 minutes. Session-end events wait on each PC until the server confirms them.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="section-title">How to reach this server</div>
+  <table class="table">
+    <tr><td>Campus (LAN) address — SITE_URL</td><td><code>{{ site_url }}</code> <span class="sys-small">used by lab PCs, staff browsers and links in emails</span></td></tr>
+    <tr><td>Remote address (Tailscale VPN)</td><td>{% if remote_url %}<code>{{ remote_url }}</code> <span class="sys-small">works only from devices signed in to the college's Tailscale network, while this server and its internet connection are up</span>{% else %}<span class="sys-muted">Not configured (optional — installer\REMOTE_ACCESS.md)</span>{% endif %}</td></tr>
+    <tr><td>Server computer name</td><td><code>{{ hostname }}</code></td></tr>
+    <tr><td>This server's LAN addresses</td><td>{% for a in lan_addresses %}<code>http://{{ a }}:{{ lan_port }}</code>{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}</td></tr>
+    <tr><td>Health check</td><td><code>{{ site_url }}/healthz</code> answers <code>ok</code> when the web service is running</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <div class="section-title">Lab PC agents</div>
+  <div class="sys-table-wrap">
+  <table class="table">
+    <thead><tr><th>PC</th><th>Lab</th><th>Status</th><th>Agent last called</th><th>Agent version</th><th>Queued on PC</th></tr></thead>
+    <tbody>
+    {% for pc in agent_pcs %}
+      <tr>
+        <td>{{ pc.pc_id }}</td>
+        <td>{{ pc.lab.name }}</td>
+        <td>{{ pc.get_status_display }}{% if pc.status == 'offline' and pc.status_changed_at %} <span class="sys-small">since {{ pc.status_changed_at|date:"M d, H:i" }}</span>{% endif %}</td>
+        <td>{{ pc.agent_last_contact_at|date:"M d, H:i:s"|default:"never" }}</td>
+        <td>{{ pc.agent_version|default:"—" }}</td>
+        <td>{% if pc.agent_pending_events %}<span class="sys-warn">{{ pc.agent_pending_events }}</span>{% else %}0{% endif %}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="6" class="sys-muted">No PCs with an IP address yet (Manage labs &rarr; PC &rarr; Edit).</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="section-title">Recent background jobs</div>
+  <table class="table">
+    <thead><tr><th>Job</th><th>Scheduled for</th><th>Status</th><th>Attempts</th><th>Last error</th></tr></thead>
+    <tbody>
+    {% for job in recent_jobs %}
+      <tr>
+        <td>{{ job.get_kind_display }}</td>
+        <td>{{ job.run_at|date:"M d, H:i:s" }}</td>
+        <td>{{ job.get_status_display }}</td>
+        <td>{{ job.attempts }}</td>
+        <td class="sys-small">{{ job.last_error|default:"—" }}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="5" class="sys-muted">No background jobs yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

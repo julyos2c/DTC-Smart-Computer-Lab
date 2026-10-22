@@ -2,6 +2,29 @@
 
 **Status (updated 2026-10-22):** Phase 1 is implemented on branch `phase1-security-fixes`: C1, H3, M1, M2, L1 and In-Charge reservation scoping. It is **committed locally as `1c57df4` but not pushed or deployed**. See [SYSTEM_AUDIT.md §6](SYSTEM_AUDIT.md#6-phase-1-remediation-branch-phase1-security-fixes). Later phases are proposals and are not started. Finding IDs (C1, H2, …) refer to [SYSTEM_AUDIT.md §3](SYSTEM_AUDIT.md#3-prioritized-findings).
 
+### Implementation status (working tree, 2026-10-22, not committed, not tested)
+
+| # | Improvement | Status |
+|---|---|---|
+| 1 | Authorization gaps | Done in `1c57df4` (L3 GET-state-changes left: security hardening, out of scope) |
+| 2 | Account lifecycle | **Implemented:** approval fields + data migration (`accounts` 0022/0023), `AccountActionCode`, in-person activation/reset codes, `/accounts/activate/`, approve/reject/reopen, offline-aware messages. Defaults used: D3 recommended (approved-unverified may sign in, emails held), D4 Admins (superuser for Admin-role targets), D5 admin-typed reset kept *and* reset codes added |
+| 3 | Durable email outbox | **Implemented:** `EmailOutbox`, `notifications/outbox.py` (render-at-send for verification/reset, backoff, expiry, dead-letter notice), Admin page `/notifications/email-outbox/`; every email now queued |
+| 4 | Worker + durable jobs | **Implemented:** `system` app, `manage.py run_worker`, `ScheduledJob` (Override grant), reminder catch-up, heartbeat, logged loop failures |
+| 5 | Connectivity monitor + status UI | **Implemented:** separate probes (database, internet, SMTP, cloud receiver), worker health from completed cycles + overdue work, lab-agent contact, plain-language headline, footer with a per-browser "local server reachable" check, `/healthz`, `/healthz/ready`, Admin **System status** page with *Check again* |
+| 6 | Transactions / row locks | **Partly:** reservation check-in claims its slot under a row lock before unlocking; approve/decline refuse non-pending requests. Override/manual unlock not wrapped |
+| 7 | Login and code throttling | Not done (security hardening, out of scope); only the activation page has a per-IP attempt limit |
+| 8 | Per-PC agent credentials | Not done (security hardening, out of scope). Agent config download per PC added |
+| 9 | Agent reliability | **Implemented:** session-end events queued in `C:\ProgramData\CompuLab Agent` (bounded, 24 h, kept across updates), delivered only on server acknowledgement, backoff 15 s–5 min; server dedupes in the database (`AgentEventReceipt`) and ignores late events; lock screen explains a server outage; `agent-status.ps1` / `set-agent-server.ps1` |
+| 10 | Platform upgrade | Server installer uses Django 5.2 (`requirements-production.txt`); dev `requirements.txt` unchanged (XAMPP MariaDB 10.4) |
+| 11 | Installers, backups, update | **Implemented as PowerShell scripts** in `installer/` (needs Python, MariaDB, WinSW downloaded by hand): prerequisite and version checks, campus-address prompt, boot-time services with database dependency, `server-status.ps1` diagnostics |
+| 12 | Remote access | **Implemented:** `configure-remote-access.ps1` (Tailscale Serve with HTTPS, or Direct), `COMPULAB_REMOTE_URL` accepted automatically, shown on System status; `installer/REMOTE_ACCESS.md`; staff launcher with LAN/VPN fallback. Tailscale sign-in is manual |
+| 13 | LAN TLS | Not done (optional) |
+| 14 | One-way publishing | **Sending side implemented** (`cloud_sync`, protocol v2 in `cloud_sync/PROTOCOL.md`: durable ordered queue, idempotency keys, backoff, pause on auth/address errors, conflict review, backfill). **No receiver exists**; off until one is configured (decisions D1/D14) |
+| — | Manual verification | `docs/MANUAL_VERIFICATION.md` (16 scenarios, not yet performed) |
+| 15 | Repository hygiene | Not done (no functional effect) |
+
+Also added: reservation cancellation (instructors withdraw/cancel their own; lab deletions notify the instructor), M11 per-student code-email status on roster pages.
+
 ---
 
 ## 1. Proposed improvements (Deliverable 9)

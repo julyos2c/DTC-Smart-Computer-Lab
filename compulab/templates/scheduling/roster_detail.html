@@ -4,7 +4,7 @@
 {% block content %}
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media=\'all\'">
 
 <style>
 .cr{
@@ -225,6 +225,23 @@ html[data-theme="light"] .cr-add-btn{ color:#fff; }
     </div>
   </div>
 
+  {% if next_session %}
+  <div style="margin-bottom:16px;">
+    <div class="cr-card">
+      <div class="cr-section-title" style="margin-bottom:6px;">Next class</div>
+      <div style="font-size:13px; line-height:1.7;">
+        {{ next_session.date|date:"D, M d" }} · {{ next_session.start_time|time:"g:i A" }}–{{ next_session.end_time|time:"g:i A" }}
+        · {{ next_session.lab.name }}
+        {% if next_session.reservation_code %} · Reservation code <b style="font-family:var(--font-mono); letter-spacing:.06em;">{{ next_session.reservation_code }}</b>{% endif %}
+      </div>
+      <div class="helptext" style="margin-top:4px;">
+        Students get this code by email about an hour before class.
+        {% if code_emails_waiting %}<b style="color:#e0a030;">{{ code_emails_waiting }} student{{ code_emails_waiting|pluralize }} haven't received it yet</b> (see "Code email" below) — the email is waiting for the internet; read the code out to them in class.{% else %}If the campus email or internet is down, read it out to them in class.{% endif %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
   <div style="margin-bottom:16px;">
     <div class="cr-card">
       <div class="cr-card-head">
@@ -240,7 +257,7 @@ html[data-theme="light"] .cr-add-btn{ color:#fff; }
       </div>
       <div class="cr-table-wrap">
       <table class="cr-table" id="cr-students-table">
-        <thead><tr><th>Student ID</th><th>Full Name</th><th>Department</th><th>Status</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Student ID</th><th>Full Name</th><th>Department</th><th>Status</th>{% if next_session %}<th title="Reservation-code email for the next class">Code email</th>{% endif %}<th>Actions</th></tr></thead>
         <tbody>
           {% for s in students %}
             <tr data-search="{{ s.id_number|lower }} {{ s.full_name|lower }}">
@@ -248,6 +265,16 @@ html[data-theme="light"] .cr-add-btn{ color:#fff; }
               <td>{{ s.full_name }}{% if not s.student_id %} <span class="helptext" title="This account was removed/renamed since being added.">(unlinked)</span>{% endif %}</td>
               <td>{{ s.student.department_display|default:"—" }}</td>
               <td><span class="cr-badge {% if s.student_id and s.student.is_active %}active{% else %}inactive{% endif %}">{% if s.student_id and s.student.is_active %}Active{% else %}Inactive{% endif %}</span></td>
+              {% if next_session %}
+              <td style="font-size:12px;">
+                {% if s.code_email_status == 'sent' %}<span style="color:var(--cr-green, #2fae76);">Emailed</span>
+                {% elif s.code_email_status in 'pending,retry,sending' %}<span style="color:#e0a030;" title="Will be sent when the internet is back">Waiting to send</span>
+                {% elif s.code_email_status == 'dead' %}<span style="color:#d9534f;" title="The mail server rejected this address">Address rejected</span>
+                {% elif s.code_email_status == 'expired' %}<span style="color:#d9534f;">Not delivered</span>
+                {% elif not s.student.email %}<span class="helptext">No email on file</span>
+                {% else %}<span class="helptext">Sent ~1 h before class</span>{% endif %}
+              </td>
+              {% endif %}
               <td>
                 <form method="post" action="{% url 'roster_remove_student' roster.pk s.pk %}"
                       onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Remove student?', text: 'Remove {{ s.full_name|escapejs }} from this roster?', confirmButtonText: 'Yes, remove'}); return false;"

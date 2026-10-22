@@ -422,6 +422,9 @@ class SessionRequest(models.Model):
         ('pending', 'Pending'),
         ('approved', 'Approved'),
         ('declined', 'Declined'),
+        # Withdrawn by the requester (or its scheduled session removed by
+        # the lab) — see scheduling.views.cancel_my_request/cancel_my_session.
+        ('cancelled', 'Cancelled'),
     ]
     instructor = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,

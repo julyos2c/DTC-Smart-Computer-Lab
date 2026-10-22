@@ -128,8 +128,9 @@ def start_daily_activity_log_wipe():
                 _backup_then_wipe()
             except Exception:
                 # A transient DB hiccup shouldn't kill the background loop —
-                # just try again at the next scheduled time.
-                pass
+                # log it and try again at the next scheduled time.
+                import logging
+                logging.getLogger('compulab.worker').exception('Activity-log backup/wipe failed')
             finally:
                 # Each Django DB connection is only meant to be used by the
                 # thread/request that opened it; close it out here so this

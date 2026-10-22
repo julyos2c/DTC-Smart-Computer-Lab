@@ -1,10 +1,12 @@
 """Email verification for Admin, Lab In-Charge and Instructor accounts.
 
 Accounts are created by an Admin (Users > Add user) and can't sign in
-until their owner clicks the emailed link. Superusers (created on the
-server with `createsuperuser`) are exempt, and Students never sign in
-with a password at all. The rule lives in requires_verification() and is
-enforced for every login route by accounts.backends.VerifiedEmailBackend.
+until either their owner clicks the emailed link, or an Admin approves them
+in person with a one-time activation code (accounts/lifecycle.py, for when
+the campus is offline). Superusers (created on the server with
+`createsuperuser`) are exempt, and Students never sign in with a password
+at all. The rule lives in requires_verification() and is enforced for every
+login route by accounts.backends.VerifiedEmailBackend.
 """
 import copy
 
@@ -20,9 +22,25 @@ USED = 'used'        # a genuine link for an account that is already verified
 INVALID = 'invalid'  # tampered, superseded by a newer link, or for another account
 
 
+def sign_in_block_reason(user):
+    """None if this account may sign in; otherwise 'rejected' or 'pending'.
+
+    Students are never blocked here (the login view turns them away
+    separately). Superusers are always allowed. Everyone else needs a
+    verified email or an Admin's approval, and a rejected account stays
+    out either way."""
+    if user.is_superuser or user.role == 'student':
+        return None
+    if getattr(user, 'approval_status', '') == 'rejected':
+        return 'rejected'
+    if user.email_verified or getattr(user, 'approval_status', '') == 'approved':
+        return None
+    return 'pending'
+
+
 def requires_verification(user):
-    """True if this account may not sign in until its email is verified."""
-    return not (user.email_verified or user.is_superuser or user.role == 'student')
+    """True if this account may not sign in yet (see sign_in_block_reason)."""
+    return sign_in_block_reason(user) is not None
 
 
 def resend_cooldown_remaining(user):

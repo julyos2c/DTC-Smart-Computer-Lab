@@ -28,6 +28,9 @@ User = get_user_model()
 PUBLIC_URL_NAMES = {
     'login', 'password_reset', 'password_reset_done', 'password_reset_complete',
     'pc_login', 'resend_verification',
+    # one-time code activation page and the health checks (healthz/ready
+    # answers requests from the server itself, which the test client is)
+    'activate_account', 'healthz', 'healthz_ready',
 }
 
 

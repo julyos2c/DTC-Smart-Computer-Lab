@@ -37,8 +37,11 @@ PUBLIC_ROUTES = {
     'home', 'login', 'logout', 'password_reset', 'password_reset_done', 'password_reset_complete',
     'resend_verification', 'pc_login', 'pc_agent_login_api', 'pc_agent_info_api',
     'pc_agent_activity_api', 'pc_agent_end_session_api', 'pc_agent_logout_api', 'manual_unlock_log_api',
+    # one-time code activation page; health checks for the installer/launcher
+    # (/healthz/ready answers the server itself, which the test client is)
+    'activate_account', 'healthz', 'healthz_ready',
 }
-LOCAL_APPS = ('accounts', 'labs', 'scheduling', 'issues', 'notifications', 'cloud_sync')
+LOCAL_APPS = ('accounts', 'labs', 'scheduling', 'issues', 'notifications', 'cloud_sync', 'system')
 ALLOWED_STATUS = {302, 403, 404, 405}
 PARAM = re.compile(r'<(?:\w+:)?(\w+)>')
 
@@ -102,6 +105,17 @@ class AnonymousParameterizedRouteTests(TestCase):
         cls.equipment_issue = EquipmentIssue.objects.create(equipment=cls.item, description='Flickers')
         cls.issue = Issue.objects.create(lab=cls.lab, pc=cls.pc, title='No network', reported_by=cls.user)
         cls.notification = Notification.objects.create(user=cls.user, title='Hello')
+        from notifications.models import EmailOutbox
+        cls.outbox_row = EmailOutbox.objects.create(
+            to_email='sweep.instructor@gmail.com', subject='Hello', text_body='Hello',
+            next_attempt_at=timezone.now(), user=cls.user,
+        )
+        import uuid
+        from cloud_sync.models import SyncQueue
+        cls.sync_row = SyncQueue.objects.create(
+            object_type='session', local_id=cls.session.pk, record_key=f'session:{cls.session.pk}',
+            edge_id=uuid.uuid4(), payload={'subject': 'Sweep'}, status='conflict',
+        )
 
     def setUp(self):
         # Report every failing route at once instead of stopping at the first 500.
@@ -114,6 +128,10 @@ class AnonymousParameterizedRouteTests(TestCase):
             return str(self.roster.pk)
         if name in ('mark_read', 'mark_unread', 'toggle_pin', 'delete_notification'):
             return self.notification.pk
+        if name.startswith('email_outbox_'):
+            return self.outbox_row.pk
+        if name.startswith('cloud_sync_item_'):
+            return self.sync_row.pk
         if name == 'session_attendance_mark' or name.startswith('session_'):
             return self.session.pk
         if name.startswith(('request_', 'approve_request', 'decline_request')):

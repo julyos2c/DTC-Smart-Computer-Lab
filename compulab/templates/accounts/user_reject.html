@@ -1,0 +1,27 @@
+{% extends base_template|default:"base.html" %}
+{% block title %}Reject account{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Reject account</h1>
+    <div class="sub">{{ target_user.display_name }} ({{ target_user.get_role_display }})</div>
+  </div>
+</div>
+
+<div class="card" style="max-width:480px">
+  <p style="font-size:13px; margin-bottom:16px; line-height:1.6;">
+    <strong>{{ target_user.display_name }}</strong> will not be able to sign in. Any unused activation or reset codes are
+    revoked and the queued verification email is cancelled. You can reopen the account later from its page.
+  </p>
+  <form method="post">
+    {% csrf_token %}
+    <label for="{{ form.reason.id_for_label }}" class="form-label">{{ form.reason.label }}</label>
+    {{ form.reason }}
+    <div class="form-actions" style="margin-top:16px;">
+      <button type="submit" class="action-btn danger"><svg class="btn-icon"><use href="#icon-x"/></svg> Reject account</button>
+      <a href="{% url 'users' %}" class="action-btn">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

@@ -4,9 +4,12 @@ same way labs/network.py keeps PC status flowing automatically: a daemon
 thread that loops for as long as the server runs, so nobody has to run a
 cron job or management command by hand.
 """
+import logging
 import time
 import threading
 from datetime import timedelta
+
+logger = logging.getLogger('compulab.worker')
 
 REMINDER_WINDOW_MIN_MINUTES = 10
 REMINDER_WINDOW_MAX_MINUTES = 15
@@ -25,14 +28,17 @@ _checker_started = False
 
 
 def check_upcoming_sessions():
-    """Finds today's Sessions starting 10-15 minutes from now that haven't
-    been reminded about yet, and fires the auto notification for each."""
+    """Finds today's Sessions starting within the next 15 minutes that
+    haven't been reminded about yet, and fires the auto notification for
+    each. Normally that is the 10-15 minute mark; if the server or worker
+    was down then, the reminder goes out late (as long as the session
+    hasn't started) rather than never."""
     from django.utils import timezone
     from scheduling.models import Session
     from notifications import services as notify_service
 
     now = timezone.localtime()
-    window_start = now + timedelta(minutes=REMINDER_WINDOW_MIN_MINUTES)
+    window_start = now
     window_end = now + timedelta(minutes=REMINDER_WINDOW_MAX_MINUTES)
 
     if window_start.date() != window_end.date():
@@ -40,7 +46,7 @@ def check_upcoming_sessions():
 
     sessions = Session.objects.filter(
         date=window_start.date(),
-        start_time__gte=window_start.time(),
+        start_time__gt=window_start.time(),
         start_time__lte=window_end.time(),
         reminder_sent=False,
     ).select_related('lab', 'instructor')
@@ -61,7 +67,9 @@ def check_roster_code_reminders():
     from notifications import services as notify_service
 
     now = timezone.localtime()
-    window_start = now + timedelta(minutes=ROSTER_CODE_WINDOW_MIN_MINUTES)
+    # From now up to 60 minutes ahead: normally sent at the 55-60 minute
+    # mark, but sent late (before the class starts) after a server outage.
+    window_start = now
     window_end = now + timedelta(minutes=ROSTER_CODE_WINDOW_MAX_MINUTES)
 
     if window_start.date() != window_end.date():
@@ -69,7 +77,7 @@ def check_roster_code_reminders():
 
     sessions = Session.objects.filter(
         date=window_start.date(),
-        start_time__gte=window_start.time(),
+        start_time__gt=window_start.time(),
         start_time__lte=window_end.time(),
         roster_code_reminder_sent=False,
         roster__isnull=False,
@@ -91,14 +99,17 @@ def start_background_session_reminder_checker():
     def _loop():
         time.sleep(10)  # let Django finish starting up first
         while True:
+            from django.db import connections
             try:
                 check_upcoming_sessions()
             except Exception:
-                pass  # never let a bad tick kill the background loop
+                logger.exception('Session reminder check failed')  # never kills the loop
             try:
                 check_roster_code_reminders()
             except Exception:
-                pass
+                logger.exception('Roster code reminder check failed')
+            finally:
+                connections.close_all()
             time.sleep(CHECK_INTERVAL_SECONDS)
 
     thread = threading.Thread(target=_loop, daemon=True)

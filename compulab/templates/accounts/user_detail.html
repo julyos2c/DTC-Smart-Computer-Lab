@@ -40,11 +40,59 @@
     <tr><td>Assigned lab</td><td>{{ target_user.assigned_lab.name|default:"—" }}</td></tr>
     <tr><td>Status</td><td>{% if target_user.is_active %}Active{% else %}Disabled{% endif %}</td></tr>
     {% if target_user.email %}
-      <tr><td>Email verified</td><td>{% if target_user.email_verified %}Yes{% else %}No{% endif %}</td></tr>
+      <tr><td>Email verified</td><td>{% if target_user.email_verified %}Yes{% if target_user.email_verified_at %} ({{ target_user.email_verified_at|date:"M d, Y H:i" }}){% endif %}{% else %}No{% endif %}</td></tr>
     {% endif %}
     <tr><td>Date joined</td><td>{{ target_user.date_joined|date:"M d, Y H:i" }}</td></tr>
     <tr><td>Last login</td><td>{{ target_user.last_login|date:"M d, Y H:i"|default:"Never" }}</td></tr>
   </table>
 </div>
+
+{% if target_user.role != 'student' %}
+<div class="card">
+  <div class="section-title">Sign-in access</div>
+  <table class="table">
+    <tr><td>Approval</td><td>
+      {% if target_user.is_superuser %}<span class="status-pill pill-approved">Superuser</span>
+      {% elif target_user.approval_status == 'approved' %}<span class="status-pill pill-approved">Approved</span>
+      {% elif target_user.approval_status == 'rejected' %}<span class="status-pill pill-rejected">Rejected</span>
+      {% elif target_user.email_verified %}<span class="status-pill pill-approved">Email verified</span>
+      {% else %}<span class="status-pill pill-pending">Waiting for approval</span>{% endif %}
+    </td></tr>
+    {% if target_user.approval_method %}<tr><td>How</td><td>{{ target_user.get_approval_method_display }}</td></tr>{% endif %}
+    {% if target_user.approved_at %}<tr><td>{% if target_user.approval_status == 'rejected' %}Rejected{% else %}Approved{% endif %}</td><td>{{ target_user.approved_at|date:"M d, Y H:i" }}{% if target_user.approved_by %} by {{ target_user.approved_by.display_name }}{% endif %}</td></tr>{% endif %}
+    {% if target_user.approval_status == 'approved' and not target_user.email_verified %}
+      <tr><td>Email</td><td>Not verified yet — CompuLab won't email this account until the verification link is clicked.</td></tr>
+    {% endif %}
+  </table>
+
+  {% if can_manage_lifecycle %}
+  <div class="form-actions" style="margin-top:14px; flex-wrap:wrap;">
+    {% if target_user.approval_status == 'rejected' %}
+      <form method="post" action="{% url 'user_reopen' target_user.pk %}">{% csrf_token %}
+        <button type="submit" class="action-btn">Reopen for approval</button>
+      </form>
+    {% elif needs_approval %}
+      <form method="post" action="{% url 'user_approve_in_person' target_user.pk %}"
+            onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Approve in person?', text: 'Only continue if you have checked {{ target_user.display_name|escapejs }}\'s school ID in person. A one-time activation code will be shown once.', icon: 'question', confirmButtonText: 'Yes, show the code'}); return false;">
+        {% csrf_token %}
+        <button type="submit" class="action-btn primary"><svg class="btn-icon"><use href="#icon-check"/></svg> Approve in person</button>
+      </form>
+      <a href="{% url 'user_reject' target_user.pk %}" class="action-btn js-modal-link"><svg class="btn-icon"><use href="#icon-x"/></svg> Reject</a>
+    {% else %}
+      <form method="post" action="{% url 'user_issue_reset_code' target_user.pk %}"
+            onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Issue a password reset code?', text: 'Only continue if you have checked {{ target_user.display_name|escapejs }}\'s identity in person. Any earlier reset code stops working.', icon: 'question', confirmButtonText: 'Yes, show the code'}); return false;">
+        {% csrf_token %}
+        <button type="submit" class="action-btn"><svg class="btn-icon"><use href="#icon-lock"/></svg> Issue password reset code</button>
+      </form>
+    {% endif %}
+    {% if target_user.email and not target_user.email_verified and target_user.approval_status != 'rejected' %}
+      <form method="post" action="{% url 'user_resend_verification' target_user.pk %}">{% csrf_token %}
+        <button type="submit" class="action-btn"><svg class="btn-icon"><use href="#icon-send"/></svg> Resend verification email</button>
+      </form>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
 
 {% endblock %}

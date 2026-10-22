@@ -16,6 +16,10 @@ urlpatterns = [
     path('schedule/', include('scheduling.urls')),
     path('issues/', include('issues.urls')),
     path('notifications/', include('notifications.urls')),
+    # /healthz, /healthz/ready, /system/status/
+    path('', include('system.urls')),
+    # Admin view of the optional cloud-sync queue
+    path('system/cloud-sync/', include('cloud_sync.urls')),
 ]
 
 # Only uploaded avatars are public. Everything else under MEDIA_ROOT (e.g.

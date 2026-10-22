@@ -58,24 +58,66 @@
     <span class="app-footer-mark"></span>
     <span>&copy; {% now "Y" %} <b>ASCLAMS</b> — A Smart Computer Laboratory Management System{% if APP_VERSION %} · v{{ APP_VERSION }}{% endif %}</span>
   </div>
-  <div class="app-footer-right" id="appFooterNet" data-net="online" aria-live="polite">
+  {% comment %}Server-reported status (system/context_processors.py): what the
+  CompuLab server itself can reach, not just whether this browser has a network.{% endcomment %}
+  {% with s=system_status %}
+  <div class="app-footer-right" id="appFooterNet" data-healthz="{% url 'healthz' %}"
+       data-net="{% if s and system_headline_level != 'ok' %}offline{% else %}online{% endif %}" aria-live="polite"
+       title="Everything on the campus network works without internet; only email and the optional cloud sync need it.">
     <span class="app-footer-dot"></span>
-    <span class="app-footer-status-text">System operational</span>
+    <span class="app-footer-status-text">
+      {% if s %}
+        {% if request.user.role == 'admin' and system_headline_level != 'ok' %}<a href="{% url 'system_status' %}" style="color:inherit;">{{ system_headline }}</a>{% else %}{{ system_headline }}{% endif %}
+        {% if s.internet.ok is False and s.internet.since %}(since {{ s.internet.since|date:"H:i" }}){% endif %}
+        {% if s.internet.ok is not False and s.emails_waiting %}· {{ s.emails_waiting }} email{{ s.emails_waiting|pluralize }} waiting{% endif %}
+        {% if request.user.role == 'admin' and s.emails_dead and s.headline_level == 'ok' %}· <a href="{% url 'email_outbox' %}?show=problems" style="color:var(--amber);">{{ s.emails_dead }} email{{ s.emails_dead|pluralize }} rejected</a>{% endif %}
+      {% else %}
+        Local server: OK
+      {% endif %}
+    </span>
   </div>
+  {% endwith %}
 </footer>
 
 <script>
 (function () {
+  // The server-reported text above is authoritative for what the SERVER
+  // can reach. This script only adds what the server can't know: whether
+  // THIS computer can still reach the server (it checks /healthz every
+  // 30 s), so a dropped campus network or a stopped server is not mistaken
+  // for an internet outage.
   var el = document.getElementById('appFooterNet');
   var textEl = el && el.querySelector('.app-footer-status-text');
   if (!el || !textEl) return;
-  function sync() {
-    var online = navigator.onLine;
-    el.setAttribute('data-net', online ? 'online' : 'offline');
-    textEl.textContent = online ? 'System operational' : 'Offline — showing cached data';
+  var serverHtml = textEl.innerHTML;
+  var serverState = el.getAttribute('data-net');
+  var healthUrl = el.getAttribute('data-healthz');
+  var reachable = true;
+  function render() {
+    if (!navigator.onLine) {
+      el.setAttribute('data-net', 'offline');
+      textEl.textContent = 'This computer is not connected to the network — reconnect to reach CompuLab.';
+    } else if (!reachable) {
+      el.setAttribute('data-net', 'offline');
+      textEl.textContent = 'Local server unreachable from this computer — your network is up, but CompuLab is not answering. '
+        + 'Unsaved changes on this page will not go through; check the server or the campus network, then reload.';
+    } else {
+      el.setAttribute('data-net', serverState);
+      textEl.innerHTML = serverHtml;
+    }
   }
-  sync();
-  window.addEventListener('online', sync);
-  window.addEventListener('offline', sync);
+  function check() {
+    if (!navigator.onLine || !window.fetch) { render(); return; }
+    var ctrl = window.AbortController ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 5000);
+    fetch(healthUrl, { cache: 'no-store', credentials: 'same-origin', signal: ctrl ? ctrl.signal : undefined })
+      .then(function (r) { reachable = r.ok; })
+      .catch(function () { reachable = false; })
+      .then(function () { clearTimeout(timer); render(); });
+  }
+  window.addEventListener('online', check);
+  window.addEventListener('offline', render);
+  setInterval(check, 30000);
+  if (!navigator.onLine) render();
 })();
 </script>

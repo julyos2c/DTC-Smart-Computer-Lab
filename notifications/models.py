@@ -19,6 +19,7 @@ class Notification(models.Model):
         ('reservation_approved', 'Reservation Approved'),
         ('reservation_declined', 'Reservation Rejected'),
         ('reservation_conflict', 'Reservation Conflict'),
+        ('reservation_cancelled', 'Reservation Cancelled'),
         ('walkin_override_approved', 'Walk-in/Override Approved'),
         ('roster_session_scheduled', 'Class Roster Session Scheduled'),
         ('roster_submitted', 'Class Roster Submitted'),
@@ -60,6 +61,7 @@ class Notification(models.Model):
         'reservation_approved': INFO,
         'reservation_declined': INFO,
         'reservation_conflict': CRITICAL,
+        'reservation_cancelled': INFO,
         'walkin_override_approved': INFO,
         'roster_session_scheduled': INFO,
         'roster_submitted': INFO,
@@ -119,6 +121,80 @@ class Notification(models.Model):
     @classmethod
     def types_for_category(cls, category):
         return [t for t, c in cls.CATEGORY_BY_TYPE.items() if c == category]
+
+
+class EmailOutbox(models.Model):
+    """Durable email queue. Every email the system sends is first written
+    here, so a page never waits on SMTP and nothing is lost while the campus
+    internet is down; the worker (system/worker.py -> notifications.outbox)
+    sends due rows with retry and backoff.
+
+    Token-bearing emails (verification, password reset) are stored with
+    render_mode='render_at_send': no link is generated until the moment the
+    worker actually sends, so a link's validity starts at delivery and no
+    usable token sits in the database. Their bodies are never stored."""
+    CATEGORY_CHOICES = [
+        ('verification', 'Email verification'),
+        ('password_reset', 'Password reset'),
+        ('password_changed', 'Password changed'),
+        ('reservation_code', 'Reservation code'),
+        ('notification', 'Notification'),
+        ('welcome', 'Welcome'),
+        ('security_alert', 'Security alert'),
+    ]
+    STATUS_CHOICES = [
+        ('pending', 'Waiting'),
+        ('sending', 'Sending'),
+        ('sent', 'Sent'),
+        ('retry', 'Will retry'),
+        ('dead', 'Rejected'),
+        ('expired', 'Expired'),
+        ('cancelled', 'Cancelled'),
+    ]
+    RENDER_CHOICES = [
+        ('stored', 'Stored body'),
+        ('render_at_send', 'Rendered when sent'),
+    ]
+    ACTIVE_STATUSES = ('pending', 'retry', 'sending')
+    TOKEN_CATEGORIES = ('verification', 'password_reset')
+
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default='notification')
+    to_email = models.EmailField(max_length=254)
+    subject = models.CharField(max_length=255, blank=True, default='')
+    render_mode = models.CharField(max_length=16, choices=RENDER_CHOICES, default='stored')
+    text_body = models.TextField(blank=True, default='')
+    html_body = models.TextField(blank=True, default='')
+    # Prevents queueing the same message twice while one is still waiting,
+    # e.g. 'verify:12' or 'code:345:67'.
+    dedupe_key = models.CharField(max_length=120, blank=True, default='', db_index=True)
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default='pending', db_index=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(db_index=True)
+    # Exception class and SMTP code only, never the body or a token.
+    last_error = models.CharField(max_length=255, blank=True, default='')
+    expires_at = models.DateTimeField(null=True, blank=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+        help_text='The account this email is about (and, for render-at-send emails, the one it is rendered for).',
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Queued email'
+        verbose_name_plural = 'Email outbox'
+
+    def __str__(self):
+        return f'{self.get_category_display()} to {self.to_email} ({self.status})'
+
+    @property
+    def is_active(self):
+        return self.status in self.ACTIVE_STATUSES
 
 
 class AlertSettings(models.Model):

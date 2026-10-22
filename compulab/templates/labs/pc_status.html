@@ -5,7 +5,7 @@
 {% block content %}
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media=\'all\'">
 <script src="{% static 'vendor/chartjs/chart.umd.min.js' %}"></script>
 <script>
   // Falls back to the CDN if the vendored copy hasn't been fetched yet
@@ -121,6 +121,10 @@
 .ld-table tr:hover td{background:rgba(255,255,255,0.02);}
 .ld-dot{display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px;}
 .ld-pill{font-size:10.5px; font-weight:700; padding:4px 10px; border-radius:6px; white-space:nowrap; display:inline-block;}
+.pc-conn{font-size:10px; margin-right:3px;}
+.pc-conn-ok{color:var(--ld-green, #2fae76);}
+.pc-conn-warn{color:#e0a030;}
+.pc-conn-bad{color:var(--ld-red);}
 .lab-closed-pill{font-size:9.5px; font-weight:700; padding:2px 7px; border-radius:5px; white-space:nowrap; display:inline-block; background:var(--ld-red); color:#fff; text-transform:uppercase; letter-spacing:.03em; vertical-align:middle;}
 .ld-pill.online{background:var(--ld-green); color:#0a0e12;}
 .ld-pill.in_use{background:var(--ld-orange); color:#0a0e12;}
@@ -429,7 +433,7 @@ html[data-theme="light"] .ld-page-btn.active{ color:#fff; }
             <tr>
               <th class="pc-select-col"></th>
               <th>PC ID</th><th>Laboratory</th><th>Status</th><th>Current User</th>
-              <th>Reservation Type</th><th>Login Time</th><th>Duration</th><th>Last Active</th><th>Actions</th>
+              <th>Reservation Type</th><th>Login Time</th><th>Duration</th><th>Connection</th><th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -443,7 +447,13 @@ html[data-theme="light"] .ld-page-btn.active{ color:#fff; }
                 <td>{{ pc.reservation_type_label|default:"—" }}</td>
                 <td>{% if pc.login_time %}{{ pc.login_time|time:"g:i A" }}{% else %}—{% endif %}</td>
                 <td>{% if pc.login_time %}{{ pc.login_time|timesince }}{% else %}—{% endif %}</td>
-                <td>{{ pc.last_active|timesince|default:"—" }}{% if pc.last_active %} ago{% endif %}</td>
+                <td style="max-width:240px;">
+                  {% with note=pc.connection_note %}
+                  <span class="pc-conn pc-conn-{{ note.0 }}" title="{{ note.1 }}">{% if note.0 == 'ok' %}●{% elif note.0 == 'warn' %}▲{% else %}■{% endif %}</span>
+                  <span style="font-size:11.5px; color:var(--ld-dim);">{{ note.1 }}</span>
+                  {% if pc.last_active %}<div style="font-size:11px; color:var(--ld-dim);">Last activity {{ pc.last_active|timesince }} ago</div>{% endif %}
+                  {% endwith %}
+                </td>
                 <td style="white-space:nowrap;">
                   <a href="{% url 'pc_activity_log' %}?pc={{ pc.pk }}" class="ld-btn" style="padding:5px 10px; font-size:11.5px;">
                     <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" style="vertical-align:-2px; margin-right:3px;"><use href="#icon-eye"/></svg> View
@@ -454,6 +464,9 @@ html[data-theme="light"] .ld-page-btn.active{ color:#fff; }
                   {% if request.user.role == 'admin' %}
                     <a href="{% url 'pc_edit' pc.pk %}" class="ld-btn js-modal-link" style="padding:5px 10px; font-size:11.5px;">
                       <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" style="vertical-align:-2px; margin-right:3px;"><use href="#icon-edit"/></svg> Edit
+                    </a>
+                    <a href="{% url 'pc_agent_config' pc.pk %}" class="ld-btn" style="padding:5px 10px; font-size:11.5px;" title="Download agent_config.local.json for this PC (used by the lab PC installer). Contains the agent secret — copy by USB, don't email.">
+                      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" style="vertical-align:-2px; margin-right:3px;"><use href="#icon-download"/></svg> Agent config
                     </a>
                   {% endif %}
                   {% if pc.status == 'in_use' %}

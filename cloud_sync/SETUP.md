@@ -1,68 +1,42 @@
 # cloud_sync — setup
 
-## 1. I-drop ang `cloud_sync/` folder sa loob ng `compulab/` (kasabay ng `labs/`, `scheduling/`, atbp.)
+Cloud sync is **optional** and **off by default**. CompuLab works fully on the campus network
+without it. Turn it on only when the college runs a cloud receiver that implements
+[PROTOCOL.md](PROTOCOL.md); this repository does not contain one.
 
-## 2. `compulab/settings.py`
+The app is already installed (`INSTALLED_APPS`) and queues changes automatically through model
+signals (`signals.py`), so no code has to be changed or hooked in.
 
-```python
-INSTALLED_APPS = [
-    ...
-    'labs',
-    'scheduling',
-    'issues',
-    'notifications',
-    'cloud_sync',
-]
+## Turn it on
 
-# --- Cloud sync ---
-CLOUD_SERVER_URL = 'https://your-cloud-server.example.com'   # blangko/wag i-set = walang sync, edge lang
-CLOUD_SYNC_API_KEY = 'a-long-random-shared-secret'
-CLOUD_SYNC_INTERVAL_SECONDS = 60
-CLOUD_SYNC_TIMEOUT_SECONDS = 5
-```
+1. Make sure the receiver is running and answers `GET <url>/api/ping/`.
+2. In the server's `.env`:
 
-## 3. `python manage.py makemigrations cloud_sync && python manage.py migrate`
+   ```
+   CLOUD_SERVER_URL=https://compulab-cloud.example.edu
+   CLOUD_SYNC_API_KEY=<the long random key the receiver expects>
+   # optional:
+   # CLOUD_SYNC_SITE_ID=dtc-main
+   # CLOUD_SYNC_OBJECT_TYPES=reservation,session,issue
+   ```
 
-## 4. I-hook ang `enqueue()` sa mga existing na views/services
+3. Restart both services (Services app → CompuLab Web and CompuLab Worker).
+4. Queue the records that already exist (shows counts first, then queues with `--yes`):
 
-Halimbawa, sa `notifications/services.py`, sa dulo ng isang `notify_*`
-function pagkatapos gumawa ng `Notification`:
+   ```
+   venv\Scripts\python manage.py cloud_sync_backfill
+   venv\Scripts\python manage.py cloud_sync_backfill --yes
+   ```
 
-```python
-from cloud_sync.models import enqueue
+5. Check **System status → Cloud sync**: "Last successful sync" should be recent and the waiting
+   count should fall to 0.
 
-enqueue('notification', notification.id, {
-    'type': notification.notification_type,
-    'message': notification.message,
-    'user_id': notification.user_id,
-    'created_at': notification.created_at.isoformat(),
-})
-```
+## Turn it off
 
-Gawin din ito sa `issues/views.py` (pag-report ng issue) at saanman
-gagawa/mag-a-update ng reservation/session/activity log na gusto niyong
-makita sa cloud dashboard.
+Clear `CLOUD_SERVER_URL` (or the key) in `.env` and restart both services. Nothing new is queued.
+Rows already queued stay in the table; `manage.py prune_sync_queue --yes` deletes them.
 
-## 5. Sa cloud server (hiwalay na Django project o kahit simpleng Flask app)
+## Remote access is a different thing
 
-Dalawang endpoint lang ang kailangan:
-
-- `GET /api/ping/` — 200 OK lang, walang laman. Ginagamit ng edge para
-  malaman kung may connection.
-- `POST /api/sync/` — tinatanggap yung `{"records": [...]}`, ise-save sa
-  cloud DB (o kahit basic read-only mirror table), tapos sasagot ng
-  `{"accepted_edge_ids": [...]}` — yung mga `edge_id` na successfully
-  na-save. I-check ang `edge_id` bago mag-save (idempotent) para hindi
-  mag-duplicate kung paulit-ulit na-send ang parehong batch.
-
-## 6. Tailscale (remote access papunta sa edge server)
-
-1. I-install ang Tailscale sa edge server mismo (`tailscale up`).
-2. I-install din sa laptop/phone na gagamitin niyo pang-remote.
-3. Parehong i-connect sa isang Tailscale network (tailnet) — libre para sa
-   maliit na bilang ng devices.
-4. Makikita niyo na yung edge server sa sarili nitong Tailscale IP
-   (hal. `100.x.x.x`) — pwede na niyo itong i-access (Django admin,
-   dashboard) kahit saan galing, parang nasa loob kayo ng school network.
-5. Walang kailangang buksan sa router/firewall ng school — outbound lang
-   ang kailangan, na karaniwang bukas na.
+Opening CompuLab from home goes through Tailscale to the campus server itself, not through cloud
+sync: see [installer/REMOTE_ACCESS.md](../installer/REMOTE_ACCESS.md).

@@ -106,6 +106,7 @@ INSTALLED_APPS = [
     'issues',
     'notifications',
     'cloud_sync',
+    'system',
 ]
 
 # SITE_DOMAIN (used by send_verification_email() to build absolute links
@@ -149,6 +150,7 @@ TEMPLATES = [
                 'django.contrib.messages.context_processors.messages',
                 'accounts.context_processors.sidebar_counts',
                 'accounts.context_processors.app_version',
+                'system.context_processors.system_status',
             ],
         },
     },
@@ -271,6 +273,33 @@ SITE_URL = os.environ.get('SITE_URL', 'http://127.0.0.1:8000').rstrip('/')
 # Verification links are built from SITE_URL itself.
 SITE_DOMAIN = SITE_URL.split('://', 1)[-1]
 
+# Optional address for staff outside the campus, through the Tailscale VPN
+# (installer/REMOTE_ACCESS.md, installer/server/configure-remote-access.ps1),
+# e.g. https://compulab-server.tailnet-name.ts.net. Blank = no remote access.
+# SITE_URL stays the campus (LAN) address used in emails and by lab PCs.
+REMOTE_URL = os.environ.get('COMPULAB_REMOTE_URL', '').strip().rstrip('/')
+
+
+def _add_url_to_host_lists(url):
+    """Accept requests for an address the owner configured (SITE_URL,
+    COMPULAB_REMOTE_URL): its host goes into ALLOWED_HOSTS and its origin
+    into CSRF_TRUSTED_ORIGINS. Nothing else is added, so host and CSRF
+    validation stay on for every other name."""
+    from urllib.parse import urlsplit
+    parts = urlsplit(url)
+    if parts.scheme not in ('http', 'https') or not parts.hostname:
+        return
+    if parts.hostname not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(parts.hostname)
+    origin = f'{parts.scheme}://{parts.netloc}'
+    if origin not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(origin)
+
+
+for _url in (SITE_URL, REMOTE_URL):
+    if _url:
+        _add_url_to_host_lists(_url)
+
 AUTH_USER_MODEL = 'accounts.User'
 # Refuses accounts still awaiting email verification on every login route
 # (dashboard, /admin/) and for existing sessions — see accounts/verification.py.
@@ -279,6 +308,14 @@ AUTHENTICATION_BACKENDS = ['accounts.backends.VerifiedEmailBackend']
 # between two verification emails to the same account.
 EMAIL_VERIFICATION_TIMEOUT = int(os.environ.get('EMAIL_VERIFICATION_TIMEOUT_HOURS', '72')) * 3600
 EMAIL_VERIFICATION_RESEND_COOLDOWN = int(os.environ.get('EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS', '120'))
+# One-time codes an Admin hands over in person (accounts/lifecycle.py):
+# activation codes let a new staff account set its own password without
+# email; reset codes do the same for a forgotten password while offline.
+ACTIVATION_CODE_HOURS = int(os.environ.get('ACTIVATION_CODE_HOURS', '72'))
+RESET_CODE_MINUTES = int(os.environ.get('RESET_CODE_MINUTES', '60'))
+# host:port the connectivity monitor connects to (TCP only, nothing is
+# sent) to decide whether the campus has internet. See system/connectivity.py.
+INTERNET_PROBE_TARGET = os.environ.get('COMPULAB_INTERNET_PROBE', '1.1.1.1:443')
 # File-based so rate-limit and failed-login counters are shared by every
 # Passenger worker process (the default in-memory cache is per process).
 CACHES = {
@@ -366,10 +403,22 @@ PC_ACTIVITY_LOG_WIPE_WEEKDAY = None
 
 # --- Cloud sync (edge server pushes to a remote cloud server when
 # online; everything above keeps working with this left blank) ---
-CLOUD_SERVER_URL = os.environ.get('CLOUD_SERVER_URL', '')  # e.g. 'https://compulab-cloud.example.com' -- blank = sync disabled, edge-only
+CLOUD_SERVER_URL = os.environ.get('CLOUD_SERVER_URL', '').strip().rstrip('/')  # e.g. 'https://compulab-cloud.example.com' -- blank = sync disabled, edge-only
 CLOUD_SYNC_API_KEY = os.environ.get('CLOUD_SYNC_API_KEY', '')  # shared secret with the cloud server's /api/sync/ endpoint
 CLOUD_SYNC_INTERVAL_SECONDS = 60
-CLOUD_SYNC_TIMEOUT_SECONDS = 5
+CLOUD_SYNC_TIMEOUT_SECONDS = int(os.environ.get('CLOUD_SYNC_TIMEOUT_SECONDS', '5'))
+# Identifies this campus server to the receiver; part of every record's
+# stable identity there (site_id, object_type, local_id). Never change it
+# once records have been synced.
+CLOUD_SYNC_SITE_ID = os.environ.get('CLOUD_SYNC_SITE_ID', 'dtc-main').strip()
+# Which records are published (cloud_sync/sync_payloads.py). Activity logs
+# and notifications are high-volume / personal and are off by default.
+CLOUD_SYNC_OBJECT_TYPES = tuple(env_list('CLOUD_SYNC_OBJECT_TYPES', 'reservation,session,issue'))
+# One-way publishing to a cloud copy is optional and off unless a cloud
+# server is configured; this on-premises server stays the only writable
+# copy of the data (docs/HYBRID_ARCHITECTURE.md §7, cloud_sync/PROTOCOL.md).
+# While off, nothing is queued, so the SyncQueue table never grows.
+CLOUD_SYNC_ENABLED = bool(CLOUD_SERVER_URL and CLOUD_SYNC_API_KEY)
 
 # How many days' worth of activity_log_backups/*.xlsx files to keep before
 # those are pruned too, so the backup folder doesn't grow forever either.
@@ -391,7 +440,9 @@ LOGGING = {
         'console': {'class': 'logging.StreamHandler', 'formatter': 'standard'},
         'file': {
             'class': 'logging.handlers.RotatingFileHandler',
-            'filename': LOG_DIR / 'compulab.log',
+            # The worker service sets DJANGO_LOG_FILE_NAME=worker.log so two
+            # processes never rotate the same file (that fails on Windows).
+            'filename': LOG_DIR / os.environ.get('DJANGO_LOG_FILE_NAME', 'compulab.log'),
             'maxBytes': 5 * 1024 * 1024,
             'backupCount': 5,
             'encoding': 'utf-8',
@@ -399,4 +450,10 @@ LOGGING = {
         },
     },
     'root': {'handlers': ['console', 'file'], 'level': os.environ.get('DJANGO_LOG_LEVEL', 'WARNING')},
+    'loggers': {
+        # Worker start/stop, connectivity changes and email delivery problems.
+        'compulab.worker': {'level': 'INFO'},
+        'system': {'level': 'INFO'},
+        'notifications.outbox': {'level': 'INFO'},
+    },
 }

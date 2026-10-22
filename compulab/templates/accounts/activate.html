@@ -1,0 +1,74 @@
+{% extends "auth_base.html" %}
+{% block title %}{% if done %}Account ready{% else %}Activate account{% endif %}{% endblock %}
+{% block content %}
+{% include "registration/_auth_card_style.html" %}
+
+<div class="ac-wrap">
+  <div class="ac-card">
+  {% if done %}
+    <div class="ac-center">
+      <div class="ac-status-icon">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M5 13l4.5 4.5L19 8" stroke="#1b7a4d" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      {% if purpose == 'activate' %}
+        <h2 style="font-size:17px; margin:0 0 8px;">Your account is active</h2>
+        <div class="ac-sub">Your password is set. Sign in with <b>{{ activated_user.email }}</b> and the password you just chose.
+        {% if not activated_user.email_verified %}When the campus is online, also open the verification email we sent you — until then, CompuLab won't email you.{% endif %}</div>
+      {% else %}
+        <h2 style="font-size:17px; margin:0 0 8px;">Password changed</h2>
+        <div class="ac-sub">Sign in with <b>{{ activated_user.email }}</b> and your new password.</div>
+      {% endif %}
+      <a href="{% url 'login' %}" class="ac-btn">Go to sign in</a>
+    </div>
+  {% else %}
+    <div class="ac-head">
+      <div class="ac-icon">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="5" y="10.5" width="14" height="9" rx="1.8" stroke="#1b7a4d" stroke-width="1.6"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="#1b7a4d" stroke-width="1.6"/></svg>
+      </div>
+      <h2>Activate account / reset with a code</h2>
+    </div>
+    <div class="ac-sub">
+      Enter the <b>one-time code</b> a Lab Administrator gave you in person, and choose your own password.
+      This works even when the campus has no internet. The code only works for your email address and expires.
+    </div>
+
+    <form method="post" autocomplete="off">
+      {% csrf_token %}
+      {% if form.non_field_errors %}<div class="ac-error">{{ form.non_field_errors.0 }}</div>{% endif %}
+
+      <label for="id_email">Email</label>
+      <div class="ac-input-wrap">
+        <input type="email" name="email" id="id_email" placeholder="you@gmail.com" required autofocus
+               value="{{ form.email.value|default:'' }}" autocomplete="email">
+      </div>
+      {% if form.email.errors %}<div class="ac-field-error">{{ form.email.errors.0 }}</div>{% endif %}
+
+      <label for="id_code">One-time code</label>
+      <div class="ac-input-wrap">
+        <input type="text" name="code" id="id_code" placeholder="XXXXX-XXXXX" required maxlength="20"
+               value="{{ form.code.value|default:'' }}" autocomplete="one-time-code"
+               style="font-family:'JetBrains Mono', monospace; letter-spacing:0.08em; text-transform:uppercase;">
+      </div>
+      {% if form.code.errors %}<div class="ac-field-error">{{ form.code.errors.0 }}</div>{% endif %}
+
+      <label for="id_password1">New password</label>
+      <div class="ac-input-wrap">
+        <input type="password" name="password1" id="id_password1" required autocomplete="new-password">
+      </div>
+      {% if form.password1.errors %}{% for e in form.password1.errors %}<div class="ac-field-error">{{ e }}</div>{% endfor %}{% endif %}
+
+      <label for="id_password2">Confirm new password</label>
+      <div class="ac-input-wrap">
+        <input type="password" name="password2" id="id_password2" required autocomplete="new-password">
+      </div>
+      {% if form.password2.errors %}<div class="ac-field-error">{{ form.password2.errors.0 }}</div>{% endif %}
+
+      <button type="submit" style="margin-top:16px;">Set my password</button>
+    </form>
+
+    <div class="ac-foot">No code? Ask a Lab Administrator — they check your school ID and give you one.</div>
+    <div class="ac-foot"><a href="{% url 'login' %}">&larr; Back to sign in</a></div>
+  {% endif %}
+  </div>
+</div>
+{% endblock %}

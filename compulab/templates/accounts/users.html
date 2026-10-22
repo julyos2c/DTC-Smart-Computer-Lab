@@ -5,7 +5,7 @@
 {% block content %}
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media=\'all\'">
 
 <style>
 .um{
@@ -179,6 +179,17 @@ html[data-theme="light"] .um-pill.student{ color:#fff; }
     </div>
   </div>
 
+  {% if pending_approval_count %}
+  <div class="um-card" style="margin-bottom:16px; border-left:3px solid #e0a030; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+    <div style="font-size:13px; line-height:1.6;">
+      <b>{{ pending_approval_count }} account{{ pending_approval_count|pluralize }} waiting for approval.</b>
+      They can sign in once they click their verification email, or after you check their school ID and use
+      <b>Approve in person</b> (works without internet).
+    </div>
+    <a href="?status=pending" class="um-btn">Show them</a>
+  </div>
+  {% endif %}
+
   <div class="um-card" style="margin-bottom:16px;">
     <form method="get" class="um-filter-form">
       <div>
@@ -205,6 +216,9 @@ html[data-theme="light"] .um-pill.student{ color:#fff; }
           <option value="">All Status</option>
           <option value="active" {% if selected_status == "active" %}selected{% endif %}>Active</option>
           <option value="inactive" {% if selected_status == "inactive" %}selected{% endif %}>Disabled</option>
+          <option value="pending" {% if selected_status == "pending" %}selected{% endif %}>Waiting for approval</option>
+          <option value="unverified" {% if selected_status == "unverified" %}selected{% endif %}>Approved, email not verified</option>
+          <option value="rejected" {% if selected_status == "rejected" %}selected{% endif %}>Rejected</option>
         </select>
       </div>
       <div>
@@ -307,7 +321,11 @@ html[data-theme="light"] .um-pill.student{ color:#fff; }
                     </div>
                   </div>
                 </td>
-                <td>{{ u.email|default:"—" }}{% if u.role != 'student' and u.email and not u.email_verified %} <span style="color:#e0a030; font-size:11px; font-weight:600;">· Unverified</span>{% endif %}</td>
+                <td>{{ u.email|default:"—" }}{% if u.role != 'student' and u.email %}
+                  {% if u.approval_status == 'rejected' and not u.is_superuser %} <span style="color:#d9534f; font-size:11px; font-weight:600;">· Rejected</span>
+                  {% elif not u.email_verified and u.approval_status != 'approved' and not u.is_superuser %} <span style="color:#e0a030; font-size:11px; font-weight:600;" title="Can't sign in until the email link is clicked or you approve them in person">· Waiting for approval</span>
+                  {% elif not u.email_verified %} <span style="color:#8b98a3; font-size:11px; font-weight:600;" title="Can sign in; emails are held until the address is verified">· Email unverified</span>
+                  {% endif %}{% endif %}</td>
                 <td>{{ u.id_number|default:"—" }}</td>
                 <td>{{ u.department_display|default:"—" }}</td>
                 <td><span class="um-pill {{ u.role }}">{{ u.get_role_display }}</span></td>
@@ -332,7 +350,12 @@ html[data-theme="light"] .um-pill.student{ color:#fff; }
                     <span class="js-superuser-protected" style="color:var(--um-dim); font-size:11px; font-weight:600;" title="Only a superuser can change a superuser account">Superuser</span>
                     {% endif %}
                     {% if u.role != 'student' %}
-                    {% if u.email and not u.email_verified %}
+                    {% if u.email and not u.email_verified and not u.is_superuser and u.approval_status == 'pending' %}
+                    <a href="{% url 'user_detail' u.pk %}" class="um-icon-btn js-modal-link" title="Approve in person (activation code) or reject">
+                      <svg viewBox="0 0 24 24" fill="none"><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/></svg>
+                    </a>
+                    {% endif %}
+                    {% if u.email and not u.email_verified and u.approval_status != 'rejected' %}
                     <form method="post" action="{% url 'user_resend_verification' u.pk %}" style="display:inline">
                       {% csrf_token %}
                       <button type="submit" class="um-icon-btn" title="Resend verification email">

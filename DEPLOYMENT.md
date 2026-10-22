@@ -1,5 +1,16 @@
 # CompuLab — Deployment & Operations
 
+> **Installing on the campus (topology A)?** Use the step-by-step installer instead of the manual
+> procedure below: [installer/README.md](installer/README.md) — server
+> ([installer/server/README.md](installer/server/README.md)), lab PCs
+> ([installer/agent/README.md](installer/agent/README.md)) and remote access
+> ([installer/REMOTE_ACCESS.md](installer/REMOTE_ACCESS.md)). It installs two Windows services:
+> **CompuLab Web** (waitress, `COMPULAB_BACKGROUND_TASKS=False`) and **CompuLab Worker**
+> (`manage.py run_worker`: PC status, email outbox, optional cloud sync, reminders, durable jobs,
+> connectivity monitor). After installing, work through
+> [docs/MANUAL_VERIFICATION.md](docs/MANUAL_VERIFICATION.md).
+> The sections below remain the reference for manual and cPanel deployments.
+
 ## 1. Where this app can run
 
 CompuLab controls lab PCs on the school LAN. Three parts of it only work when
@@ -16,11 +27,12 @@ the Django server is **on the same network as the lab PCs**:
 
 - **A. On-premises server (recommended, works today).** Run Django on a school
   machine (the current edge server). Make it reachable remotely with Tailscale
-  (see `cloud_sync/SETUP.md`) or a tunnel — no public hosting needed.
+  (see `installer/REMOTE_ACCESS.md`) — no public hosting needed.
 - **B. On-premises edge + MochaHost "cloud" mirror.** Edge server as in A; a
-  public read-only/dashboard instance on MochaHost receives data through
-  `cloud_sync`. Note: the cloud receiver (`/api/ping/`, `/api/sync/`) is
-  **not implemented** in this repo yet.
+  public read-only/dashboard instance receives data through `cloud_sync`
+  (one-way, protocol in `cloud_sync/PROTOCOL.md`). Note: the cloud receiver
+  (`/api/ping/`, `/api/sync/`) is **not implemented** in this repo; the
+  sending side stays off until one exists and is configured.
 - **C. Everything on MochaHost.** Only viable if the PC agents are reworked to
   *poll* the server (instead of being pushed to) and identify themselves by a
   per-PC token instead of IP. That is a feature rewrite, not a deployment.

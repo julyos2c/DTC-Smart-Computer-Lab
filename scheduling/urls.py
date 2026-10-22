@@ -17,6 +17,8 @@ urlpatterns = [
     path('view/export/excel/', views.export_schedule_excel, name='view_schedule_export_excel'),
     path('session/<int:pk>/edit/', views.SessionUpdateView.as_view(), name='session_edit'),
     path('session/<int:pk>/delete/', views.delete_session, name='session_delete'),
+    path('session/<int:pk>/cancel/', views.cancel_my_session, name='session_cancel_mine'),
+    path('requests/<int:pk>/withdraw/', views.cancel_my_request, name='request_cancel_mine'),
 
     # Manage request flow
     path('requests/', views.ManageRequestsView.as_view(), name='manage_requests'),

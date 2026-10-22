@@ -64,8 +64,62 @@ class PC(models.Model):
         ),
     )
 
+    # What the server last heard from this machine, so staff can tell a
+    # current status from a stale one (see the PC status page legend).
+    last_seen_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Last time the PC answered a status check or its agent contacted the server.',
+    )
+    status_changed_at = models.DateTimeField(null=True, blank=True, help_text='When the status last changed.')
+    agent_version = models.CharField(max_length=20, blank=True, default='', help_text='Reported by the lab PC agent.')
+    # Separate from last_seen_at (which a plain ping also updates): when the
+    # lock-screen agent itself last called the server, and how many
+    # session-end events it said were still waiting on the PC to be sent.
+    agent_last_contact_at = models.DateTimeField(
+        null=True, blank=True, help_text='Last time the lab PC agent itself called the server.',
+    )
+    agent_pending_events = models.PositiveSmallIntegerField(
+        default=0, help_text='Events the agent reported as still queued on the PC at its last contact.',
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # __dict__ (not self.status) so a query that deferred `status` isn't
+        # forced to load it.
+        self._loaded_status = self.__dict__.get('status')
+
+    def save(self, *args, **kwargs):
+        # Stamp status changes from every code path (agent, pings, override,
+        # manual edits) in one place.
+        if 'status' in self.__dict__ and self.status != self._loaded_status:
+            from django.utils import timezone
+            self.status_changed_at = timezone.now()
+            update_fields = kwargs.get('update_fields')
+            if update_fields is not None and 'status_changed_at' not in update_fields:
+                kwargs['update_fields'] = list(update_fields) + ['status_changed_at']
+        super().save(*args, **kwargs)
+        self._loaded_status = self.__dict__.get('status')
+
     def __str__(self):
         return self.pc_id
+
+
+class AgentEventReceipt(models.Model):
+    """One row per session-end / logout event a lab PC agent delivered,
+    keyed by the agent's event_id. The agent re-sends an event until the
+    server acknowledges it, so the same event can arrive more than once
+    (reply lost, PC rebooted mid-send); a second arrival finds this row and
+    is acknowledged again without being applied twice. Stored in the
+    database, so it survives server restarts. Pruned after 7 days (the agent
+    gives up on an event after 24 hours)."""
+    event_id = models.CharField(max_length=64, unique=True)
+    pc = models.ForeignKey(PC, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    kind = models.CharField(max_length=30)
+    outcome = models.CharField(max_length=120, blank=True, default='')
+    received_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    def __str__(self):
+        return f'{self.kind} {self.event_id} ({self.outcome or "applied"})'
 
 
 class PCActivityLog(models.Model):

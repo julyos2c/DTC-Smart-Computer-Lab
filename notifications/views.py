@@ -179,3 +179,77 @@ class NotificationSettingsView(RoleRequiredMixin, ModalFormMixin, FormView):
         form.save()
         messages.success(self.request, 'Alert settings updated.')
         return super().form_valid(form)
+
+
+# ------------------------------------------------------------------ #
+# Email outbox (Admin): what is waiting, what failed, retry / cancel.
+# Bodies of verification and password-reset emails are never shown (they
+# are rendered only when sent, and contain one-time links).
+# ------------------------------------------------------------------ #
+class EmailOutboxView(RoleRequiredMixin, ListView):
+    allowed_roles = ['admin']
+    template_name = 'notifications/email_outbox.html'
+    context_object_name = 'rows'
+    paginate_by = 25
+
+    STATUS_FILTERS = {
+        'waiting': ('pending', 'retry', 'sending'),
+        'problems': ('dead', 'expired'),
+        'sent': ('sent',),
+        'cancelled': ('cancelled',),
+    }
+
+    def get_queryset(self):
+        from notifications.models import EmailOutbox
+        qs = EmailOutbox.objects.select_related('user').order_by('-created_at')
+        statuses = self.STATUS_FILTERS.get(self.request.GET.get('show', 'waiting'))
+        if statuses:
+            qs = qs.filter(status__in=statuses)
+        return qs
+
+    def get_context_data(self, **kwargs):
+        from django.db.models import Count
+        from notifications.models import EmailOutbox
+        from system.connectivity import get_summary
+        ctx = super().get_context_data(**kwargs)
+        counts = dict(EmailOutbox.objects.values_list('status').annotate(n=Count('pk')))
+        ctx['counts'] = {
+            key: sum(counts.get(s, 0) for s in statuses) for key, statuses in self.STATUS_FILTERS.items()
+        }
+        ctx['show'] = self.request.GET.get('show', 'waiting')
+        ctx['summary'] = get_summary()
+        from system.connectivity import email_error_hint
+        ctx['email_hint'] = email_error_hint(ctx['summary'].get('last_email_error', ''))
+        return ctx
+
+
+def _outbox_row_for_admin(request, pk):
+    from django.core.exceptions import PermissionDenied
+    from notifications.models import EmailOutbox
+    if request.user.role != 'admin':
+        raise PermissionDenied
+    return get_object_or_404(EmailOutbox, pk=pk)
+
+
+@login_required
+def email_outbox_retry(request, pk):
+    from notifications import outbox
+    row = _outbox_row_for_admin(request, pk)
+    if request.method == 'POST':
+        if row.status == 'sent':
+            messages.info(request, 'That email was already sent.')
+        else:
+            outbox.retry_now(row)
+            messages.success(request, f'Email to {row.to_email} will be retried within a few seconds.')
+    return redirect(f"{reverse_lazy('email_outbox')}?show={request.POST.get('show', 'waiting')}")
+
+
+@login_required
+def email_outbox_cancel(request, pk):
+    from django.utils import timezone
+    row = _outbox_row_for_admin(request, pk)
+    if request.method == 'POST' and row.is_active:
+        row.status = 'cancelled'
+        row.save(update_fields=['status', 'updated_at'])
+        messages.success(request, f'Email to {row.to_email} cancelled.')
+    return redirect(f"{reverse_lazy('email_outbox')}?show={request.POST.get('show', 'waiting')}")

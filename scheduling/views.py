@@ -285,10 +285,82 @@ def delete_session(request, pk):
     session = get_object_or_404(_in_managed_labs(Session.objects.all(), request.user), pk=pk)
     if request.method == 'POST':
         lab_id, date = session.lab_id, session.date
-        session.delete()
-        messages.success(request, 'Session removed from the schedule.')
+        _cancel_session(session, request.user)
+        messages.success(request, 'Session removed from the schedule. The instructor (if any) has been notified.')
         return redirect(f"{reverse_lazy('view_schedule')}?lab={lab_id}&date={date}")
     return redirect('view_schedule')
+
+
+# ------------------------------------------------------------------ #
+# Cancellation
+# ------------------------------------------------------------------ #
+def _log_cancellation(actor, subject, lab, date, start_time, end_time, code=''):
+    from accounts.models import ActivityLog
+    ActivityLog.objects.create(
+        actor=actor, action='reservation_cancelled',
+        target_identifier=(code or actor.email or '')[:150],
+        details=(f'{actor.display_name} cancelled the reservation for {subject} in {lab.name} on {date} '
+                 f'({start_time.strftime("%H:%M")}–{end_time.strftime("%H:%M")})'
+                 + (f', code {code}' if code else '') + '.'),
+    )
+
+
+def _cancel_session(session, actor):
+    """Remove a scheduled session from the official calendar, mark the
+    request it came from (same reservation code) as cancelled, record it
+    and tell the people concerned. Check-in history of a session that
+    already happened is kept by refusing to cancel past sessions in the
+    caller (cancel_my_session)."""
+    lab, subject, date = session.lab, session.subject, session.date
+    start_time, end_time, code, instructor = session.start_time, session.end_time, session.reservation_code, session.instructor
+    if code:
+        SessionRequest.objects.filter(reservation_code=code, status='approved').update(status='cancelled')
+    session.delete()
+    _log_cancellation(actor, subject, lab, date, start_time, end_time, code or '')
+    notify_service.notify_reservation_cancelled(lab, subject, date, start_time, end_time, actor, instructor=instructor)
+
+
+def _session_started(date, start_time):
+    now = timezone.localtime()
+    return (date, start_time) <= (now.date(), now.time())
+
+
+@login_required
+def cancel_my_request(request, pk):
+    """An Instructor withdraws their own still-pending reservation request."""
+    req = get_object_or_404(SessionRequest, pk=pk)
+    if req.instructor_id != request.user.pk:
+        raise PermissionDenied
+    if request.method == 'POST':
+        if req.status != 'pending':
+            messages.error(request, 'Only a pending request can be withdrawn. An approved one is cancelled from its calendar entry.')
+        else:
+            req.status = 'cancelled'
+            req.save(update_fields=['status'])
+            _log_cancellation(request.user, req.subject, req.lab, req.date, req.start_time, req.end_time)
+            notify_service.notify_reservation_cancelled(
+                req.lab, req.subject, req.date, req.start_time, req.end_time, request.user,
+            )
+            messages.success(request, f'Your request for {req.subject} on {req.date} was withdrawn.')
+    return modal_redirect(request, 'inst_schedule')
+
+
+@login_required
+def cancel_my_session(request, pk):
+    """An Instructor cancels their own upcoming, already-approved
+    reservation (it frees the lab slot). Sessions that have started or
+    passed can't be cancelled, so their attendance stays on record."""
+    session = get_object_or_404(Session, pk=pk)
+    if session.instructor_id != request.user.pk:
+        raise PermissionDenied
+    if request.method == 'POST':
+        if _session_started(session.date, session.start_time):
+            messages.error(request, 'This reservation has already started or passed and can no longer be cancelled.')
+        else:
+            subject, date = session.subject, session.date
+            _cancel_session(session, request.user)
+            messages.success(request, f'Your reservation for {subject} on {date} was cancelled. The lab staff have been notified.')
+    return modal_redirect(request, 'inst_schedule')
 
 
 # Action: Export PDF (from the displayed schedule)
@@ -481,6 +553,13 @@ class RequestUpdateView(RoleRequiredMixin, ModalFormMixin, UpdateView):
 def approve_request(request, pk):
     _require_schedule_manager(request)
     req = get_object_or_404(_in_managed_labs(SessionRequest.objects.all(), request.user), pk=pk)
+    if request.method == 'POST' and req.status != 'pending':
+        # Already handled (double click, two staff at once) or withdrawn by
+        # the requester — never issue a second code or revive a cancelled one.
+        messages.error(request, f'This request is already {req.get_status_display().lower()}.')
+        if is_modal_request(request):
+            return JsonResponse({'success': True, 'redirect': reverse('request_detail', kwargs={'pk': pk})})
+        return redirect('request_detail', pk=pk)
     if request.method == 'POST':
         error = _slot_error(
             req.requester_type, req.lab, req.date, req.start_time, req.end_time, req.pcs_requested,
@@ -554,6 +633,11 @@ def approve_request(request, pk):
 def decline_request(request, pk):
     _require_schedule_manager(request)
     req = get_object_or_404(_in_managed_labs(SessionRequest.objects.all(), request.user), pk=pk)
+    if request.method == 'POST' and req.status != 'pending':
+        messages.error(request, f'This request is already {req.get_status_display().lower()}.')
+        if is_modal_request(request):
+            return JsonResponse({'success': True, 'redirect': reverse('schedule')})
+        return redirect('schedule')
     if request.method == 'POST':
         req.status = 'declined'
         req.save()
@@ -694,7 +778,7 @@ class InstructorScheduleView(RoleRequiredMixin, TemplateView):
 
         sessions = Session.objects.filter(instructor=self.request.user).select_related('lab')
         requests_qs = SessionRequest.objects.filter(
-            instructor=self.request.user, status__in=['pending', 'declined']
+            instructor=self.request.user, status__in=['pending', 'declined', 'cancelled']
         ).select_related('lab')
         if lab_id:
             sessions = sessions.filter(lab_id=lab_id)
@@ -730,10 +814,12 @@ class InstructorScheduleView(RoleRequiredMixin, TemplateView):
                     'lab': s.lab.name, 'subject': s.subject, 'status': 'Reserved',
                     'time': f'{s.start_time.strftime("%I:%M %p").lstrip("0")}–{s.end_time.strftime("%I:%M %p").lstrip("0")}',
                     'code': s.reservation_code or '',
+                    'cancelUrl': '' if _session_started(s.date, s.start_time) else reverse('session_cancel_mine', args=[s.pk]),
+                    'cancelLabel': 'Cancel this reservation',
                 },
             })
         for r in requests_qs:
-            status_key = 'cancelled' if r.status == 'declined' else 'pending'
+            status_key = 'pending' if r.status == 'pending' else 'cancelled'
             events.append({
                 'id': f'r{r.pk}', 'title': f'{r.subject} — {r.lab.name}',
                 'start': f'{r.date.isoformat()}T{r.start_time.isoformat(timespec="minutes")}',
@@ -741,9 +827,11 @@ class InstructorScheduleView(RoleRequiredMixin, TemplateView):
                 'color': self.STATUS_COLORS[status_key],
                 'extendedProps': {
                     'lab': r.lab.name, 'subject': r.subject,
-                    'status': 'Cancelled' if status_key == 'cancelled' else 'Pending approval',
+                    'status': {'pending': 'Pending approval', 'declined': 'Declined', 'cancelled': 'Cancelled'}[r.status],
                     'time': f'{r.start_time.strftime("%I:%M %p").lstrip("0")}–{r.end_time.strftime("%I:%M %p").lstrip("0")}',
                     'code': '',
+                    'cancelUrl': reverse('request_cancel_mine', args=[r.pk]) if r.status == 'pending' else '',
+                    'cancelLabel': 'Withdraw this request',
                 },
             })
         ctx['calendar_events_json'] = json_for_script(events)
@@ -1091,6 +1179,29 @@ class RosterDetailView(RoleRequiredMixin, ModalDetailMixin, DetailView):
         ctx['sessions_paginator'] = paginator
         ctx['sessions_is_paginated'] = page_obj.has_other_pages()
         ctx['sessions_selected_per_page'] = per_page
+
+        # Next class and whether each student's reservation-code email for it
+        # actually went out — so when the campus email/internet is down the
+        # instructor can see who still needs the code read out to them.
+        next_session = self.object.sessions.filter(
+            Q(date__gt=today) | Q(date=today, end_time__gt=now_time)
+        ).order_by('date', 'start_time').first()
+        ctx['next_session'] = next_session
+        code_status = {}
+        if next_session:
+            from notifications.models import EmailOutbox
+            prefix = f'code:session:{next_session.pk}:'
+            for key, status in (EmailOutbox.objects.filter(dedupe_key__startswith=prefix)
+                                .order_by('created_at').values_list('dedupe_key', 'status')):
+                try:
+                    code_status[int(key.rsplit(':', 1)[1])] = status
+                except ValueError:
+                    pass
+        students = list(ctx['students'])
+        for entry in students:
+            entry.code_email_status = code_status.get(entry.student_id)
+        ctx['students'] = students
+        ctx['code_emails_waiting'] = sum(1 for v in code_status.values() if v in ('pending', 'retry', 'sending', 'dead', 'expired'))
         return ctx
 
 

@@ -12,13 +12,15 @@ calling Notification.objects.create() directly, so that:
      their OWN assigned lab; an Instructor only gets events tied to their
      own reservations/sessions)
 """
+import datetime
+
 from django.contrib.auth import get_user_model
 from notifications.models import Notification, AlertSettings
-from django.core.mail import send_mail, EmailMultiAlternatives
+from notifications import outbox
 from django.conf import settings
-from django.template.loader import render_to_string
 from django.templatetags.static import static
 from django.urls import reverse
+from django.utils import timezone
 
 User = get_user_model()
 
@@ -28,6 +30,7 @@ SETTING_FIELD_BY_TYPE = {
     'reservation_approved': 'reservation_notifications',
     'reservation_declined': 'reservation_notifications',
     'reservation_conflict': 'reservation_notifications',
+    'reservation_cancelled': 'reservation_notifications',
     'walkin_override_approved': 'reservation_notifications',
     'roster_session_scheduled': 'reservation_notifications',
     'roster_submitted': 'reservation_notifications',
@@ -75,62 +78,49 @@ def notify(users, title, message, notification_type, lab=None, send_plain_email=
             notification_type=notification_type, lab=lab, is_system_alert=True,
         )
         created.append(notification)
+        # Cloud sync (when configured with "notification" in
+        # CLOUD_SYNC_OBJECT_TYPES) picks this up from the post_save signal
+        # in cloud_sync/signals.py.
 
-        from cloud_sync.models import enqueue
-        enqueue('notification', notification.id, {
-            'user_id': notification.user_id,
-            'title': notification.title,
-            'message': notification.message,
-            'notification_type': notification.notification_type,
-            'lab_id': notification.lab_id,
-            'created_at': notification.created_at.isoformat(),
-        })
-
-        # --- BAGONG PARTE: magpadala rin ng totoong email ---
-        # (skipped when the caller is sending its own styled email instead,
-        # e.g. the reservation-code emails below)
-        if send_plain_email and user.email:
-            try:
-                send_mail(
-                    subject=title,
-                    message=message,
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[user.email],
-                    fail_silently=True,
-                )
-            except Exception:
-                pass  # huwag hayaang mapatigil ang notification kung mag-fail ang email
-        # -----------------------------------------------------
+        # Also email it (skipped when the caller sends its own styled email
+        # instead, e.g. the reservation-code emails below). The email is only
+        # queued here; the worker sends it, so a page never waits on SMTP and
+        # nothing is lost while the internet is down.
+        if send_plain_email and outbox.email_allowed_for(user):
+            outbox.queue(
+                user.email, title, message,
+                category='security_alert' if notification_type == 'login_security_alert' else 'notification',
+                user=user,
+            )
 
     return created
 
 
+def _session_end(date, end_time):
+    """Aware datetime when a session ends — after that its code email is useless."""
+    if not date or not end_time:
+        return None
+    return timezone.make_aware(datetime.datetime.combine(date, end_time))
 
-def _send_reservation_code_email(user, title, intro, subject, lab, date, time_label, code):
-    """Sends the branded 'reservation code' email (approval or roster
-    upcoming-session reminder). Separate from notify()'s plain send_mail
-    step because this one needs structured context (subject/lab/date/
-    time/code laid out in a card) rather than a single message string.
-    Silently no-ops for users without an email on file (e.g. students)."""
-    if not user or not user.email:
-        return
-    logo_url = f'{settings.SITE_URL}{static("img/logo.jpg")}'
+
+def _send_reservation_code_email(user, title, intro, subject, lab, date, time_label, code,
+                                 expires_at=None, dedupe_key=''):
+    """Queues the branded 'reservation code' email (approval or roster
+    upcoming-session reminder). Separate from notify()'s plain email
+    because this one needs structured context (subject/lab/date/time/code
+    laid out in a card) rather than a single message string. No-ops for
+    users without an email on file. Expires when the session ends."""
+    if not outbox.email_allowed_for(user):
+        return None
     context = {
         'user': user, 'title': title, 'intro': intro, 'subject': subject,
         'lab': lab, 'date': date, 'time_label': time_label, 'code': code,
-        'logo_url': logo_url,
+        'logo_url': f'{settings.SITE_URL}{static("img/logo.jpg")}',
     }
-    text_body = render_to_string('emails/reservation_code.txt', context)
-    html_body = render_to_string('emails/reservation_code.html', context)
-    try:
-        message = EmailMultiAlternatives(
-            subject=title, body=text_body,
-            from_email=settings.DEFAULT_FROM_EMAIL, to=[user.email],
-        )
-        message.attach_alternative(html_body, 'text/html')
-        message.send(fail_silently=True)
-    except Exception:
-        pass  # never let an email hiccup block the notification itself
+    return outbox.queue_template(
+        user.email, title, 'emails/reservation_code', context, category='reservation_code',
+        user=user, dedupe_key=dedupe_key, expires_at=expires_at,
+    )
 
 
 def _lab_recipients(lab, include_admins=True):
@@ -173,6 +163,8 @@ def notify_reservation_approved(session_request, code):
             req.subject, req.lab.name, req.date,
             f'{req.start_time.strftime("%H:%M")}–{req.end_time.strftime("%H:%M")}',
             code,
+            expires_at=_session_end(req.date, req.end_time),
+            dedupe_key=f'code:request:{req.pk}:{req.instructor_id}',
         )
 
 
@@ -187,6 +179,26 @@ def notify_reservation_declined(session_request):
         f'Your request for {req.subject} on {req.date} was declined.',
         'reservation_declined', lab=req.lab,
     )
+
+
+def notify_reservation_cancelled(lab, subject, date, start_time, end_time, cancelled_by, instructor=None):
+    """A reservation was withdrawn. Lab In-Charge + Admins always hear about
+    it (the slot is free again); the instructor too when someone else
+    (e.g. the lab removing a scheduled session) did the cancelling."""
+    when = f'{date} ({start_time.strftime("%H:%M")}–{end_time.strftime("%H:%M")})'
+    who = cancelled_by.display_name if cancelled_by else 'Someone'
+    recipients = [u for u in _lab_recipients(lab) if not cancelled_by or u.pk != cancelled_by.pk]
+    notify(
+        recipients, 'Reservation cancelled',
+        f'{who} cancelled the reservation for {subject} in {lab.name} on {when}. The slot is free again.',
+        'reservation_cancelled', lab=lab,
+    )
+    if instructor and (not cancelled_by or instructor.pk != cancelled_by.pk):
+        notify(
+            [instructor], 'Your reservation was cancelled',
+            f'Your reservation for {subject} in {lab.name} on {when} was cancelled by {who}.',
+            'reservation_cancelled', lab=lab,
+        )
 
 
 def notify_walkin_override_approved(session_request, code):
@@ -220,12 +232,14 @@ def notify_roster_session_scheduled(session, code):
         'roster_session_scheduled', lab=session.lab, send_plain_email=False,
     )
     if _event_enabled('roster_session_scheduled'):
+        expires_at = _session_end(session.date, session.end_time)
         _send_reservation_code_email(
             session.instructor, 'Upcoming class session — reservation code',
             'This class starts soon — from your class roster schedule.',
             session.subject, session.lab.name, session.date,
             session.start_time.strftime("%H:%M"),
-            code,
+            code, expires_at=expires_at,
+            dedupe_key=f'code:session:{session.pk}:{session.instructor_id}',
         )
         if session.roster_id:
             roster_students = session.roster.students.exclude(student__isnull=True).select_related('student')
@@ -237,7 +251,8 @@ def notify_roster_session_scheduled(session, code):
                         'This class starts soon — from your class roster schedule.',
                         session.subject, session.lab.name, session.date,
                         session.start_time.strftime("%H:%M"),
-                        code,
+                        code, expires_at=expires_at,
+                        dedupe_key=f'code:session:{session.pk}:{student.pk}',
                     )
 
 
@@ -468,22 +483,16 @@ def send_password_changed_email(user):
     AlertSettings and always fires as long as the account has an email
     on file (Students never do, so this is a no-op for them). Failures
     are swallowed the same way notify()'s email step is, so a bad SMTP
-    config never blocks the password change itself from succeeding."""
-    if not user.email:
-        return
-    login_url = f'{settings.SITE_URL}{reverse("login")}'
-    logo_url = f'{settings.SITE_URL}{static("img/logo.jpg")}'
-    context = {'user': user, 'login_url': login_url, 'logo_url': logo_url}
-    text_body = render_to_string('emails/password_changed.txt', context)
-    html_body = render_to_string('emails/password_changed.html', context)
-    try:
-        message = EmailMultiAlternatives(
-            subject='Password Change Confirmed — SCLAMS',
-            body=text_body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[user.email],
-        )
-        message.attach_alternative(html_body, 'text/html')
-        message.send(fail_silently=True)
-    except Exception:
-        pass  # never let an email hiccup block the password change itself
+    config never blocks the password change itself from succeeding.
+    Queued through the outbox like every other email."""
+    if not outbox.email_allowed_for(user):
+        return None
+    context = {
+        'user': user,
+        'login_url': f'{settings.SITE_URL}{reverse("login")}',
+        'logo_url': f'{settings.SITE_URL}{static("img/logo.jpg")}',
+    }
+    return outbox.queue_template(
+        user.email, 'Password Change Confirmed — SCLAMS', 'emails/password_changed', context,
+        category='password_changed', user=user,
+    )

@@ -48,18 +48,18 @@ SETUP ON EACH LAB PC
 6. Allow inbound connections on the chosen port (default 5555) for
    python.exe through Windows Firewall, at least on the lab's network.
 --------------------------------------------------------------------------
-RUNNING AS A STARTUP SERVICE (pick one)
+RUNNING AUTOMATICALLY
 --------------------------------------------------------------------------
-Easiest — Task Scheduler:
-  1. Task Scheduler -> Create Task
-  2. Triggers tab -> New -> "At startup" (or "At log on")
-  3. Actions tab -> New -> Program: pythonw.exe   (pythonw = no console window)
-     Arguments: C:\\CompuLabAgent\\agent.py
-  4. General tab -> check "Run whether user is logged on or not"
+Use the installer: installer\\agent\\install-agent.ps1 (see
+installer\\agent\\README.md). It copies the agent to Program Files, writes
+the per-PC settings, opens the firewall for the server only, and registers
+a Task Scheduler task that starts pythonw.exe agent.py "At log on" and
+restarts it if it stops.
 
-More robust — NSSM (Non-Sucking Service Manager, nssm.cc):
-  nssm install CompuLabAgent "C:\\Path\\To\\pythonw.exe" "C:\\CompuLabAgent\\agent.py"
-  nssm start CompuLabAgent
+The lock screen is a desktop window, so it must run in the signed-in
+user's session ("At log on"). Do NOT run it as a Windows service (NSSM,
+"Run whether user is logged on or not"): services run in Session 0 and
+cannot show the lock screen to the person at the PC.
 --------------------------------------------------------------------------
 """
 import datetime
@@ -93,6 +93,60 @@ LOCAL_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ag
 # Secrets that are public (placeholder, or published in git history) and so
 # must never be accepted: anyone could send them to this PC's port.
 REJECTED_SECRETS = {'', 'SET-IN-agent_config.local.json', 'danao_technological_college'}
+
+# Reported to the server on every call, so the PC status page shows which
+# agent version each lab PC runs (useful after an update roll-out).
+AGENT_VERSION = '2.2.0'
+
+# Session-end callbacks that could not reach the server (network down,
+# server restarting) are kept here and re-sent until the server confirms
+# them, instead of being lost. Survives an agent restart, a reboot and an
+# agent update/reinstall (the folder is outside the install folder).
+def _writable_dir(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+        probe = os.path.join(path, '.write-test')
+        with open(probe, 'w', encoding='utf-8') as f:
+            f.write('ok')
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
+def _agent_data_dir():
+    """Writable folder for the agent's own state. The installer puts the
+    agent under Program Files, which the (non-admin) lab account can't write
+    to, and creates C:\\ProgramData\\CompuLab Agent writable for every
+    Windows user instead, so the queue is shared by whichever account is
+    signed in. Falls back to that account's local app data, then the
+    script folder."""
+    candidates = [os.environ.get('COMPULAB_AGENT_DATA_DIR', '')]
+    if os.environ.get('PROGRAMDATA'):
+        candidates.append(os.path.join(os.environ['PROGRAMDATA'], 'CompuLab Agent'))
+    if os.environ.get('LOCALAPPDATA'):
+        candidates.append(os.path.join(os.environ['LOCALAPPDATA'], 'CompuLab Agent'))
+    for path in candidates:
+        if path and _writable_dir(path):
+            return path
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+DATA_DIR = _agent_data_dir()
+PENDING_CALLBACKS_PATH = os.path.join(DATA_DIR, 'pending_callbacks.json')
+# Written after every contact attempt; read by installer\agent\agent-status.ps1
+# and `python agent.py --status`.
+STATUS_PATH = os.path.join(DATA_DIR, 'agent_status.json')
+# Older versions (2.1.x) kept the queue in the signed-in user's app data.
+LEGACY_PENDING_PATH = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'CompuLab Agent', 'pending_callbacks.json')
+# Retry backoff while the server is unreachable: 15 s doubling to 5 min.
+PENDING_RETRY_MIN_SECONDS = 15
+PENDING_RETRY_MAX_SECONDS = 300
+PENDING_MAX_AGE_SECONDS = 24 * 3600   # a day-old "session ended" means nothing
+PENDING_MAX_ITEMS = 200               # bounded: the oldest are dropped beyond this
+_pending_lock = threading.Lock()
+_status_lock = threading.Lock()
+_flush_now = threading.Event()
 
 # Commands passed between threads and the Tk main thread — Tk widgets can
 # only safely be touched from the thread that created them, so neither the
@@ -225,22 +279,260 @@ def start_http_server(port):
     return server
 
 
-def notify_end_session_sync(server_url, secret, reason, timeout=3):
-    """
-    Blocking version of notify_end_session_in_background — used right
-    before triggering an actual Windows logoff, since the whole process
-    (including any background thread) is about to be torn down by Windows.
-    Best-effort: any failure here still lets the logoff proceed.
-    """
-    url = server_url.rstrip('/') + '/labs/api/pc-agent-end-session/'
-    payload = json.dumps({'secret': secret, 'reason': reason}).encode('utf-8')
+# ---------------------------------------------------------------------------
+# Connection status (shown on the lock screen and by agent-status.ps1)
+# ---------------------------------------------------------------------------
+def _now_iso():
+    return datetime.datetime.now().astimezone().isoformat(timespec='seconds')
+
+
+def _read_status():
+    try:
+        with open(STATUS_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def update_status(server_url, reachable, error='', **extra):
+    """Persist the latest contact result. Never raises."""
+    with _status_lock:
+        data = _read_status()
+        data.update(extra)
+        data.update({
+            'agent_version': AGENT_VERSION,
+            'server_url': server_url,
+            'server_reachable': bool(reachable),
+            'checked_at': _now_iso(),
+            'pending_events': pending_count(),
+            'data_dir': DATA_DIR,
+        })
+        if reachable:
+            data['last_contact_at'] = data['checked_at']
+            data['last_error'] = ''
+        else:
+            data['last_error'] = str(error)[:300]
+            data.setdefault('last_contact_at', None)
+        tmp = STATUS_PATH + '.tmp'
+        try:
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, STATUS_PATH)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Reliable session-end callbacks
+# ---------------------------------------------------------------------------
+def _load_pending():
+    try:
+        with open(PENDING_CALLBACKS_PATH, 'r', encoding='utf-8') as f:
+            items = json.load(f)
+        return items if isinstance(items, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _save_pending(items):
+    tmp = PENDING_CALLBACKS_PATH + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(items, f)
+        os.replace(tmp, PENDING_CALLBACKS_PATH)
+    except OSError as e:
+        print(f'[agent] Could not save pending callbacks: {e}')
+
+
+def pending_count():
+    return len(_load_pending())
+
+
+def _trim(items, now=None):
+    """Drop expired items and keep at most PENDING_MAX_ITEMS (oldest go)."""
+    now = now or time.time()
+    fresh = [i for i in items if now - i.get('queued_at', now) <= PENDING_MAX_AGE_SECONDS]
+    expired = len(items) - len(fresh)
+    if expired:
+        print(f'[agent] Dropped {expired} queued event(s) older than 24 hours.')
+    if len(fresh) > PENDING_MAX_ITEMS:
+        print(f'[agent] Queue full: dropped the {len(fresh) - PENDING_MAX_ITEMS} oldest event(s).')
+        fresh = fresh[-PENDING_MAX_ITEMS:]
+    return fresh
+
+
+def migrate_legacy_queue():
+    """Move events queued by agent 2.1.x (per-user folder) into DATA_DIR."""
+    if not LEGACY_PENDING_PATH or os.path.abspath(LEGACY_PENDING_PATH) == os.path.abspath(PENDING_CALLBACKS_PATH):
+        return
+    try:
+        with open(LEGACY_PENDING_PATH, 'r', encoding='utf-8') as f:
+            legacy = json.load(f)
+    except (OSError, ValueError):
+        return
+    if isinstance(legacy, list) and legacy:
+        with _pending_lock:
+            items = _load_pending()
+            known = {i.get('body', {}).get('event_id') for i in items}
+            items.extend(i for i in legacy if i.get('body', {}).get('event_id') not in known)
+            items.sort(key=lambda i: i.get('queued_at', 0))
+            _save_pending(_trim(items))
+    try:
+        os.remove(LEGACY_PENDING_PATH)
+    except OSError:
+        pass
+
+
+DELIVERED, RETRY, DROP = 'delivered', 'retry', 'drop'
+
+
+def _post_callback(server_url, item, timeout):
+    """POST one queued callback. Returns (outcome, detail):
+      DELIVERED - the server confirmed it (its reply names this event_id,
+                  also when it already had it or ignored it as out of date);
+      RETRY     - not reached, timed out, or a temporary server error
+                  (5xx, 429, or a reply that is not a confirmation);
+      DROP      - the server answered that it can never accept it (bad
+                  request, wrong secret, PC not registered): retrying the
+                  same event would not help, and the reason is logged."""
+    body = dict(item['body'])
+    # How long ago the event really happened, measured on this PC's own
+    # clock (no clock sync needed): the server uses it to ignore a late
+    # callback if the PC has been in use again since then.
+    body['queued_seconds_ago'] = max(0, int(time.time() - item['queued_at']))
+    body['pending_events'] = pending_count()
     request = urllib.request.Request(
-        url, data=payload, headers={'Content-Type': 'application/json'}, method='POST',
+        server_url.rstrip('/') + item['path'], data=json.dumps(body).encode('utf-8'),
+        headers={'Content-Type': 'application/json'}, method='POST',
     )
     try:
-        urllib.request.urlopen(request, timeout=timeout)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read(65536)
+    except urllib.error.HTTPError as e:
+        if e.code == 429 or e.code >= 500:
+            return RETRY, f'server error {e.code}'
+        return DROP, f'server refused it (HTTP {e.code})'
     except Exception as e:
-        print(f'[agent] Could not notify server of session end before logoff: {e}')
+        return RETRY, f'server unreachable ({e.__class__.__name__})'
+    try:
+        reply = json.loads(raw.decode('utf-8'))
+    except (ValueError, UnicodeDecodeError):
+        return RETRY, 'unexpected reply (not CompuLab?)'
+    event_id = body.get('event_id')
+    if reply.get('ok') and (reply.get('ack') == event_id or not event_id):
+        return DELIVERED, reply.get('ignored', '')
+    if reply.get('ok'):
+        # A server older than agent 2.2 answers ok without "ack"; it did
+        # apply the event, so treat that as delivered too.
+        return DELIVERED, 'confirmed by an older server version'
+    return DROP, str(reply.get('error') or 'rejected')
+
+
+def send_callback_reliably(server_url, secret, path, fields, timeout=3, block=False):
+    """Send a session-end style callback now; if the server can't be
+    reached, keep it in pending_callbacks.json and retry with backoff until
+    the server confirms it (see start_pending_callback_retrier). Each
+    callback carries an event_id so the server never applies it twice."""
+    import uuid
+    item = {
+        'path': path,
+        'queued_at': time.time(),
+        'body': dict(fields, secret=secret, event_id=uuid.uuid4().hex, agent_version=AGENT_VERSION),
+    }
+
+    def attempt():
+        # Keep the order: if older events are still waiting, queue behind them.
+        with _pending_lock:
+            queued_before = bool(_load_pending())
+            if queued_before:
+                items = _load_pending()
+                items.append(item)
+                _save_pending(_trim(items))
+        if queued_before:
+            _flush_now.set()
+            return
+        outcome, detail = _post_callback(server_url, item, timeout)
+        if outcome == RETRY:
+            with _pending_lock:
+                items = _load_pending()
+                items.append(item)
+                _save_pending(_trim(items))
+            print(f'[agent] {detail}; {path} will be re-sent automatically.')
+            update_status(server_url, False, detail)
+        else:
+            if outcome == DROP:
+                print(f'[agent] {path} not accepted: {detail}')
+            update_status(server_url, True, last_event_result=f'{path}: {outcome} {detail}'.strip())
+
+    if block:
+        attempt()
+    else:
+        threading.Thread(target=attempt, daemon=True).start()
+
+
+def flush_pending_callbacks(server_url, timeout=5):
+    """Send queued events oldest first. Returns True if the queue is empty
+    afterwards, False if the server could not be reached (stop and keep the
+    rest in order)."""
+    with _pending_lock:
+        items = _trim(_load_pending())
+        if not items:
+            _save_pending([])
+            return True
+        remaining = list(items)
+        reached = True
+        last_error = ''
+        while remaining:
+            item = remaining[0]
+            outcome, detail = _post_callback(server_url, item, timeout)
+            if outcome == RETRY:
+                reached = False
+                last_error = detail
+                break
+            if outcome == DROP:
+                print(f'[agent] Queued {item.get("path")} not accepted by the server: {detail}')
+            remaining.pop(0)
+        _save_pending(remaining)
+    update_status(server_url, reached, last_error)
+    return reached and not remaining
+
+
+def start_pending_callback_retrier(server_url):
+    """Re-send queued events: right away when the server becomes reachable
+    again (check_network_in_background sets _flush_now), otherwise with a
+    backoff from 15 s up to 5 minutes while it stays unreachable."""
+    def worker():
+        delay = PENDING_RETRY_MIN_SECONDS
+        while True:
+            _flush_now.wait(delay)
+            _flush_now.clear()
+            try:
+                if not _load_pending():
+                    delay = PENDING_RETRY_MIN_SECONDS
+                    continue
+                if flush_pending_callbacks(server_url):
+                    delay = PENDING_RETRY_MIN_SECONDS
+                else:
+                    delay = min(PENDING_RETRY_MAX_SECONDS, delay * 2)
+            except Exception as e:
+                print(f'[agent] Retrying pending callbacks failed: {e}')
+                delay = min(PENDING_RETRY_MAX_SECONDS, delay * 2)
+
+    threading.Thread(target=worker, name='compulab-agent-retry', daemon=True).start()
+
+
+def notify_end_session_sync(server_url, secret, reason, timeout=3):
+    """
+    Tells the server the session on this PC ended. Tries once right away
+    (blocking briefly, so the status page updates at once); if the server
+    can't be reached it is queued on disk and re-sent until it arrives,
+    instead of being lost as before.
+    """
+    send_callback_reliably(
+        server_url, secret, '/labs/api/pc-agent-end-session/', {'reason': reason},
+        timeout=timeout, block=True,
+    )
 
 
 def execute_power_command(action):
@@ -292,7 +584,11 @@ def submit_login_in_background(server_url, secret, id_number, reservation_code):
             except Exception:
                 result = {'ok': False, 'error': f'Server error ({e.code}).'}
         except urllib.error.URLError as e:
-            result = {'ok': False, 'error': f"Can't reach the CompuLab server right now ({e.reason}). Ask your Lab In-Charge for help."}
+            result = {'ok': False, 'error': (
+                f"Can't reach the CompuLab server on the campus network ({e.reason}). "
+                "Signing in with a reservation code needs the server (the internet is not needed). "
+                "Ask your Lab In-Charge: they can unlock this PC with Manual PC Control."
+            )}
         except Exception as e:
             result = {'ok': False, 'error': f'Unexpected error: {e}'}
 
@@ -309,18 +605,9 @@ def submit_logout_in_background(server_url, secret, reason):
     we don't block the UI waiting on the server's reply — this just keeps
     the admin dashboard / PC status view in sync with reality.
     """
-    def worker():
-        url = server_url.rstrip('/') + '/labs/api/pc-agent-logout/'
-        payload = json.dumps({'secret': secret, 'reason': reason}).encode('utf-8')
-        request = urllib.request.Request(
-            url, data=payload, headers={'Content-Type': 'application/json'}, method='POST',
-        )
-        try:
-            urllib.request.urlopen(request, timeout=8).close()
-        except Exception:
-            pass  # nothing meaningful to show the person for a background sync call
-
-    threading.Thread(target=worker, daemon=True).start()
+    send_callback_reliably(
+        server_url, secret, '/labs/api/pc-agent-logout/', {'reason': reason}, timeout=8,
+    )
 
 
 def fetch_pc_info_in_background(server_url, secret):
@@ -340,7 +627,9 @@ def fetch_pc_info_in_background(server_url, secret):
     values — nothing crashes and nothing blocks the UI.
     """
     def worker():
-        query = urllib.parse.urlencode({'secret': secret})
+        query = urllib.parse.urlencode({
+            'secret': secret, 'agent_version': AGENT_VERSION, 'pending_events': pending_count(),
+        })
         url = server_url.rstrip('/') + '/labs/api/pc-agent-info/?' + query
         request = urllib.request.Request(url, method='GET')
         try:
@@ -368,17 +657,28 @@ def check_network_in_background(server_url, interval=10):
     for a long time before the next attempt.
     """
     def worker():
+        was_connected = None
         while True:
+            error = ''
             try:
-                request = urllib.request.Request(server_url.rstrip('/') + '/', method='GET')
+                # /healthz answers "ok" as soon as the CompuLab web service
+                # runs; it needs no internet, only the campus network.
+                request = urllib.request.Request(server_url.rstrip('/') + '/healthz', method='GET')
                 urllib.request.urlopen(request, timeout=4).close()
                 connected = True
-            except urllib.error.HTTPError:
+            except urllib.error.HTTPError as e:
                 # Server answered — even an error page means the network
                 # path to it is up, which is what we're actually checking.
                 connected = True
-            except Exception:
+                if e.code >= 500:
+                    error = f'server error {e.code}'
+            except Exception as e:
                 connected = False
+                error = f'{e.__class__.__name__}: {getattr(e, "reason", e)}'
+            if connected and was_connected is False:
+                _flush_now.set()  # send queued events right away
+            was_connected = connected
+            update_status(server_url, connected, error)
             _command_queue.put(('network_status', connected))
             time.sleep(interval)
 
@@ -510,6 +810,8 @@ def report_activity_in_background(server_url, secret, window_title, page_url='')
             'secret': secret,
             'window_title': window_title or '',
             'page_url': page_url or '',
+            'agent_version': AGENT_VERSION,
+            'pending_events': pending_count(),
         }).encode('utf-8')
         request = urllib.request.Request(
             url, data=payload, headers={'Content-Type': 'application/json'}, method='POST',
@@ -1842,10 +2144,28 @@ class LockScreen:
         'Connected' even with no network path to the server."""
         if getattr(self, 'network_status_value', None) is None:
             return
+        queued = pending_count()
         if is_connected:
-            self.network_status_value.config(text='Connected', fg=self.STATUS_GREEN)
+            self.network_status_value.config(
+                text='Connected' if not queued else f'Connected · sending {queued}', fg=self.STATUS_GREEN,
+            )
+            if getattr(self, '_offline_notice_shown', False) and not self.submitting:
+                self.status_label.config(text='')
+            self._offline_notice_shown = False
         else:
-            self.network_status_value.config(text='Offline', fg=self.ERROR)
+            self.network_status_value.config(
+                text='Server offline' if not queued else f'Server offline · {queued} queued', fg=self.ERROR,
+            )
+            # Explain what does and doesn't work, unless the student is in
+            # the middle of a sign-in (its own error message wins).
+            if self.visible and not self.submitting and (
+                    not self.status_label.cget('text') or getattr(self, '_offline_notice_shown', False)):
+                self.status_label.config(fg=self.ERROR, text=(
+                    'This PC cannot reach the CompuLab server on the campus network right now. '
+                    'Sign-in with a reservation code is unavailable until it is back (the internet is not needed). '
+                    'Ask your Lab In-Charge for help.'
+                ))
+                self._offline_notice_shown = True
 
 
 def poll_queue(root, lock_screen):
@@ -1918,14 +2238,52 @@ def poll_queue(root, lock_screen):
         root.after(200, poll_queue, root, lock_screen)
 
 
+def print_status():
+    """`python agent.py --status`: configured server, last contact, queued
+    events, and a live check of the server. Does not start the lock screen."""
+    import sys
+    try:
+        config = load_config()
+        server_url = config.get('server_url', '')
+    except SystemExit as e:
+        print(e)
+        server_url = ''
+    status = _read_status()
+    print(f'CompuLab agent {AGENT_VERSION}')
+    print(f'  Server address : {server_url or "(not configured)"}')
+    print(f'  Data folder    : {DATA_DIR}')
+    print(f'  Last contact   : {status.get("last_contact_at") or "never"}')
+    print(f'  Last check     : {status.get("checked_at") or "never"} '
+          f'({"reachable" if status.get("server_reachable") else "unreachable"})')
+    if status.get('last_error'):
+        print(f'  Last error     : {status["last_error"]}')
+    print(f'  Queued events  : {pending_count()} (sent automatically once the server confirms them)')
+    if server_url:
+        try:
+            with urllib.request.urlopen(server_url.rstrip('/') + '/healthz', timeout=5) as r:
+                ok = r.read(16).decode('utf-8', 'replace').strip() == 'ok'
+            print(f'  Live check     : {"server answers" if ok else "something answered, but not CompuLab"}')
+        except Exception as e:
+            print(f'  Live check     : server unreachable ({e}). This is a campus network / server problem, '
+                  'not an internet problem.')
+            sys.exit(2)
+
+
 def main():
+    import sys
+    if '--status' in sys.argv:
+        print_status()
+        return
     config = load_config()
     port = config.get('port', 5555)
 
+    migrate_legacy_queue()
     start_http_server(port)
     hardening.install_keyboard_hook()
     check_network_in_background(config.get('server_url', 'http://127.0.0.1:8000'))
-    print(f'CompuLab agent listening on port {port} — lock screen active.')
+    start_pending_callback_retrier(config.get('server_url', 'http://127.0.0.1:8000'))
+    _flush_now.set()  # send anything left from before a restart
+    print(f'CompuLab agent {AGENT_VERSION} listening on port {port} — lock screen active.')
 
     root = tk.Tk()
     lock_screen = LockScreen(root, config)

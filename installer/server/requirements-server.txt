@@ -1,0 +1,5 @@
+# What the on-premises Windows server installs (install-server.ps1).
+# Same application packages as production (Django 5.2 LTS, which needs
+# MariaDB >= 10.5 or MySQL >= 8.0.11), plus waitress as the web server.
+-r ../../requirements-production.txt
+waitress>=3.0,<4

@@ -4,7 +4,7 @@ from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from accounts.email_rules import email_domain_error
-from accounts.verification import requires_verification
+from accounts.verification import requires_verification, sign_in_block_reason
 from accounts.constants import DEPARTMENT_CHOICES, year_level_choices_for
 
 User = get_user_model()
@@ -40,7 +40,9 @@ class CompulabAuthenticationForm(AuthenticationForm):
     error_messages = {
         **AuthenticationForm.error_messages,
         'unverified': 'Please verify your email address first. Check your inbox for the verification '
-                      'link, or request a new one below.',
+                      'link, or request a new one below. No internet on campus? Ask a Lab Administrator '
+                      'for a one-time activation code and enter it on the "Activate account" page.',
+        'rejected': 'This account was not approved. Please contact a Lab Administrator.',
     }
 
     def clean(self):
@@ -55,12 +57,54 @@ class CompulabAuthenticationForm(AuthenticationForm):
             if user is None:
                 User().set_password(password)  # same hashing time as the branch below
             elif user.is_active and requires_verification(user) and user.check_password(password):
-                raise ValidationError(self.error_messages['unverified'], code='unverified')
+                reason = sign_in_block_reason(user)
+                code = 'rejected' if reason == 'rejected' else 'unverified'
+                raise ValidationError(self.error_messages[code], code=code)
             raise
 
 
 class ResendVerificationForm(forms.Form):
     email = forms.EmailField(label='Email', max_length=254)
+
+
+class ActivateWithCodeForm(forms.Form):
+    """Public page where a staff member enters the one-time code an Admin
+    gave them in person, and chooses their own password. Used both to
+    activate a new account (no email needed) and to reset a forgotten
+    password while the campus is offline. The code itself is checked in
+    accounts.lifecycle.redeem_code()."""
+    email = forms.EmailField(label='Email', max_length=254)
+    code = forms.CharField(label='One-time code', max_length=20)
+    password1 = forms.CharField(label='New password', widget=forms.PasswordInput)
+    password2 = forms.CharField(label='Confirm new password', widget=forms.PasswordInput)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['email'].widget.attrs['autocomplete'] = 'email'
+        self.fields['code'].widget.attrs.update({'autocomplete': 'one-time-code', 'placeholder': 'XXXXX-XXXXX'})
+        self.fields['password1'].widget.attrs['autocomplete'] = 'new-password'
+        self.fields['password2'].widget.attrs['autocomplete'] = 'new-password'
+
+    def clean(self):
+        cleaned = super().clean()
+        p1, p2 = cleaned.get('password1'), cleaned.get('password2')
+        if p1 and p2 and p1 != p2:
+            self.add_error('password2', "Passwords don't match.")
+        if p1:
+            email = (cleaned.get('email') or '').strip()
+            target = User.objects.filter(email__iexact=email).first() if email else None
+            try:
+                validate_password(p1, user=target)
+            except ValidationError as e:
+                self.add_error('password1', e)
+        return cleaned
+
+
+class RejectAccountForm(forms.Form):
+    reason = forms.CharField(
+        label='Reason (optional, kept in the activity log)', max_length=200, required=False,
+        widget=forms.TextInput(attrs={'placeholder': 'e.g. Not a DTC staff member'}),
+    )
 
 
 class ProfileUpdateForm(forms.ModelForm):
@@ -340,10 +384,12 @@ class AdminUserUpdateForm(forms.ModelForm):
                         validate_password(p1, user=self.instance)
                     except ValidationError as e:
                         self.add_error('password1', e)
-            elif not self.instance.has_usable_password():
-                # An account with no usable password yet (shouldn't
-                # normally happen outside of Students, since role is
-                # fixed now) still needs one set to be able to log in.
+            elif not self.instance.has_usable_password() and role == 'admin':
+                # Lab In-Charge and Instructor accounts are created without a
+                # password on purpose: the owner sets it through the emailed
+                # verification link or an in-person activation code, so the
+                # admin never has to invent (and know) one just to save an
+                # edit. Admin-role accounts always get one at creation.
                 self.add_error(
                     'password1',
                     'This account doesn\'t have a password yet. Set one so this user can log in.'
@@ -383,6 +429,14 @@ class AdminUserUpdateForm(forms.ModelForm):
         )
         if self.email_changed:
             user.email_verified = False
+            user.email_verified_at = None
+            # Access that came from proving the OLD mailbox doesn't carry
+            # over to the new one. An Admin's in-person approval (or a
+            # server-created superuser) is about the person, not the
+            # mailbox, so it stays: they can keep signing in while the new
+            # address waits to be verified.
+            if user.approval_status == 'approved' and user.approval_method in ('email_link', 'migrated', ''):
+                user.approval_status = 'pending'
 
         if commit:
             user.save()

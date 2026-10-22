@@ -12,6 +12,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 from accounts.mixins import RoleRequiredMixin, ModalFormMixin, ModalDetailMixin, modal_redirect, is_modal_request, bulk_delete
 from labs.models import PC, Lab, InventoryItem, MaintenanceLog, EquipmentIssue, PCActivityLog
+from labs import agent_events
 from labs.network import refresh_pc_statuses
 from labs.privacy import resolve_site_label
 from labs.forms import ReservationPCLoginForm, MaintenanceScheduleForm, LabForm, InventoryItemForm, PCForm, PCImportForm
@@ -400,8 +401,6 @@ def verify_reservation_and_check_in(remote_addr, id_number, code):
     if not (session.start_time <= now.time() <= session.end_time):
         return {'ok': False, 'error': f"This reservation is only valid from {session.start_time.strftime('%H:%M')} to {session.end_time.strftime('%H:%M')}."}
 
-    success, detail = unlock_pc(pc)
-
     # Human-readable label + resolved account, worked out either way so it
     # can be used both in the success path below and in the ActivityLog
     # entry for a failed unlock.
@@ -431,7 +430,32 @@ def verify_reservation_and_check_in(remote_addr, id_number, code):
         checked_in_user = walk_in_account
         checked_in_name = f"{walk_in_account.display_name} — walk-in"
 
+    # Claim the check-in BEFORE unlocking, with the reservation row locked,
+    # so two people logging in at the same moment can't both slip under a
+    # group/walk-in cap (the count above ran without a lock). The network
+    # call to the PC stays outside the transaction; if it fails, a claim
+    # made just now is released again.
+    from django.db import transaction
+    with transaction.atomic():
+        Session.objects.select_for_update().filter(pk=session.pk).first()
+        if is_shared_code_booking:
+            cap = (session.pcs_requested if is_capacity_booking else session.student_count) or 0
+            unit = 'PC' if is_capacity_booking else 'student'
+            if cap > 0 and session.check_ins.exclude(id_number__iexact=id_number).count() >= cap:
+                return {'ok': False, 'error': (
+                    f"This reservation's check-in limit ({cap} {unit}{'s' if cap != 1 else ''}) has already been "
+                    "reached. If that count is wrong, ask your Admin or Lab In-Charge to update the request."
+                )}
+        claim, claim_created = SessionCheckIn.objects.get_or_create(
+            session=session, id_number=id_number,
+            defaults={'checkin_type': checkin_type, 'student': checked_in_user, 'pc': pc},
+        )
+
+    success, detail = unlock_pc(pc)
+
     if not success:
+        if claim_created:
+            claim.delete()
         # The unlock signal never actually reached this PC's agent — most
         # likely nobody has started the agent on that machine yet (or its
         # IP on file no longer matches). The person's ID/reservation WAS
@@ -467,10 +491,13 @@ def verify_reservation_and_check_in(remote_addr, id_number, code):
     # "who really used a PC during this reservation" transaction log, used
     # by the Attendance Report to show walk-ins as their own section instead
     # of folding them into the requester's name.
-    SessionCheckIn.objects.update_or_create(
-        session=session, id_number=id_number,
-        defaults={'checkin_type': checkin_type, 'student': checked_in_user, 'pc': pc},
-    )
+    if not claim_created:
+        # A repeat login (same person, e.g. after a relock): refresh the row
+        # exactly as before.
+        SessionCheckIn.objects.update_or_create(
+            session=session, id_number=id_number,
+            defaults={'checkin_type': checkin_type, 'student': checked_in_user, 'pc': pc},
+        )
 
     pc.status = 'in_use'
     pc.last_active = timezone.now()
@@ -541,6 +568,56 @@ class ReservationPCLoginView(FormView):
         return redirect('pc_login')
 
 
+def _pc_connection_note(pc):
+    """Plain-language note on how current a PC's status is, for the PC
+    status page: (level, text) with level 'ok', 'warn' or 'bad'."""
+    from datetime import timedelta
+    from django.conf import settings
+    now = timezone.now()
+    if not pc.ip_address:
+        return ('warn', 'No IP address on file — this PC can\'t be checked or controlled. Edit the PC to add it.')
+    # A few missed status checks in a row means what we show may be out of date.
+    stale_after = timedelta(seconds=max(60, 3 * getattr(settings, 'PC_STATUS_CHECK_INTERVAL_SECONDS', 20)))
+    if pc.status == 'offline':
+        since = f' since {timezone.localtime(pc.status_changed_at):%b %d, %H:%M}' if pc.status_changed_at else ''
+        return ('bad', f'Not answering on the network{since}. Check that it is switched on and plugged in; '
+                       'it reconnects by itself once it answers again.')
+    if pc.last_seen_at is None:
+        return ('warn', 'Not heard from yet. Status is updated automatically every few seconds once the background worker runs.')
+    if now - pc.last_seen_at > stale_after:
+        return ('warn', f'Status may be out of date — last contact {timezone.localtime(pc.last_seen_at):%H:%M}. '
+                        'Check the background worker (System status) or press "Check status now".')
+    agent = f' · agent {pc.agent_version}' if pc.agent_version else ''
+    if pc.agent_last_contact_at:
+        agent += f', agent last called {timezone.localtime(pc.agent_last_contact_at):%b %d, %H:%M}'
+    else:
+        agent += ' · the lock-screen agent has not called the server yet'
+    if pc.agent_pending_events:
+        return ('warn', f'Last contact {timezone.localtime(pc.last_seen_at):%H:%M:%S}{agent} · '
+                        f'{pc.agent_pending_events} session event(s) still queued on the PC (sent automatically)')
+    return ('ok', f'Last contact {timezone.localtime(pc.last_seen_at):%H:%M:%S}{agent}')
+
+
+def _touch_from_agent(pc, data):
+    """Record that this PC's agent just talked to the server (which agent
+    version it runs, and how many events it still has queued) — shown as
+    "last contact" on the PC status page and on System status."""
+    now = timezone.now()
+    fields = {'last_seen_at': now, 'agent_last_contact_at': now}
+    data = data or {}
+    version = str(data.get('agent_version') or '')[:20]
+    if version:
+        fields['agent_version'] = version
+    if 'pending_events' in data:
+        try:
+            fields['agent_pending_events'] = max(0, min(int(data.get('pending_events') or 0), 32767))
+        except (TypeError, ValueError):
+            pass
+    PC.objects.filter(pk=pc.pk).update(**fields)
+    for name, value in fields.items():
+        setattr(pc, name, value)
+
+
 # JSON endpoint used by the lab_pc_agent running ON the lab PC itself, for
 # labs where students type their ID/reservation code directly into the lock
 # screen (instead of a separate reception/kiosk computer running the
@@ -567,6 +644,9 @@ def pc_agent_login_api(request):
     if not expected_secret or payload.get('secret') != expected_secret:
         return JsonResponse({'ok': False, 'error': 'invalid secret'}, status=403)
 
+    PC.objects.filter(ip_address=request.META.get('REMOTE_ADDR')).update(
+        last_seen_at=timezone.now(), agent_last_contact_at=timezone.now(),
+    )
     result = verify_reservation_and_check_in(
         request.META.get('REMOTE_ADDR'),
         payload.get('id_number', ''),
@@ -624,6 +704,10 @@ def pc_agent_info_api(request):
     pc = PC.objects.select_related('lab').filter(ip_address=request.META.get('REMOTE_ADDR')).first()
     if pc is None:
         return JsonResponse({'ok': False, 'error': 'PC not registered'}, status=200)
+    touch = {'agent_version': request.GET.get('agent_version', '')}
+    if 'pending_events' in request.GET:
+        touch['pending_events'] = request.GET.get('pending_events')
+    _touch_from_agent(pc, touch)
 
     lab = pc.lab
     now_time = timezone.localtime().time()
@@ -676,6 +760,7 @@ def pc_agent_activity_api(request):
     pc = PC.objects.filter(ip_address=request.META.get('REMOTE_ADDR')).select_related('current_user').first()
     if pc is None:
         return JsonResponse({'ok': False, 'error': 'PC not registered'}, status=200)
+    _touch_from_agent(pc, payload)
 
     # Log activity for a PC the server thinks is actually in active use —
     # either by an authenticated account (pc.current_user), or by a Manual
@@ -741,42 +826,45 @@ def pc_agent_end_session_api(request):
     pc = PC.objects.filter(ip_address=remote_addr).select_related('lab').first()
     if pc is None:
         return JsonResponse({'ok': False, 'error': 'PC not registered'}, status=200)
-
+    _touch_from_agent(pc, payload)
     reason = payload.get('reason', 'manual')  # 'manual', 'expired', 'remote_lock', or 'override'
-    session = pc.current_session
-    user = pc.current_user
 
-    if session is not None or user is not None:
-        if reason == 'expired':
-            detail_msg = f"{pc.pc_id} ({pc.lab.name}) re-locked — reservation time ended."
-        elif reason == 'remote_lock':
-            detail_msg = (
-                f"{pc.pc_id} ({pc.lab.name}) locked remotely by a Lab In-Charge "
-                f"(Manual PC Control tool)."
+    def apply(pc):
+        session = pc.current_session
+        user = pc.current_user
+
+        if session is not None or user is not None:
+            if reason == 'expired':
+                detail_msg = f"{pc.pc_id} ({pc.lab.name}) re-locked — reservation time ended."
+            elif reason == 'remote_lock':
+                detail_msg = (
+                    f"{pc.pc_id} ({pc.lab.name}) locked remotely by a Lab In-Charge "
+                    f"(Manual PC Control tool)."
+                )
+            elif reason == 'override':
+                detail_msg = (
+                    f"{pc.pc_id} ({pc.lab.name}) session ended — Admin/In-Charge Override "
+                    f"took over this PC after the on-screen warning countdown."
+                )
+            else:
+                detail_msg = f"{pc.pc_id} ({pc.lab.name}) locked by the student (session ended early)."
+
+            ActivityLog.objects.create(
+                actor=user,
+                action='pc_lock',
+                target_identifier=session.requester_id_number if session else '',
+                pc=pc,
+                details=detail_msg,
             )
-        elif reason == 'override':
-            detail_msg = (
-                f"{pc.pc_id} ({pc.lab.name}) session ended — Admin/In-Charge Override "
-                f"took over this PC after the on-screen warning countdown."
-            )
-        else:
-            detail_msg = f"{pc.pc_id} ({pc.lab.name}) locked by the student (session ended early)."
 
-        ActivityLog.objects.create(
-            actor=user,
-            action='pc_lock',
-            target_identifier=session.requester_id_number if session else '',
-            pc=pc,
-            details=detail_msg,
-        )
+        pc.status = 'online'
+        pc.current_user = None
+        pc.current_session = None
+        pc.current_guest_name = ''
+        pc.save(update_fields=['status', 'current_user', 'current_session', 'current_guest_name'])
 
-    pc.status = 'online'
-    pc.current_user = None
-    pc.current_session = None
-    pc.current_guest_name = ''
-    pc.save(update_fields=['status', 'current_user', 'current_session', 'current_guest_name'])
-
-    return JsonResponse({'ok': True})
+    # At most once per event_id, never ending a newer session (labs/agent_events.py).
+    return JsonResponse(agent_events.process(pc, 'end_session', payload, apply))
 
 
 # Called by the agent when a student clicks "Log Out" on the PC itself, or
@@ -805,36 +893,39 @@ def pc_agent_logout_api(request):
     pc = PC.objects.filter(ip_address=request.META.get('REMOTE_ADDR')).select_related('lab').first()
     if pc is None:
         return JsonResponse({'ok': False, 'error': 'PC not registered'}, status=200)
-
-    previous_user = pc.current_user
+    _touch_from_agent(pc, payload)
     reason = payload.get('reason', 'manual')  # 'manual' or 'expired'
 
-    # 'locked' is not one of PC.STATUS's choices (only online/offline/in_use/
-    # maintenance/issue exist) — using it here left the PC uncounted in every
-    # status metric and unstyled on the status pill. 'online' ("Available")
-    # is what every sibling endpoint (pc_agent_end_session_api, force-release,
-    # the stale-session sweeper) already uses for "screen locked, nobody on
-    # it, ready for the next person" — so match that here too.
-    pc.status = 'online'
-    pc.current_user = None
-    pc.current_session = None
-    pc.current_guest_name = ''
-    pc.last_active = timezone.now()
-    pc.save(update_fields=['status', 'current_user', 'current_session', 'current_guest_name', 'last_active'])
+    def apply(pc):
+        previous_user = pc.current_user
 
-    ActivityLog.objects.create(
-        actor=previous_user,
-        action='pc_lock',
-        target_identifier=previous_user.display_name if previous_user else '',
-        pc=pc,
-        details=(
-            f"{pc.pc_id} ({pc.lab.name}) re-locked — reservation time ended."
-            if reason == 'expired' else
-            f"{pc.pc_id} ({pc.lab.name}) locked by student (logged out)."
+        # 'locked' is not one of PC.STATUS's choices (only online/offline/in_use/
+        # maintenance/issue exist) — using it here left the PC uncounted in every
+        # status metric and unstyled on the status pill. 'online' ("Available")
+        # is what every sibling endpoint (pc_agent_end_session_api, force-release,
+        # the stale-session sweeper) already uses for "screen locked, nobody on
+        # it, ready for the next person" — so match that here too.
+        pc.status = 'online'
+        pc.current_user = None
+        pc.current_session = None
+        pc.current_guest_name = ''
+        pc.last_active = timezone.now()
+        pc.save(update_fields=['status', 'current_user', 'current_session', 'current_guest_name', 'last_active'])
+
+        ActivityLog.objects.create(
+            actor=previous_user,
+            action='pc_lock',
+            target_identifier=previous_user.display_name if previous_user else '',
+            pc=pc,
+            details=(
+                f"{pc.pc_id} ({pc.lab.name}) re-locked — reservation time ended."
+                if reason == 'expired' else
+                f"{pc.pc_id} ({pc.lab.name}) locked by student (logged out)."
+            )
         )
-    )
 
-    return JsonResponse({'ok': True})
+    # At most once per event_id, never ending a newer session (labs/agent_events.py).
+    return JsonResponse(agent_events.process(pc, 'logout', payload, apply))
 
 
 # Called by lab_pc_agent/manual_unlock.html — the standalone, no-login HTML
@@ -1075,6 +1166,7 @@ class PCStatusView(RoleRequiredMixin, TemplateView):
                 pc.reservation_type_label = pc.current_session.get_requester_type_display()
             else:
                 pc.reservation_type_label = None
+            pc.connection_note = _pc_connection_note(pc)
 
         # ---- live lab usage bars (in-use / total per lab) ----
         usage_labs = labs_qs.filter(pk=lab_id) if lab_id else labs_qs
@@ -1128,9 +1220,10 @@ def _modal_aware_lab_redirect(request, view_name, lab_id):
 
 def _finish_override_grant(pc_pk, account_pk, outgoing_session_pk, admin_pk):
     """
-    Runs on a daemon background thread a couple seconds after an
-    Admin/In-Charge confirmed an Override on a PC that was in use by
-    someone else — timed to fire just after the agent's own local
+    Runs as a durable 'override_grant' ScheduledJob (system/jobs.py) a
+    couple of seconds after an Admin/In-Charge confirmed an Override on a
+    PC that was in use by someone else, so it still happens if the server
+    restarts during the wait — timed to fire just after the agent's own local
     countdown (see WarningBanner / start_override_countdown in
     lab_pc_agent/agent.py) finishes and the agent re-locks + reports the
     outgoing user's session ended (clearing pc.current_user/
@@ -1218,7 +1311,6 @@ class OverrideCheckInView(RoleRequiredMixin, ModalFormMixin, TemplateView):
         from django.contrib.auth import get_user_model
         from labs.network import unlock_pc, send_override_warning
         from scheduling.models import Session, SessionCheckIn
-        import threading
 
         pc_id = request.POST.get('pc', '')
         student_pk = request.POST.get('student_id', '')
@@ -1287,20 +1379,20 @@ class OverrideCheckInView(RoleRequiredMixin, ModalFormMixin, TemplateView):
 
             warned, warn_detail = send_override_warning(pc, request.user.display_name, seconds)
 
-            def _delayed_grant(pc_pk, account_pk, session_pk, admin_pk, wait_seconds):
-                import time
-                from django.db import connections
-                time.sleep(wait_seconds + 2)  # +2s buffer past the agent's own local countdown
-                try:
-                    _finish_override_grant(pc_pk, account_pk, session_pk, admin_pk)
-                finally:
-                    connections.close_all()
-
-            threading.Thread(
-                target=_delayed_grant,
-                args=(pc.pk, account.pk, outgoing_session.pk if outgoing_session else None, request.user.pk, seconds),
-                daemon=True,
-            ).start()
+            # The switch itself runs as a durable background job (+2 s past
+            # the agent's own local countdown), so it still happens if the
+            # server restarts during the wait. See system/jobs.py.
+            from datetime import timedelta
+            from system.jobs import schedule as schedule_job
+            schedule_job(
+                'override_grant',
+                run_at=timezone.now() + timedelta(seconds=seconds + 2),
+                payload={
+                    'pc_pk': pc.pk, 'account_pk': account.pk,
+                    'outgoing_session_pk': outgoing_session.pk if outgoing_session else None,
+                    'admin_pk': request.user.pk,
+                },
+            )
 
             if warned:
                 messages.success(
@@ -1934,12 +2026,38 @@ def export_pc_activity_log(request):
     return _export_pdf('PC Activity Log', period, headers, rows, 'pc_activity_log.pdf')
 
 
+@login_required
+def pc_agent_config_download(request, pk):
+    """Admin: download agent_config.local.json for one lab PC — the per-PC
+    settings the agent installer (installer/agent/) places next to agent.py:
+    the server address, the shared agent secret, and this PC's name and lab.
+    Saves hand-editing JSON on every machine. The file contains the agent
+    secret, so treat it like a password (copy by USB, don't email it)."""
+    from django.conf import settings
+    from django.http import HttpResponse
+    if request.user.role != 'admin':
+        raise PermissionDenied
+    pc = get_object_or_404(PC.objects.select_related('lab'), pk=pk)
+    config = {
+        'secret': settings.PC_AGENT_SHARED_SECRET,
+        'server_url': settings.SITE_URL,
+        'port': settings.PC_AGENT_PORT,
+        'pc_name': pc.pc_id,
+        'lab_name': pc.lab.name,
+        '_comment': (f'CompuLab agent settings for {pc.pc_id} ({pc.lab.name}). Place next to agent.py '
+                     '(the installer does this). Contains the agent secret: keep it private.'),
+    }
+    response = HttpResponse(json.dumps(config, indent=2), content_type='application/json')
+    response['Content-Disposition'] = 'attachment; filename="agent_config.local.json"'
+    return response
+
+
 # API endpoint — returns live PC status as JSON for auto-refresh
 @login_required
 def pc_status_api(request):
     pcs = PC.objects.select_related('current_user').values(
-        'pc_id', 'status', 'lab__name', 'last_active',
-        'current_user__id_number', 'current_user__first_name', 'current_user__last_name',
+        'pc_id', 'status', 'lab__name', 'last_active', 'last_seen_at', 'status_changed_at', 'agent_version',
+        'agent_last_contact_at', 'agent_pending_events', 'current_user__id_number', 'current_user__first_name', 'current_user__last_name',
         'current_guest_name',
     )
     return JsonResponse({'pcs': list(pcs)})
