@@ -1,0 +1,10 @@
+# Production (MochaHost: Python 3.13, MariaDB 11.4). Same packages as
+# requirements.txt but on the Django 5.2 LTS line, which needs
+# MariaDB >= 10.5 / MySQL >= 8.0.11 — the hosting database meets that.
+Django>=5.2.8,<5.3
+mysqlclient>=2.2,<3
+Pillow>=10.0
+reportlab>=4.0
+openpyxl>=3.1
+python-dotenv>=1.0
+whitenoise>=6.6,<7

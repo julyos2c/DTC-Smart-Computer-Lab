@@ -117,6 +117,11 @@ class User(AbstractUser):
                    'Admin, Lab In-Charge, and Instructor accounts cannot log in until this is True. '
                    'Not used by Students (they never have an email or log in here).'
     )
+    email_verification_sent_at = models.DateTimeField(
+        null=True, blank=True, editable=False,
+        help_text='When the latest verification email was sent. Only the link in that email '
+                   'is valid, and it rate-limits resends (see accounts/verification.py).'
+    )
 
     def __str__(self):
         return f'{self.display_name} ({self.role})'

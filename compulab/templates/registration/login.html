@@ -358,7 +358,8 @@
               </svg>
             </button>
           </div>
-          <div style="text-align:right; margin-top:8px;">
+          <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px 12px; margin-top:8px;">
+            <a href="{% url 'resend_verification' %}" class="lg-forgot">Resend verification email</a>
             <a href="{% url 'password_reset' %}" class="lg-forgot">Forgot password?</a>
           </div>
 

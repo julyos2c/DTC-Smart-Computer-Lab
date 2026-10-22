@@ -1,5 +1,6 @@
 # Secrets — never commit these
 .env
+lab_pc_agent/agent_config.local.json
 
 # Python
 __pycache__/
@@ -13,6 +14,7 @@ db.sqlite3.backup
 server_log.txt
 staticfiles/
 logs/
+.django_cache/
 
 # Private data: uploaded avatars, activity-log backups, data dumps
 media/

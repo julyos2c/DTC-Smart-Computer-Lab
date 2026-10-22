@@ -117,6 +117,19 @@
   }
   .vr-btn:hover{ opacity:0.92; transform:translateY(-1px); }
   .vr-btn:focus-visible{ outline:2px solid var(--green-bright); outline-offset:2px; }
+  .vr-btn-secondary{
+    background:transparent; color:var(--green); border:1px solid var(--green-line); margin-top:10px;
+  }
+
+  .vr-form{ text-align:left; margin:0 0 4px; }
+  .vr-form label{ display:block; font-size:11.5px; font-weight:600; color:var(--ink); margin:0 0 6px; }
+  .vr-form input{
+    width:100%; box-sizing:border-box; padding:10px 12px; margin:0 0 12px;
+    border:1px solid var(--border); border-radius:9px; background:#fff;
+    font-family:var(--font-body); font-size:13.5px; color:var(--ink);
+  }
+  .vr-form input:focus{ outline:2px solid var(--green-bright); outline-offset:1px; border-color:var(--green-line); }
+  .vr-field-error{ font-size:11.5px; color:var(--red); margin:-6px 0 10px; }
 
   @media (max-width:400px){
     .vr-wrap{ padding:16px; }
@@ -132,37 +145,70 @@
       <span>Danao Technological<br>College</span>
     </div>
 
-    {% if success %}
+    {% if state == 'verified' or state == 'password_set' or state == 'used' or state == 'resend_sent' %}
       <div class="vr-icon ok">
         <svg width="26" height="26" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M5 13l4.5 4.5L19 8" stroke="#1b7a4d" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </div>
       <div class="vr-eyebrow ok">Account verification</div>
-      <h2>{% if password_was_set %}Password Set{% else %}Email Verified{% endif %}</h2>
-      <p>{% if password_was_set %}Your password has been set and your email confirmed. You can now log in with it.{% else %}Your email has been confirmed. You can now log in to your CompuLab account.{% endif %}</p>
-      <a href="{% url 'login' %}" class="vr-btn">
-        Go to Login
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M5 12h14M13 6l6 6-6 6" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </a>
+      {% if state == 'password_set' %}
+        <h2>Password Set</h2>
+        <p>Your password has been set and your email confirmed. You can now log in with it.</p>
+      {% elif state == 'used' %}
+        <h2>Already Verified</h2>
+        <p>This email address has already been verified, so this link is no longer needed. You can log in to your CompuLab account.</p>
+      {% elif state == 'resend_sent' %}
+        <h2>Check Your Inbox</h2>
+        <p>If an account with that address is waiting for verification, a new link has been sent to it. Only the newest link works, and a new one can be requested every few minutes. Check your Spam folder too.</p>
+      {% else %}
+        <h2>Email Verified</h2>
+        <p>Your email has been confirmed. You can now log in to your CompuLab account.</p>
+      {% endif %}
     {% else %}
       <div class="vr-icon fail">
         <svg width="26" height="26" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M7 7l10 10M17 7L7 17" stroke="#c94a4a" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          {% if state == 'resend' %}
+            <path d="M4 6h16v12H4z M4 7l8 6 8-6" stroke="#c94a4a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          {% else %}
+            <path d="M7 7l10 10M17 7L7 17" stroke="#c94a4a" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          {% endif %}
         </svg>
       </div>
       <div class="vr-eyebrow fail">Account verification</div>
-      <h2>Verification Failed</h2>
-      <p>This verification link is invalid or has expired. Please contact your admin to have a new verification email sent.</p>
-      <a href="{% url 'login' %}" class="vr-btn">
-        Back to Login
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M5 12h14M13 6l6 6-6 6" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </a>
+      {% if state == 'expired' %}
+        <h2>Link Expired</h2>
+        <p>This verification link has expired. Enter your email address below and we'll send you a new one.</p>
+      {% elif state == 'resend' %}
+        <h2>Resend Verification Email</h2>
+        <p>Enter the email address your CompuLab account was created with and we'll send a new verification link.</p>
+      {% elif state == 'resend_failed' %}
+        <h2>Email Not Sent</h2>
+        <p>We couldn't send the verification email right now. Please try again later, or ask your admin for help.</p>
+      {% elif state == 'resend_busy' %}
+        <h2>Please Try Later</h2>
+        <p>Too many verification emails have been requested recently. Please try again in an hour, or ask your admin for help.</p>
+      {% else %}
+        <h2>Invalid Link</h2>
+        <p>This verification link isn't valid. It may have been copied incompletely, or replaced by a newer link. Use the link in your most recent verification email, or request a new one below.</p>
+      {% endif %}
+      {% if form %}
+        <form method="post" action="{% url 'resend_verification' %}" class="vr-form">
+          {% csrf_token %}
+          <label for="id_email">Email</label>
+          <input type="email" name="email" id="id_email" maxlength="254" required autocomplete="email"
+                 placeholder="you@gmail.com" value="{{ form.email.value|default:'' }}">
+          {% if form.email.errors %}<div class="vr-field-error">{{ form.email.errors.0 }}</div>{% endif %}
+          <button type="submit" class="vr-btn">Send New Link</button>
+        </form>
+      {% endif %}
     {% endif %}
+    <a href="{% url 'login' %}" class="vr-btn{% if form %} vr-btn-secondary{% endif %}">
+      {% if state == 'verified' or state == 'password_set' or state == 'used' %}Go to Login{% else %}Back to Login{% endif %}
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </a>
 
   </div>
 </div>

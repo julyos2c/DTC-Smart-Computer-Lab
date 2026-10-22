@@ -15,9 +15,12 @@ nag-a-unlock ng **kanyang sariling** lock/kiosk screen.
 
 1. I-copy ang buong `lab_pc_agent` folder sa bawat lab PC
    (hal. `C:\CompuLabAgent`)
-2. I-edit ang `agent_config.json`:
-   - `secret` — dapat **eksaktong pareho** sa `PC_AGENT_SHARED_SECRET` sa
-     `compulab/settings.py` ng server
+2. Gumawa ng `agent_config.local.json` katabi ng `agent.py` (hindi ito
+   ini-commit sa git):
+   `{"secret": "<eksaktong pareho sa PC_AGENT_SHARED_SECRET sa .env ng server>"}`
+   — hindi tatakbo ang agent kung wala ito. Huwag ilagay ang tunay na secret
+   sa `agent_config.json`.
+3. I-edit ang `agent_config.json`:
    - `port` — dapat pareho sa `PC_AGENT_PORT` sa server (default `5555`)
    - `unlock_command` — ang tunay na command na mag-a-unlock ng PC na iyon
      (basahin ang komento sa loob ng file — **importante ito**, may

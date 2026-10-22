@@ -1,8 +1,10 @@
 from django import forms
 from django.contrib.auth import get_user_model
+from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from accounts.email_rules import email_domain_error
+from accounts.verification import requires_verification
 from accounts.constants import DEPARTMENT_CHOICES, year_level_choices_for
 
 User = get_user_model()
@@ -27,6 +29,38 @@ def _validate_department_year_level(cleaned):
         valid_values = {v for v, _ in year_level_choices_for(department)}
         if year_level not in valid_values:
             raise ValidationError({'year_level': 'That year level isn\'t offered by the selected department.'})
+
+
+class CompulabAuthenticationForm(AuthenticationForm):
+    """Login form. VerifiedEmailBackend makes authenticate() refuse
+    unverified accounts, which on its own would look like a wrong password.
+    This turns that case into a "verify your email first" message, but only
+    when the password is actually correct, so it reveals nothing to someone
+    who doesn't already know the account's password."""
+    error_messages = {
+        **AuthenticationForm.error_messages,
+        'unverified': 'Please verify your email address first. Check your inbox for the verification '
+                      'link, or request a new one below.',
+    }
+
+    def clean(self):
+        try:
+            return super().clean()
+        except ValidationError as error:
+            if error.code != 'invalid_login':
+                raise
+            email = (self.cleaned_data.get('username') or '').strip()
+            password = self.cleaned_data.get('password') or ''
+            user = User.objects.filter(email__iexact=email).first() if email else None
+            if user is None:
+                User().set_password(password)  # same hashing time as the branch below
+            elif user.is_active and requires_verification(user) and user.check_password(password):
+                raise ValidationError(self.error_messages['unverified'], code='unverified')
+            raise
+
+
+class ResendVerificationForm(forms.Form):
+    email = forms.EmailField(label='Email', max_length=254)
 
 
 class ProfileUpdateForm(forms.ModelForm):

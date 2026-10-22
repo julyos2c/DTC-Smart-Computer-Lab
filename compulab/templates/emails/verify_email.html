@@ -3,7 +3,8 @@
 
   <!-- header -->
   <div style="background:linear-gradient(135deg,#3a5cf0,#1c2a8f); padding:32px 28px 26px;">
-    <div style="font-size:21px; font-weight:700; color:#ffffff; line-height:1.3; margin:0 0 8px;">Verify Your Email</div>
+    <div style="font-size:11px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:rgba(255,255,255,0.75); margin:0 0 6px;">CompuLab</div>
+    <div style="font-size:21px; font-weight:700; color:#ffffff; line-height:1.3; margin:0 0 8px;">Verify Your Email Address</div>
     <div style="font-size:12.5px; color:rgba(255,255,255,0.85); line-height:1.5;">One quick step before you can sign in to CompuLab.</div>
   </div>
 
@@ -11,15 +12,17 @@
   <div style="padding:26px 28px 8px;">
     <p style="font-size:14px; font-weight:700; color:#ffffff; margin:0 0 12px;">Hi {{ user.display_name }},</p>
     <p style="font-size:13px; color:#a9b2c3; line-height:1.65; margin:0 0 22px;">
-      An account was created for you on CompuLab as <strong style="color:#ffffff;">{{ user.get_role_display }}</strong>.
-      Please confirm this is your real email address by clicking the button below. You won't be able to log in until this is confirmed.
+      You're receiving this email because an administrator at Danao Technological College created a
+      CompuLab (Computer Lab Management System) account for this address with the role
+      <strong style="color:#ffffff;">{{ user.get_role_display }}</strong>.
+      Please confirm this is your email address by clicking the button below. You won't be able to log in until it's verified.
     </p>
 
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 22px;">
       <tr>
         <td style="border-radius:999px; background:linear-gradient(135deg,#3a5cf0,#1c2a8f);">
           <a href="{{ verify_url }}" style="display:inline-block; padding:11px 30px; font-size:13.5px; font-weight:600; color:#ffffff; text-decoration:none; border-radius:999px;">
-            Verify email
+            Verify Email Address
           </a>
         </td>
       </tr>
@@ -30,6 +33,11 @@
     </p>
     <p style="font-size:11.5px; color:#8ea2f2; line-height:1.6; margin:0 0 24px; word-break:break-all;">
       {{ verify_url }}
+    </p>
+
+    <p style="font-size:12px; color:#a9b2c3; line-height:1.6; margin:0 0 12px;">
+      This link expires in {{ expiry_hours }} hours and works only once. If it has expired,
+      <a href="{{ resend_url }}" style="color:#8ea2f2;">request a new verification email</a>.
     </p>
 
     <p style="font-size:12px; color:#a9b2c3; line-height:1.6; margin:0 0 24px;">
@@ -57,7 +65,7 @@
   </table>
 
   <div style="padding:14px 28px; border-top:1px solid rgba(255,255,255,0.06); font-size:10px; color:#5c6478; text-align:center;">
-    This is an automated message from the Academic Information Management System. Please do not reply to this email.
+    This is an automated message from CompuLab. Please do not reply to this email.
   </div>
 
 </div>

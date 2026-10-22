@@ -230,32 +230,63 @@ MEDIA_ROOT = Path(os.environ.get('DJANGO_MEDIA_ROOT', BASE_DIR / 'media'))
 SERVE_MEDIA = env_bool('DJANGO_SERVE_MEDIA', True)
 
 
-# Gmail SMTP. Credentials come from compulab/.env (never hardcoded here,
-# never committed to git) — see .env.example for the 16-character Gmail
-# "App Password" setup steps. Falls back to the console backend (prints
-# emails to the terminal instead of sending) if EMAIL_HOST_USER isn't set,
-# so local dev still works without real credentials.
+# Outgoing SMTP. Host, port, encryption and credentials all come from
+# compulab/.env (never hardcoded here, never committed to git) — see
+# .env.example for the MochaHost mailbox and Gmail App Password variants.
+# Defaults keep the original Gmail setup working when only
+# EMAIL_HOST_USER/EMAIL_HOST_PASSWORD are set. Falls back to the console
+# backend (prints emails to the terminal instead of sending) if no
+# credentials are set, so local dev still works without real ones.
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
-if EMAIL_HOST_USER and EMAIL_HOST_PASSWORD:
-    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-    EMAIL_HOST = 'smtp.gmail.com'
-    EMAIL_PORT = 587
-    EMAIL_USE_TLS = True
+if bool(EMAIL_HOST_USER) != bool(EMAIL_HOST_PASSWORD):
+    missing = 'EMAIL_HOST_PASSWORD' if EMAIL_HOST_USER else 'EMAIL_HOST_USER'
+    raise ImproperlyConfigured(f'{missing} is not set but the other SMTP credential is (see .env.example).')
+EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
+# SSL = implicit TLS (usually port 465); TLS = STARTTLS (usually 587).
+EMAIL_USE_SSL = env_bool('EMAIL_USE_SSL', False)
+EMAIL_USE_TLS = env_bool('EMAIL_USE_TLS', not EMAIL_USE_SSL)
+if EMAIL_USE_SSL and EMAIL_USE_TLS:
+    raise ImproperlyConfigured('EMAIL_USE_SSL and EMAIL_USE_TLS cannot both be True (see .env.example).')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '465' if EMAIL_USE_SSL else '587'))
+# Password reset and verification emails are sent inside the web request,
+# so an unreachable SMTP server must fail fast instead of hanging it.
+EMAIL_TIMEOUT = int(os.environ.get('EMAIL_TIMEOUT', '20'))
+if EMAIL_HOST_USER:
+    EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
 else:
     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-DEFAULT_FROM_EMAIL = EMAIL_HOST_USER or 'noreply@compulab.local'
+# May include a display name, e.g. "CompuLab <noreply@example.com>". Most
+# SMTP servers reject a From address that isn't the authenticated mailbox.
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL') or EMAIL_HOST_USER or 'noreply@compulab.local'
+SERVER_EMAIL = os.environ.get('SERVER_EMAIL') or EMAIL_HOST_USER or 'root@localhost'
 
 # Used to build absolute links in emails (password reset, password-changed
 # confirmation, etc.) from outside a request — e.g. a background task with
 # no `request` object to call request.build_absolute_uri() on. Set in
 # compulab/.env; see .env.example for how to pick the right value.
 SITE_URL = os.environ.get('SITE_URL', 'http://127.0.0.1:8000').rstrip('/')
-# host:port only, no scheme — kept for send_verification_email(), which
+# host:port only, no scheme — used by the password reset email, which
 # builds its own http(s):// prefix based on whether the request was secure.
+# Verification links are built from SITE_URL itself.
 SITE_DOMAIN = SITE_URL.split('://', 1)[-1]
 
 AUTH_USER_MODEL = 'accounts.User'
+# Refuses accounts still awaiting email verification on every login route
+# (dashboard, /admin/) and for existing sessions — see accounts/verification.py.
+AUTHENTICATION_BACKENDS = ['accounts.backends.VerifiedEmailBackend']
+# How long an emailed verification link stays valid, and the minimum gap
+# between two verification emails to the same account.
+EMAIL_VERIFICATION_TIMEOUT = int(os.environ.get('EMAIL_VERIFICATION_TIMEOUT_HOURS', '72')) * 3600
+EMAIL_VERIFICATION_RESEND_COOLDOWN = int(os.environ.get('EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS', '120'))
+# File-based so rate-limit and failed-login counters are shared by every
+# Passenger worker process (the default in-memory cache is per process).
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.filebased.FileBasedCache',
+        'LOCATION': Path(os.environ.get('DJANGO_CACHE_DIR', BASE_DIR / '.django_cache')),
+    },
+}
 LOGIN_URL = '/accounts/login/'
 LOGIN_REDIRECT_URL = '/'
 LOGOUT_REDIRECT_URL = '/accounts/login/'
@@ -276,7 +307,10 @@ PC_AGENT_SHARED_SECRET = os.environ.get('PC_AGENT_SHARED_SECRET', '')
 if not PC_AGENT_SHARED_SECRET:
     if not DEBUG:
         raise ImproperlyConfigured('PC_AGENT_SHARED_SECRET must be set when DJANGO_DEBUG is off (see .env.example).')
-    PC_AGENT_SHARED_SECRET = 'danao_technological_college'
+    # Dev without a configured secret: a random per-process value, so no
+    # well-known string is ever accepted. Set it in .env to talk to agents.
+    import secrets
+    PC_AGENT_SHARED_SECRET = secrets.token_urlsafe(32)
 PC_AGENT_TIMEOUT_SECONDS = 4
 
 # Legacy fallback: if PC_AGENT is not reachable (or you're not using the

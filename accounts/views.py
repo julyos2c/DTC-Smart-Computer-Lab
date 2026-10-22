@@ -1,8 +1,8 @@
+import datetime
 import logging
 from django.core.mail import send_mail, EmailMultiAlternatives
 from django.conf import settings
 from django.templatetags.static import static
-from django.contrib.auth.tokens import default_token_generator
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
 from django.template.loader import render_to_string
@@ -20,7 +20,11 @@ from django.core.exceptions import PermissionDenied
 from django.urls import reverse_lazy, reverse
 from accounts.mixins import RoleRequiredMixin, ModalFormMixin, ModalDetailMixin, is_modal_request, bulk_delete
 from accounts.models import ActivityLog
-from accounts.forms import email_domain_error, AdminUserCreateForm, AdminUserUpdateForm, AdminSetPasswordForm, ProfileUpdateForm, ProfilePasswordChangeForm, StudentImportForm, SetPasswordOnVerifyForm
+from accounts.forms import email_domain_error, AdminUserCreateForm, AdminUserUpdateForm, AdminSetPasswordForm, ProfileUpdateForm, ProfilePasswordChangeForm, StudentImportForm, SetPasswordOnVerifyForm, CompulabAuthenticationForm, ResendVerificationForm
+from accounts import verification
+from accounts.verification import email_verification_token, requires_verification, resend_cooldown_remaining
+from django.utils import timezone
+from django.views.decorators.http import require_http_methods
 from accounts.constants import DEPARTMENT_CHOICES, department_year_levels_json, year_level_choices_for, department_name
 from django.core.cache import cache
 from notifications import services as notify_service
@@ -38,6 +42,7 @@ FAILED_LOGIN_WINDOW_SECONDS = 15 * 60
 # boot-sequence panel, so it's not a hardcoded number)
 class CompulabLoginView(LoginView):
     template_name = 'registration/login.html'
+    form_class = CompulabAuthenticationForm
 
     def get_success_url(self):
         # Ignore ?next=... completely — always route through role_redirect
@@ -54,8 +59,9 @@ class CompulabLoginView(LoginView):
         if user.role == 'student':
             form.add_error(None, "Student accounts can't sign in here. Please use the login screen on a lab computer instead.")
             return self.form_invalid(form)
-        if not user.email_verified:
-            form.add_error(None, 'Please verify your email first. Check your Gmail inbox for the verification link.')
+        if requires_verification(user):
+            # Backstop only: VerifiedEmailBackend already refuses these.
+            form.add_error(None, CompulabAuthenticationForm.error_messages['unverified'])
             return self.form_invalid(form)
         # successful login clears any failed-attempt counter for this account
         cache.delete(f'failed_login:{user.email.lower()}')
@@ -640,32 +646,40 @@ class UsersListView(RoleRequiredMixin, ListView):
 
 # emails a one-click verification link to a newly created (or re-sent)
 # Admin/Lab In-Charge/Instructor account
-def send_verification_email(request, user):
-    """Emails a one-click verification link to a newly created (or
-    re-sent) Admin/Lab In-Charge/Instructor account. Uses Django's
-    built-in token generator (same one password reset uses) so no extra
-    database field is needed for the token itself — it self-invalidates
-    once used, since the token is derived partly from the account's
-    current password hash."""
-    uid = urlsafe_base64_encode(force_bytes(user.pk))
-    token = default_token_generator.make_token(user)
-    # Use the fixed SITE_DOMAIN (LAN IP) instead of request.build_absolute_uri(),
-    # which would embed whatever host the admin happened to be using
-    # (e.g. 127.0.0.1) — unreachable from a phone checking Gmail.
-    relative_url = reverse('verify_email', kwargs={'uidb64': uid, 'token': token})
-    scheme = 'https' if request.is_secure() else 'http'
-    verify_url = f'{scheme}://{settings.SITE_DOMAIN}{relative_url}'
-    logo_url = f'{settings.SITE_URL}{static("img/logo.jpg")}'
-    # Same background photo used behind the login card, so the
-    # verification email reads as a continuation of the login page
-    # instead of a completely different, generic-looking email.
-    header_bg_url = f'{settings.SITE_URL}{static("img/login-bg.jpg")}'
-    context = {'user': user, 'verify_url': verify_url, 'logo_url': logo_url, 'header_bg_url': header_bg_url}
-    text_body = render_to_string('emails/verify_email.txt', context)
-    html_body = render_to_string('emails/verify_email.html', context)
+def send_verification_email(user):
+    """Emails a signed, time-limited verification link (see
+    accounts/verification.py) to an Admin/Lab In-Charge/Instructor
+    account. Sending a new link invalidates any earlier one. Returns True
+    only if the SMTP server accepted the message — that is not proof it
+    reached the inbox, and the account stays unverified until the link is
+    clicked."""
+    previous_sent_at = user.email_verification_sent_at
+    sent_at = timezone.now()
+    if previous_sent_at and sent_at <= previous_sent_at:
+        # coarse clocks: keep it strictly increasing so the new link always
+        # differs from (and supersedes) the previous one
+        sent_at = previous_sent_at + datetime.timedelta(microseconds=1)
+    user.email_verification_sent_at = sent_at
+    user.save(update_fields=['email_verification_sent_at'])
     try:
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = email_verification_token.make_token(user)
+        # Built from SITE_URL (the public https:// address), not from the
+        # request, so the link works from the recipient's phone and is the
+        # same whichever host the admin happened to be using.
+        verify_url = settings.SITE_URL + reverse('verify_email', kwargs={'uidb64': uid, 'token': token})
+        context = {
+            'user': user,
+            'verify_url': verify_url,
+            'resend_url': settings.SITE_URL + reverse('resend_verification'),
+            'expiry_hours': settings.EMAIL_VERIFICATION_TIMEOUT // 3600,
+            'site_url': settings.SITE_URL,
+            'logo_url': f'{settings.SITE_URL}{static("img/logo.jpg")}',
+        }
+        text_body = render_to_string('emails/verify_email.txt', context)
+        html_body = render_to_string('emails/verify_email.html', context)
         message = EmailMultiAlternatives(
-            subject='Verify your CompuLab account email',
+            subject='Verify your CompuLab email address',
             body=text_body,
             from_email=settings.DEFAULT_FROM_EMAIL,
             to=[user.email],
@@ -674,12 +688,13 @@ def send_verification_email(request, user):
         message.send(fail_silently=False)
         return True
     except Exception:
-        # never let an email hiccup block account creation itself, but log
-        # the real reason (bad SMTP login, network down, ...) instead of
-        # swallowing it. NOTE: a wrong-but-valid-looking address can't be
-        # detected here — Gmail accepts the message and the bounce comes
-        # back later to the sender's inbox.
-        logger.exception('Failed to send verification email to %s', user.email)
+        # Never block account creation over an email problem, but log the
+        # reason (no link or token in the log), and restore the previous
+        # timestamp so the last link that did go out keeps working and the
+        # resend cooldown doesn't kick in for an email that never left.
+        logger.exception('Failed to send verification email to user #%s', user.pk)
+        user.email_verification_sent_at = previous_sent_at
+        user.save(update_fields=['email_verification_sent_at'])
         return False
 
 
@@ -748,8 +763,14 @@ class UserCreateView(RoleRequiredMixin, ModalFormMixin, CreateView):
         if self.object.role != 'student' and self.object.email:
             # Verification links are only meaningful for accounts that
             # actually log in with email — never Students.
-            send_verification_email(self.request, self.object)
-            messages.success(self.request, 'User registered. A verification email was sent to their Gmail.')
+            if send_verification_email(self.object):
+                messages.success(self.request, 'User registered. A verification email was sent to their Gmail.')
+            else:
+                messages.warning(
+                    self.request,
+                    'User registered, but the verification email could not be sent. They can\'t log in until '
+                    'verified — use "Resend verification" on the Users list once email is working.'
+                )
         elif self.object.role == 'student' and self.object.email:
             send_student_welcome_email(self.object)
             messages.success(self.request, 'Student registered. A notification was sent to their Gmail.')
@@ -767,11 +788,15 @@ def user_resend_verification(request, pk):
     _require_admin(request)
     target = get_object_or_404(User, pk=pk)
     if request.method == 'POST':
+        cooldown = resend_cooldown_remaining(target)
         if target.role == 'student' or not target.email:
             messages.error(request, 'Only accounts that sign in with an email can be sent a verification link.')
         elif target.email_verified:
             messages.info(request, f'{target.display_name} is already verified.')
-        elif send_verification_email(request, target):
+        elif cooldown:
+            messages.info(request, f'A verification email was sent to {target.email} moments ago. '
+                                   f'Please wait {cooldown} seconds before sending another.')
+        elif send_verification_email(target):
             messages.success(
                 request,
                 f'Verification email re-sent to {target.email}. If you get a "Mail Delivery Subsystem" '
@@ -790,8 +815,9 @@ def verify_email(request, uidb64, token):
     except (TypeError, ValueError, OverflowError, User.DoesNotExist):
         user = None
 
-    if user is None or not default_token_generator.check_token(user, token):
-        return render(request, 'accounts/verify_email_result.html', {'success': False})
+    status = email_verification_token.check_status(user, token)
+    if status != verification.VALID:
+        return render(request, 'accounts/verify_email_result.html', {'state': status, 'form': ResendVerificationForm()})
 
     if not user.has_usable_password():
         # First-time activation for a Lab In-Charge/Instructor account
@@ -806,7 +832,7 @@ def verify_email(request, uidb64, token):
                 user.set_password(form.cleaned_data['password1'])
                 user.email_verified = True
                 user.save(update_fields=['password', 'email_verified'])
-                return render(request, 'accounts/verify_email_result.html', {'success': True, 'password_was_set': True})
+                return render(request, 'accounts/verify_email_result.html', {'state': 'password_set'})
         else:
             form = SetPasswordOnVerifyForm(user)
         return render(request, 'accounts/set_password_on_verify.html', {
@@ -822,7 +848,44 @@ def verify_email(request, uidb64, token):
     # as verified.
     user.email_verified = True
     user.save(update_fields=['email_verified'])
-    return render(request, 'accounts/verify_email_result.html', {'success': True})
+    return render(request, 'accounts/verify_email_result.html', {'state': 'verified'})
+
+
+# Limits for the public "send me a new link" form, on top of the
+# per-account cooldown. It only ever emails addresses that already belong to
+# an unverified account an Admin created, never an arbitrary address.
+RESEND_DAILY_LIMIT_PER_ACCOUNT = 5
+RESEND_HOURLY_LIMIT_SITEWIDE = 30
+
+
+def _within_limit(key, limit, seconds):
+    cache.add(key, 0, seconds)
+    try:
+        return cache.incr(key) <= limit
+    except ValueError:  # key expired between add() and incr()
+        cache.set(key, 1, seconds)
+        return True
+
+
+# public "resend my verification link" page, linked from the login page and
+# from expired/invalid verification links
+@require_http_methods(['GET', 'POST'])
+def resend_verification(request):
+    form = ResendVerificationForm(request.POST or None)
+    if request.method == 'POST' and form.is_valid():
+        email = form.cleaned_data['email'].strip()
+        user = User.objects.filter(email__iexact=email).first()
+        state = 'resend_sent'  # same answer whether or not the account exists
+        if user and user.is_active and user.role != 'student' and not user.email_verified:
+            if (resend_cooldown_remaining(user)
+                    or not _within_limit(f'verify_resend:user:{user.pk}', RESEND_DAILY_LIMIT_PER_ACCOUNT, 86400)):
+                pass  # an email went out recently; don't send another
+            elif not _within_limit('verify_resend:site', RESEND_HOURLY_LIMIT_SITEWIDE, 3600):
+                state = 'resend_busy'
+            elif not send_verification_email(user):
+                state = 'resend_failed'
+        return render(request, 'accounts/verify_email_result.html', {'state': state})
+    return render(request, 'accounts/verify_email_result.html', {'state': 'resend', 'form': form})
 
 
 # read-only profile popup opened by clicking a user's avatar on the Users
@@ -862,12 +925,18 @@ class UserUpdateView(RoleRequiredMixin, ModalFormMixin, UpdateView):
         # so a fresh link has to go out, or this account would be stuck
         # unable to log in (email_verified was just reset to False).
         if getattr(form, 'email_changed', False) and self.object.email:
-            send_verification_email(self.request, self.object)
-            messages.info(
-                self.request,
-                f'{self.object.display_name}\'s email was changed — a verification link was sent to the new address. '
-                f'This account can\'t log in until it\'s verified.'
-            )
+            if send_verification_email(self.object):
+                messages.info(
+                    self.request,
+                    f'{self.object.display_name}\'s email was changed — a verification link was sent to the new address. '
+                    f'This account can\'t log in until it\'s verified.'
+                )
+            else:
+                messages.warning(
+                    self.request,
+                    f'{self.object.display_name}\'s email was changed, but the verification email could not be sent. '
+                    f'This account can\'t log in until it\'s verified — use "Resend verification" once email is working.'
+                )
         return response
 
 

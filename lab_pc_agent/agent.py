@@ -36,10 +36,10 @@ SETUP ON EACH LAB PC
 1. Copy this whole `lab_pc_agent` folder to the PC (e.g. C:\\CompuLabAgent).
 2. (Optional, for accurate site detection in the PC Activity Log)
    Run:  pip install uiautomation
-3. Edit `agent_config.json`:
-     - "secret"  -> must be EXACTLY the same string as PC_AGENT_SHARED_SECRET
-                    in the server's settings.py
-     - "port"    -> must match PC_AGENT_PORT in settings.py (default 5555)
+3. Create `agent_config.local.json` (never committed) next to agent.py:
+       {"secret": "<EXACTLY the server's PC_AGENT_SHARED_SECRET from its .env>"}
+   The agent refuses to start without it. Then edit `agent_config.json`:
+     - "port"    -> must match PC_AGENT_PORT on the server (default 5555)
      - "lock_title" / "lock_subtitle" -> the text shown on the lock screen
 4. Test manually first:  python agent.py
    A fullscreen "PC Locked" screen should appear immediately.
@@ -86,6 +86,13 @@ except Exception:
     _PIL_AVAILABLE = False
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'agent_config.json')
+# Per-PC values that must never be committed (above all "secret"). Gitignored;
+# any key in it overrides the same key in agent_config.json.
+LOCAL_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'agent_config.local.json')
+
+# Secrets that are public (placeholder, or published in git history) and so
+# must never be accepted: anyone could send them to this PC's port.
+REJECTED_SECRETS = {'', 'SET-IN-agent_config.local.json', 'danao_technological_college'}
 
 # Commands passed between threads and the Tk main thread — Tk widgets can
 # only safely be touched from the thread that created them, so neither the
@@ -102,7 +109,17 @@ _command_queue = queue.Queue()
 
 def load_config():
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-        return json.load(f)
+        config = json.load(f)
+    if os.path.exists(LOCAL_CONFIG_PATH):
+        with open(LOCAL_CONFIG_PATH, 'r', encoding='utf-8-sig') as f:
+            config.update(json.load(f))
+    if config.get('secret', '') in REJECTED_SECRETS:
+        raise SystemExit(
+            'CompuLab agent: no valid "secret" configured. Put the server\'s '
+            'PC_AGENT_SHARED_SECRET in agent_config.local.json next to agent.py: '
+            '{"secret": "..."}'
+        )
+    return config
 
 
 class UnlockHandler(BaseHTTPRequestHandler):

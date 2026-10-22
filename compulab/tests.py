@@ -27,7 +27,7 @@ User = get_user_model()
 # Pages meant to be reachable without logging in.
 PUBLIC_URL_NAMES = {
     'login', 'password_reset', 'password_reset_done', 'password_reset_complete',
-    'pc_login',
+    'pc_login', 'resend_verification',
 }
 
 

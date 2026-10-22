@@ -1,8 +1,8 @@
 {
   "_comment": "Copy this file next to agent.py on EACH lab PC and edit the values below for that machine.",
 
-  "secret": "danao_technological_college",
-  "_secret_comment": "Must exactly match PC_AGENT_SHARED_SECRET in the server's compulab/settings.py",
+  "secret": "SET-IN-agent_config.local.json",
+  "_secret_comment": "Never put the real secret in this (committed) file. Create agent_config.local.json next to agent.py containing {\"secret\": \"<same value as the server's PC_AGENT_SHARED_SECRET>\"}. The agent refuses to start without it.",
 
   "port": 5555,
   "_port_comment": "Must match PC_AGENT_PORT in the server's settings.py",
