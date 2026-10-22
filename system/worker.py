@@ -75,6 +75,44 @@ def run_forever(stop_event=None, mode='service'):
     logger.info('CompuLab worker stopped')
 
 
+def run_once(mode='cron'):
+    """One full cycle, then return: for hosts where nothing may run in the
+    background (cPanel/Passenger), started every minute by cron with
+    `manage.py run_worker --once`. Covers the queue work only (email,
+    durable jobs, reminders, cloud sync, probes); the lab-network loops
+    (PC pings, after-hours locking) need the campus LAN and are not run.
+    Emails are sent in a few batches so a backlog drains within minutes."""
+    from django.db import connections
+    from django.utils import timezone
+    from system import connectivity, jobs
+    from notifications import outbox
+    from notifications.reminders import check_roster_code_reminders, check_upcoming_sessions
+    from cloud_sync import sync
+    from labs.agent_events import prune_receipts
+
+    started = time.monotonic()
+    try:
+        came_back = _step('connectivity probes', connectivity.run_probes) or set()
+        if came_back & {'internet', 'smtp', 'cloud'}:
+            outbox.resume()
+            _step('resume cloud sync', sync.resume)
+        _step('session reminders', check_upcoming_sessions)
+        _step('roster code reminders', check_roster_code_reminders)
+        for _ in range(10):
+            if not _step('email outbox', outbox.dispatch_due):
+                break
+        _step('scheduled jobs', jobs.run_due_jobs)
+        _step('cloud sync', sync.run_once)
+        if timezone.localtime().minute == 0:
+            _step('outbox housekeeping', outbox.housekeeping)
+            _step('job pruning', jobs.prune_finished)
+            _step('cloud sync housekeeping', sync.housekeeping)
+            _step('agent event receipts', prune_receipts)
+        _step('heartbeat', connectivity.heartbeat, f'{mode}; last cycle {time.monotonic() - started:.1f}s')
+    finally:
+        connections.close_all()
+
+
 _started = False
 
 

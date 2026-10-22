@@ -16,7 +16,20 @@ class Command(BaseCommand):
         'with COMPULAB_BACKGROUND_TASKS=False so the loops never run twice.'
     )
 
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--once', action='store_true',
+            help='Run one cycle of the queue work (email, jobs, reminders, cloud sync, '
+                 'connectivity checks) and exit. For hosts without a long-running '
+                 'worker (cPanel): run it from cron every minute.',
+        )
+
     def handle(self, *args, **options):
+        if options['once']:
+            from system.worker import run_once
+            run_once(mode='cron')
+            return
+
         from labs.network import start_background_status_checker
         from labs.maintenance import start_daily_activity_log_wipe
         from notifications.reminders import start_background_session_reminder_checker

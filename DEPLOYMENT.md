@@ -93,6 +93,17 @@ use `runserver` in production.
    `DJANGO_STATIC_ROOT=<public_html>/static`, then `collectstatic`, `migrate`.
 5. Enable AutoSSL, then `DJANGO_SECURE_SSL=True`; restart the app
    (`touch tmp/restart.txt`).
+6. **Cron (required):** with background tasks off, nothing sends queued email,
+   reminders or due jobs unless cron runs one worker cycle every minute
+   (cPanel → Cron Jobs, or `crontab -e`):
+
+   ```
+   * * * * * cd <app root> && <venv>/bin/python manage.py run_worker --once >> logs/cron.log 2>&1
+   ```
+
+   System status shows the worker as running (mode `cron`) while this works.
+   The lab-network loops (PC pings, after-hours locking) do not run here: they
+   need the campus LAN.
 
 ## 6. Backup & rollback
 
