@@ -274,7 +274,9 @@ html[data-theme="light"] .um-pill.student{ color:#fff; }
               <tr>
                 <td class="bulk-select-col">
                   {% if request.user.role == 'admin' and u.pk != request.user.pk %}
+                    {% if request.user.is_superuser or not u.is_superuser %}
                     <input type="checkbox" class="um-checkbox um-row-check js-row-check" value="{{ u.pk }}">
+                    {% endif %}
                   {% endif %}
                 </td>
                 <td>{{ forloop.counter0|add:page_obj.start_index }}</td>
@@ -319,9 +321,16 @@ html[data-theme="light"] .um-pill.student{ color:#fff; }
                 </td>
                 <td>
                   <div class="um-actions">
+                    {% comment %}Only a superuser may edit, reset, (de)activate or delete a
+                    superuser (accounts.views._can_manage_account enforces this server-side;
+                    hiding the buttons just avoids offering actions that would be refused).{% endcomment %}
+                    {% if request.user.is_superuser or not u.is_superuser %}
                     <a href="{% url 'user_update' u.pk %}" class="um-icon-btn js-modal-link" title="Edit user">
                       <svg viewBox="0 0 24 24" fill="none"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
                     </a>
+                    {% else %}
+                    <span class="js-superuser-protected" style="color:var(--um-dim); font-size:11px; font-weight:600;" title="Only a superuser can change a superuser account">Superuser</span>
+                    {% endif %}
                     {% if u.role != 'student' %}
                     {% if u.email and not u.email_verified %}
                     <form method="post" action="{% url 'user_resend_verification' u.pk %}" style="display:inline">
@@ -331,10 +340,13 @@ html[data-theme="light"] .um-pill.student{ color:#fff; }
                       </button>
                     </form>
                     {% endif %}
+                    {% if request.user.is_superuser or not u.is_superuser %}
                     <a href="{% url 'user_reset_password' u.pk %}" class="um-icon-btn js-modal-link" title="Reset password">
                       <svg viewBox="0 0 24 24" fill="none"><circle cx="8" cy="15" r="4" stroke="currentColor" stroke-width="1.8"/><path d="M10.5 12.5 20 3M17 6l2.5 2.5M14 9l2 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
                     </a>
                     {% endif %}
+                    {% endif %}
+                    {% if request.user.is_superuser or not u.is_superuser %}
                     {% if u.is_active %}
                       <form method="post" action="{% url 'user_deactivate' u.pk %}" style="display:inline"
                             onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Deactivate this account?', text: '{{ u.display_name|escapejs }} won\'t be able to log in or hold a reservation until reactivated.', confirmButtonText: 'Yes, deactivate'}); return false;">
@@ -359,6 +371,7 @@ html[data-theme="light"] .um-pill.student{ color:#fff; }
                         <svg viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
                       </button>
                     </form>
+                    {% endif %}
                   </div>
                 </td>
               </tr>

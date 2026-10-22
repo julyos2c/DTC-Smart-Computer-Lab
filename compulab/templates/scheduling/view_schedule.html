@@ -306,6 +306,10 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('cmRequester').textContent = p.requester + ' (' + p.requesterType + ')';
       document.getElementById('cmCode').textContent = p.code || '—';
       var editLink = document.getElementById('cmEdit');
+      var delForm = document.getElementById('cmDeleteForm');
+      // Empty URLs mean another lab's session for a Lab In-Charge: view only.
+      editLink.style.display = p.editUrl ? '' : 'none';
+      delForm.style.display = p.deleteUrl ? '' : 'none';
       if (isPast) {
         // Past reservations are history — no longer editable. Remove
         // js-modal-link so the global delegated click handler in
@@ -337,7 +341,6 @@ document.addEventListener('DOMContentLoaded', function () {
         editLink.removeAttribute('aria-disabled');
         editLink.onclick = null;
       }
-      var delForm = document.getElementById('cmDeleteForm');
       delForm.action = p.deleteUrl;
       delForm.onsubmit = function (e) {
         e.preventDefault();

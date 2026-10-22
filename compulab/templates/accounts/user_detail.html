@@ -24,9 +24,9 @@
       </div>
     </div>
   </div>
-  {% if request.user.role == 'admin' %}
+  {% if request.user.role == 'admin' %}{% if request.user.is_superuser or not target_user.is_superuser %}
   <a href="{% url 'user_update' target_user.pk %}" class="action-btn js-modal-link"><svg class="btn-icon"><use href="#icon-edit"/></svg> Edit user</a>
-  {% endif %}
+  {% endif %}{% endif %}
 </div>
 
 <div class="card">

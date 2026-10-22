@@ -93,6 +93,14 @@ class CompulabLoginView(LoginView):
 User = get_user_model()
 
 
+def _can_manage_account(actor, target):
+    """Only a superuser may edit, reset, (de)activate or delete a superuser
+    account. A role='admin' account that is not itself a superuser could
+    otherwise set a superuser's password and sign in as them, gaining the
+    Django admin site it was never given."""
+    return actor.is_superuser or not target.is_superuser
+
+
 # Self-service "forgot password" — reachable from the login page's
 # "Forgot password?" link. Both subclasses below plug into the same URLs
 # Django's built-in django.contrib.auth.urls already provides (see
@@ -911,6 +919,12 @@ class UserUpdateView(RoleRequiredMixin, ModalFormMixin, UpdateView):
     form_class = AdminUserUpdateForm
     success_url = reverse_lazy('users')
 
+    def get_object(self, queryset=None):
+        target = super().get_object(queryset)
+        if not _can_manage_account(self.request.user, target):
+            raise PermissionDenied
+        return target
+
     def get_context_data(self, **kwargs):
         import json
         ctx = super().get_context_data(**kwargs)
@@ -1453,6 +1467,8 @@ def _require_admin(request):
 def user_activate(request, pk):
     _require_admin(request)
     target = get_object_or_404(User, pk=pk)
+    if not _can_manage_account(request.user, target):
+        raise PermissionDenied
     if request.method == 'POST':
         target.is_active = True
         target.save()
@@ -1471,6 +1487,8 @@ def user_activate(request, pk):
 def user_deactivate(request, pk):
     _require_admin(request)
     target = get_object_or_404(User, pk=pk)
+    if not _can_manage_account(request.user, target):
+        raise PermissionDenied
     if request.method == 'POST':
         # Same reasoning as UserDeleteView.form_valid() below: deactivating
         # the account you're currently logged in as would revoke your own
@@ -1500,6 +1518,12 @@ class UserDeleteView(RoleRequiredMixin, DeleteView):
     template_name = 'accounts/user_confirm_delete.html'
     success_url = reverse_lazy('users')
     context_object_name = 'target_user'
+
+    def get_object(self, queryset=None):
+        target = super().get_object(queryset)
+        if not _can_manage_account(self.request.user, target):
+            raise PermissionDenied
+        return target
 
     def form_valid(self, form):
         # Deleting the account you're currently logged in as would remove
@@ -1533,6 +1557,11 @@ def users_bulk_delete(request):
 
     ids = [v for v in request.POST.getlist('selected_ids') if v]
     queryset = User.objects.exclude(pk=request.user.pk)
+    if not request.user.is_superuser:
+        # Same rule as _can_manage_account(): only a superuser may delete one.
+        if queryset.filter(pk__in=ids, is_superuser=True).exists():
+            messages.error(request, 'Superuser accounts can only be deleted by a superuser — they were skipped.')
+        queryset = queryset.exclude(is_superuser=True)
     for u in queryset.filter(pk__in=ids):
         ActivityLog.objects.create(
             actor=request.user, action='delete',
@@ -1552,6 +1581,9 @@ class UserResetPasswordView(RoleRequiredMixin, ModalFormMixin, FormView):
 
     def dispatch(self, request, *args, **kwargs):
         self.target_user = get_object_or_404(User, pk=kwargs['pk'])
+        # Anonymous visitors fall through to RoleRequiredMixin's login redirect.
+        if request.user.is_authenticated and not _can_manage_account(request.user, self.target_user):
+            raise PermissionDenied
         if self.target_user.role == 'student':
             messages.error(request, "Students don't use a dashboard password — they sign in at the lab PC with their Student ID.")
             if is_modal_request(request):

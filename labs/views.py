@@ -18,6 +18,26 @@ from labs.forms import ReservationPCLoginForm, MaintenanceScheduleForm, LabForm,
 from notifications import services as notify_service
 
 
+def _incharge_outside_lab(user, lab_id):
+    """True when a Lab In-Charge targets a lab other than their assigned
+    one. Same rule pc_force_release() and _pc_power_action() already
+    enforce: an In-Charge with no assigned lab matches no lab at all."""
+    return user.role == 'incharge' and user.assigned_lab_id != lab_id
+
+
+def _labs_for_picker(user, requested_lab):
+    """(labs the user may pick from, the requested lab id if it is one of
+    them else ''). Keeps a Lab In-Charge's PC pickers on their own lab even
+    when another lab's id is typed into the ?lab= query string."""
+    labs_qs = Lab.objects.order_by('name')
+    if user.role == 'incharge':
+        labs_qs = labs_qs.filter(pk=user.assigned_lab_id)
+    requested_lab = str(requested_lab or '')
+    if not (requested_lab.isdigit() and labs_qs.filter(pk=requested_lab).exists()):
+        requested_lab = ''
+    return labs_qs, requested_lab
+
+
 def _local_day_bounds(day):
     """
     Returns (start, end) — timezone-aware datetime bounds [start, end) —
@@ -1179,12 +1199,9 @@ class OverrideCheckInView(RoleRequiredMixin, ModalFormMixin, TemplateView):
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        user = self.request.user
-        labs_qs = Lab.objects.order_by('name')
-        if user.role == 'incharge' and user.assigned_lab_id:
-            labs_qs = labs_qs.filter(pk=user.assigned_lab_id)
+        labs_qs, selected_lab = _labs_for_picker(self.request.user, self.request.GET.get('lab', ''))
         ctx['all_labs'] = labs_qs
-        ctx['selected_lab'] = self.request.GET.get('lab', '')
+        ctx['selected_lab'] = selected_lab
         if ctx['selected_lab']:
             ctx['available_pcs'] = PC.objects.filter(lab_id=ctx['selected_lab'], status='online').order_by('pc_id')
             # Occupied PCs can ALSO be overridden — the admin/in-charge just
@@ -1211,6 +1228,8 @@ class OverrideCheckInView(RoleRequiredMixin, ModalFormMixin, TemplateView):
         if pc is None:
             messages.error(request, 'Select a computer to override into.')
             return _modal_aware_lab_redirect(request, 'override_checkin', request.POST.get('lab', ''))
+        if _incharge_outside_lab(request.user, pc.lab_id):
+            raise PermissionDenied
 
         User = get_user_model()
         account = User.objects.filter(pk=student_pk, role__in=('student', 'instructor'), is_active=True).first() if student_pk.isdigit() else None
@@ -1355,12 +1374,9 @@ class ManualUnlockView(RoleRequiredMixin, ModalFormMixin, TemplateView):
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        user = self.request.user
-        labs_qs = Lab.objects.order_by('name')
-        if user.role == 'incharge' and user.assigned_lab_id:
-            labs_qs = labs_qs.filter(pk=user.assigned_lab_id)
+        labs_qs, selected_lab = _labs_for_picker(self.request.user, self.request.GET.get('lab', ''))
         ctx['all_labs'] = labs_qs
-        ctx['selected_lab'] = self.request.GET.get('lab', '')
+        ctx['selected_lab'] = selected_lab
         if ctx['selected_lab']:
             ctx['available_pcs'] = PC.objects.filter(lab_id=ctx['selected_lab'], status='online').order_by('pc_id')
         return ctx
@@ -1377,6 +1393,8 @@ class ManualUnlockView(RoleRequiredMixin, ModalFormMixin, TemplateView):
         if pc is None:
             messages.error(request, 'Select a computer to unlock.')
             return _modal_aware_lab_redirect(request, 'manual_unlock', request.POST.get('lab', ''))
+        if _incharge_outside_lab(request.user, pc.lab_id):
+            raise PermissionDenied
 
         if not guest_name:
             messages.error(
@@ -1934,6 +1952,14 @@ class PCUpdateView(RoleRequiredMixin, ModalFormMixin, UpdateView):
     fields = ['status']
     template_name = 'labs/pc_form.html'
 
+    def get_queryset(self):
+        # A Lab In-Charge may only change the status of PCs in their own lab
+        # (changing it away from "in use" also clears the PC's current user).
+        qs = PC.objects.all()
+        if self.request.user.role == 'incharge':
+            qs = qs.filter(lab_id=self.request.user.assigned_lab_id)
+        return qs
+
     def form_valid(self, form):
         previous_status = PC.objects.get(pk=self.object.pk).status
         # This form only exposes the `status` field, but current_user/
@@ -1983,6 +2009,7 @@ def refresh_pc_status_view(request):
     return redirect(request.META.get('HTTP_REFERER', 'pc_status'))
 
 
+@login_required
 def pc_force_release(request, pk):
     """
     Immediate, manual version of labs.network.release_expired_pc_sessions()
@@ -2082,6 +2109,7 @@ def _pc_power_action(request, pk, action):
     return redirect(request.META.get('HTTP_REFERER', 'pc_status'))
 
 
+@login_required
 def pc_bulk_power_action(request):
     """
     Bulk version of pc_shutdown/pc_restart/lock — runs the same per-PC
@@ -2150,14 +2178,17 @@ def pc_bulk_power_action(request):
     return redirect(request.META.get('HTTP_REFERER', 'pc_status'))
 
 
+@login_required
 def pc_shutdown(request, pk):
     return _pc_power_action(request, pk, 'shutdown')
 
 
+@login_required
 def pc_restart(request, pk):
     return _pc_power_action(request, pk, 'restart')
 
 
+@login_required
 def pc_lock(request, pk):
     return _pc_power_action(request, pk, 'lock')
 
@@ -3002,6 +3033,7 @@ class MaintenanceScheduleCreateView(RoleRequiredMixin, ModalFormMixin, CreateVie
         return response
 
 
+@login_required
 def maintenance_complete(request, pk):
     if request.user.role not in ['admin', 'incharge']:
         raise PermissionDenied
@@ -3096,6 +3128,7 @@ class EquipmentIssueDetailView(RoleRequiredMixin, ModalDetailMixin, TemplateView
         return ctx
 
 
+@login_required
 def equipment_issue_resolve(request, pk):
     if request.user.role not in ['admin', 'incharge']:
         raise PermissionDenied

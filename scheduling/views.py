@@ -2,6 +2,8 @@ import json
 from django.views.generic import TemplateView, ListView, CreateView, UpdateView, DetailView, DeleteView
 from django.contrib import messages
 from django.contrib.auth import get_user_model
+from django.contrib.auth.decorators import login_required
+from django.contrib.auth.views import redirect_to_login
 from django.db.models import Q
 from django.shortcuts import redirect, get_object_or_404, render
 from django.utils import timezone
@@ -60,6 +62,60 @@ def _slot_error(requester_type, lab, date, start_time, end_time, pcs_requested, 
     return None
 
 
+# Roles that manage reservation requests and the official schedule — the
+# same roles ManageRequestsView, RequestDetailView, RequestUpdateView and
+# SessionUpdateView already allow.
+SCHEDULE_MANAGER_ROLES = ('admin', 'incharge')
+
+
+def _require_schedule_manager(request):
+    """Role gate for the function views that approve, decline, delete or
+    export reservations. Use it under @login_required, which has already
+    sent anonymous visitors to the login page."""
+    if request.user.role not in SCHEDULE_MANAGER_ROLES:
+        raise PermissionDenied
+
+
+def _in_managed_labs(qs, user):
+    """Narrow a Session or SessionRequest queryset to the reservations this
+    user may manage: every lab for an Admin, only their assigned lab for a
+    Lab In-Charge — the same scope the In-Charge dashboard, Lab Schedule,
+    reports, PC actions and reservation notifications already use. An
+    In-Charge with no assigned lab manages none (lab is never null on
+    these models, so lab_id=None matches nothing)."""
+    if user.role == 'incharge':
+        qs = qs.filter(lab_id=user.assigned_lab_id)
+    return qs
+
+
+def _limit_lab_choice(form, user):
+    """Keep a Lab In-Charge from moving a reservation into another lab."""
+    if user.role == 'incharge':
+        field = form.fields['lab']
+        field.queryset = field.queryset.filter(pk=user.assigned_lab_id)
+
+
+def _rosters_for(user):
+    """Rosters this user may open or change: every roster for Admin and Lab
+    In-Charge (they review them), only their own for an Instructor — the
+    same rule RosterListView already applies to the roster list."""
+    from scheduling.models import ClassRoster
+    qs = ClassRoster.objects.all()
+    if user.role == 'instructor':
+        qs = qs.filter(instructor=user)
+    return qs
+
+
+def _limit_roster_instructor_choice(form, user):
+    """An Instructor may only file a roster under their own name. The
+    instructor dropdown otherwise lists every instructor, which let one
+    instructor create a roster as another, or hand their roster over."""
+    if user.role == 'instructor':
+        field = form.fields['instructor']
+        field.queryset = field.queryset.filter(pk=user.pk)
+        field.required = True
+
+
 # ============================================================
 # Schedule & Request hub — links into "View schedule" and
 # "Manage requests"
@@ -71,7 +127,7 @@ class ScheduleView(RoleRequiredMixin, TemplateView):
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
         ctx['session_count'] = Session.objects.count()
-        ctx['pending_count'] = SessionRequest.objects.filter(status='pending').count()
+        ctx['pending_count'] = _in_managed_labs(SessionRequest.objects.filter(status='pending'), self.request.user).count()
         return ctx
 
 
@@ -90,7 +146,7 @@ class ViewScheduleView(RoleRequiredMixin, TemplateView):
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        ctx['pending_count'] = SessionRequest.objects.filter(status='pending').count()
+        ctx['pending_count'] = _in_managed_labs(SessionRequest.objects.filter(status='pending'), self.request.user).count()
         labs = list(Lab.objects.order_by('name'))
         ctx['labs'] = labs
         lab_id = self.request.GET.get('lab', '')
@@ -107,8 +163,12 @@ class ViewScheduleView(RoleRequiredMixin, TemplateView):
         ctx['schedule_found'] = sessions.exists()
 
         lab_color = {lab.pk: self.LAB_COLORS[i % len(self.LAB_COLORS)] for i, lab in enumerate(labs)}
+        # Every lab's sessions stay visible; Edit/Delete are only offered on
+        # the ones this user may manage (empty URLs hide the buttons).
+        user = self.request.user
         events = []
         for s in sessions:
+            manageable = user.role != 'incharge' or s.lab_id == user.assigned_lab_id
             events.append({
                 'id': s.pk,
                 'title': f'{s.subject} — {s.lab.name}',
@@ -121,9 +181,10 @@ class ViewScheduleView(RoleRequiredMixin, TemplateView):
                     'time': f'{s.start_time.strftime("%I:%M %p").lstrip("0")}–{s.end_time.strftime("%I:%M %p").lstrip("0")}',
                     'requester': s.requester_name,
                     'requesterType': s.get_requester_type_display(),
-                    'code': s.reservation_code or '',
-                    'editUrl': reverse('session_edit', args=[s.pk]),
-                    'deleteUrl': reverse('session_delete', args=[s.pk]),
+                    # The code unlocks lab PCs; only the lab's own managers need it.
+                    'code': (s.reservation_code or '') if manageable else '',
+                    'editUrl': reverse('session_edit', args=[s.pk]) if manageable else '',
+                    'deleteUrl': reverse('session_delete', args=[s.pk]) if manageable else '',
                 },
             })
         ctx['calendar_events_json'] = json_for_script(events)
@@ -156,6 +217,14 @@ class SessionUpdateView(RoleRequiredMixin, ModalFormMixin, UpdateView):
     form_class = SessionForm
     template_name = 'scheduling/session_edit.html'
     context_object_name = 'session'
+
+    def get_queryset(self):
+        return _in_managed_labs(Session.objects.all(), self.request.user)
+
+    def get_form(self, form_class=None):
+        form = super().get_form(form_class)
+        _limit_lab_choice(form, self.request.user)
+        return form
 
     def _blocked_if_past(self, request):
         """Past-dated sessions are history, not something to be corrected —
@@ -210,8 +279,10 @@ class SessionUpdateView(RoleRequiredMixin, ModalFormMixin, UpdateView):
 
 
 # Action: Delete -> remove an approved session from the official schedule
+@login_required
 def delete_session(request, pk):
-    session = get_object_or_404(Session, pk=pk)
+    _require_schedule_manager(request)
+    session = get_object_or_404(_in_managed_labs(Session.objects.all(), request.user), pk=pk)
     if request.method == 'POST':
         lab_id, date = session.lab_id, session.date
         session.delete()
@@ -329,9 +400,9 @@ class ManageRequestsView(RoleRequiredMixin, ListView):
     context_object_name = 'pending_requests'
 
     def get_queryset(self):
-        return SessionRequest.objects.filter(
+        return _in_managed_labs(SessionRequest.objects.filter(
             status='pending'
-        ).select_related('instructor', 'lab').order_by('date', 'start_time')
+        ), self.request.user).select_related('instructor', 'lab').order_by('date', 'start_time')
 
 
 class RequestDetailView(RoleRequiredMixin, ModalDetailMixin, DetailView):
@@ -339,6 +410,9 @@ class RequestDetailView(RoleRequiredMixin, ModalDetailMixin, DetailView):
     model = SessionRequest
     template_name = 'scheduling/request_detail.html'
     context_object_name = 'req'
+
+    def get_queryset(self):
+        return _in_managed_labs(SessionRequest.objects.all(), self.request.user)
 
 
 # Action: Edit -> fix mistakes on a still-pending request before Approve/Reject
@@ -348,6 +422,14 @@ class RequestUpdateView(RoleRequiredMixin, ModalFormMixin, UpdateView):
     form_class = SessionRequestForm
     template_name = 'scheduling/request_edit.html'
     context_object_name = 'req'
+
+    def get_queryset(self):
+        return _in_managed_labs(SessionRequest.objects.all(), self.request.user)
+
+    def get_form(self, form_class=None):
+        form = super().get_form(form_class)
+        _limit_lab_choice(form, self.request.user)
+        return form
 
     def get(self, request, *args, **kwargs):
         self.object = self.get_object()
@@ -395,8 +477,10 @@ class RequestUpdateView(RoleRequiredMixin, ModalFormMixin, UpdateView):
 
 
 # Action: Approve -> Add to Official Schedule -> Return to SS view (pending list)
+@login_required
 def approve_request(request, pk):
-    req = get_object_or_404(SessionRequest, pk=pk)
+    _require_schedule_manager(request)
+    req = get_object_or_404(_in_managed_labs(SessionRequest.objects.all(), request.user), pk=pk)
     if request.method == 'POST':
         error = _slot_error(
             req.requester_type, req.lab, req.date, req.start_time, req.end_time, req.pcs_requested,
@@ -466,8 +550,10 @@ def approve_request(request, pk):
 
 
 # Action: Reject -> Request Rejected -> Return to Schedule & request
+@login_required
 def decline_request(request, pk):
-    req = get_object_or_404(SessionRequest, pk=pk)
+    _require_schedule_manager(request)
+    req = get_object_or_404(_in_managed_labs(SessionRequest.objects.all(), request.user), pk=pk)
     if request.method == 'POST':
         req.status = 'declined'
         req.save()
@@ -480,8 +566,12 @@ def decline_request(request, pk):
 
 
 # Action: Export PDF for a single request -> Return to Schedule & request
+@login_required
 def export_request_pdf(request, pk):
-    req = get_object_or_404(SessionRequest, pk=pk)
+    # The PDF includes the reservation code, so only the roles that manage
+    # requests may download it.
+    _require_schedule_manager(request)
+    req = get_object_or_404(_in_managed_labs(SessionRequest.objects.all(), request.user), pk=pk)
 
     from io import BytesIO
     from django.http import HttpResponse
@@ -901,6 +991,11 @@ class RosterCreateView(RoleRequiredMixin, ModalFormMixin, CreateView):
             initial['instructor'] = self.request.user.pk
         return initial
 
+    def get_form(self, form_class=None):
+        form = super().get_form(form_class)
+        _limit_roster_instructor_choice(form, self.request.user)
+        return form
+
     def form_valid(self, form):
         response = super().form_valid(form)
 
@@ -963,8 +1058,7 @@ class RosterDetailView(RoleRequiredMixin, ModalDetailMixin, DetailView):
     context_object_name = 'roster'
 
     def get_queryset(self):
-        from scheduling.models import ClassRoster
-        return ClassRoster.objects.select_related('lab', 'instructor')
+        return _rosters_for(self.request.user).select_related('lab', 'instructor')
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
@@ -1007,10 +1101,11 @@ def roster_generate_sessions(request, pk):
     re-save the whole roster form. Safe to click repeatedly: dates already
     generated are skipped, not duplicated."""
     from django.core.exceptions import PermissionDenied
-    from scheduling.models import ClassRoster
+    if not request.user.is_authenticated:
+        return redirect_to_login(request.get_full_path())
     if request.user.role not in ('admin', 'incharge', 'instructor'):
         raise PermissionDenied
-    roster = get_object_or_404(ClassRoster, pk=pk)
+    roster = get_object_or_404(_rosters_for(request.user), pk=pk)
     if request.method == 'POST':
         if roster.status == 'inactive':
             messages.error(
@@ -1069,10 +1164,11 @@ def roster_archive(request, pk):
     quick one-click action separate from the full edit form — the actual
     student/session records are untouched either way."""
     from django.core.exceptions import PermissionDenied
-    from scheduling.models import ClassRoster
+    if not request.user.is_authenticated:
+        return redirect_to_login(request.get_full_path())
     if request.user.role not in ('admin', 'incharge', 'instructor'):
         raise PermissionDenied
-    roster = get_object_or_404(ClassRoster, pk=pk)
+    roster = get_object_or_404(_rosters_for(request.user), pk=pk)
     if request.method == 'POST':
         reactivating = roster.status == 'inactive'
         roster.status = 'inactive' if roster.status == 'active' else 'active'
@@ -1112,6 +1208,8 @@ def roster_approve(request, pk):
     from scheduling.utils import roster_schedule_conflicts
     from notifications import services as notify_service
 
+    if not request.user.is_authenticated:
+        return redirect_to_login(request.get_full_path())
     if request.user.role not in ('admin', 'incharge'):
         raise PermissionDenied
     roster = get_object_or_404(ClassRoster, pk=pk)
@@ -1178,6 +1276,8 @@ def roster_reject(request, pk):
     from scheduling.models import ClassRoster
     from notifications import services as notify_service
 
+    if not request.user.is_authenticated:
+        return redirect_to_login(request.get_full_path())
     if request.user.role not in ('admin', 'incharge'):
         raise PermissionDenied
     roster = get_object_or_404(ClassRoster, pk=pk)
@@ -1204,8 +1304,12 @@ class RosterUpdateView(RoleRequiredMixin, ModalFormMixin, UpdateView):
         return ClassRosterForm
 
     def get_queryset(self):
-        from scheduling.models import ClassRoster
-        return ClassRoster.objects.all()
+        return _rosters_for(self.request.user)
+
+    def get_form(self, form_class=None):
+        form = super().get_form(form_class)
+        _limit_roster_instructor_choice(form, self.request.user)
+        return form
 
     def form_valid(self, form):
         was_rejected = self.object.approval_status == 'rejected'
@@ -1304,6 +1408,11 @@ def roster_check_availability(request):
 
     lab_id = request.GET.get('lab')
     instructor_id = request.GET.get('instructor')
+    if request.user.role == 'instructor' and instructor_id:
+        # An Instructor can only file rosters under their own name (see
+        # _limit_roster_instructor_choice), so they never need another
+        # instructor's weekly timetable — only lab and section occupancy.
+        instructor_id = request.user.pk
     section = (request.GET.get('section') or '').strip()
     exclude_pk = request.GET.get('exclude')
 
@@ -1348,7 +1457,7 @@ def roster_search_students(request, pk):
 
     if not request.user.is_authenticated or request.user.role not in ('admin', 'incharge', 'instructor'):
         raise PermissionDenied
-    roster = get_object_or_404(ClassRoster, pk=pk)
+    roster = get_object_or_404(_rosters_for(request.user), pk=pk)
 
     q = request.GET.get('q', '').strip()
     if not q:
@@ -1382,7 +1491,7 @@ def roster_add_student(request, pk):
     from scheduling.forms import RosterAddStudentForm
     if not request.user.is_authenticated or request.user.role not in ('admin', 'incharge', 'instructor'):
         raise PermissionDenied
-    roster = get_object_or_404(ClassRoster, pk=pk)
+    roster = get_object_or_404(_rosters_for(request.user), pk=pk)
     if request.method == 'POST':
         form = RosterAddStudentForm(request.POST)
         if form.is_valid():
@@ -1403,7 +1512,7 @@ def roster_remove_student(request, pk, student_pk):
     from scheduling.models import ClassRoster, RosterStudent
     if not request.user.is_authenticated or request.user.role not in ('admin', 'incharge', 'instructor'):
         raise PermissionDenied
-    roster = get_object_or_404(ClassRoster, pk=pk)
+    roster = get_object_or_404(_rosters_for(request.user), pk=pk)
     if request.method == 'POST':
         RosterStudent.objects.filter(pk=student_pk, roster=roster).delete()
         messages.success(request, 'Student removed from roster.')
@@ -1424,7 +1533,7 @@ def roster_import_students(request, pk):
 
     if not request.user.is_authenticated or request.user.role not in ('admin', 'incharge', 'instructor'):
         raise PermissionDenied
-    roster = get_object_or_404(ClassRoster, pk=pk)
+    roster = get_object_or_404(_rosters_for(request.user), pk=pk)
 
     results = None
     if request.method == 'POST':
