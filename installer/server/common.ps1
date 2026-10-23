@@ -246,6 +246,35 @@ function Initialize-DotEnv([hashtable]$S, [string[]]$LanAddresses, [switch]$Work
     return $firstRun
 }
 
+# Every .env this installer writes has all five; the database is found and
+# signed in to with them.
+$script:DbEnvKeys = @('DB_NAME', 'DB_USER', 'DB_PASSWORD', 'DB_HOST', 'DB_PORT')
+
+function Test-ExistingDbSettings([hashtable]$EnvValues, [string[]]$Given = @()) {
+    # Repair / update (a .env already exists): which database holds the data
+    # and how to sign in to it come from that .env. Returns the problems
+    # (none: usable). Credentials are never invented for existing data; a
+    # missing DB_HOST / DB_PORT is only filled in when given explicitly
+    # (-DbHost / -DbPort, listed in $Given).
+    $problems = @()
+    $missing = @($script:DbEnvKeys | Where-Object { -not "$($EnvValues[$_])".Trim() })
+    $credentials = @($missing | Where-Object { $_ -in @('DB_NAME', 'DB_USER', 'DB_PASSWORD') })
+    if ($credentials.Count) {
+        $problems += ("The existing .env ($script:EnvFile) has no $($missing -join ', '). Every CompuLab installation has all five DB_ settings, " +
+                      'so this .env was not written by this installer (a development copy of CompuLab, or a hand-made .env?). ' +
+                      'The installer does not invent database credentials for existing data. Install into an empty folder instead ' +
+                      '(CompuLab-Server-Setup.exe, default C:\CompuLab), or put this installation''s database name, user and password into .env.')
+        return $problems
+    }
+    $parameter = @{ DB_HOST = 'DbHost'; DB_PORT = 'DbPort' }
+    $notGiven = @($missing | Where-Object { $parameter[$_] -notin $Given })
+    if ($notGiven.Count) {
+        $problems += ("The existing .env has no $($notGiven -join ' / '). Give the database's address explicitly, for example " +
+                      '-DbHost 127.0.0.1 -DbPort 3306 (only if that is where this installation''s database is).')
+    }
+    return $problems
+}
+
 # ---------------------------------------------------------------- backup location
 function Get-BackupRootFromTaskArguments([string]$Arguments) {
     # The -BackupRoot of the nightly task's command line, or $null.
@@ -383,6 +412,45 @@ function Find-Python {
     return $null
 }
 
+function Read-VenvConfig([string]$VenvDir) {
+    # The pyvenv.cfg of a Python environment: @{ Home; Version ('3.13') }, or $null.
+    $cfg = Join-Path $VenvDir 'pyvenv.cfg'
+    if (-not (Test-Path $cfg)) { return $null }
+    $info = @{ Home = ''; Version = '' }
+    foreach ($line in Get-Content $cfg) {
+        if ($line -match '^\s*home\s*=\s*(.+?)\s*$') { $info.Home = $Matches[1] }
+        elseif ($line -match '^\s*version(_info)?\s*=\s*(\d+\.\d+)') { $info.Version = $Matches[2] }
+    }
+    return $info
+}
+
+function Test-VenvMatchesPython([string]$VenvDir, [hashtable]$Python) {
+    # $null when the existing venv was made from the Python this setup uses
+    # (same version, same installation), else why it cannot be reused. A
+    # venv of another Python would keep running the old one: packages built
+    # for 3.13 don't install into it, and a "just for me" Python replaced by
+    # an "all users" one would still be used.
+    if (-not (Test-Path (Join-Path $VenvDir 'Scripts\python.exe'))) { return 'its python.exe is missing' }
+    $cfg = Read-VenvConfig $VenvDir
+    if (-not $cfg -or -not $cfg.Version) { return 'its pyvenv.cfg is missing or unreadable' }
+    if ($cfg.Version -ne $Python.Version) { return "it uses Python $($cfg.Version), but this setup uses Python $($Python.Version)" }
+    if ($cfg.Home -and $Python.BasePrefix -and $cfg.Home.TrimEnd('\') -ne "$($Python.BasePrefix)".TrimEnd('\')) {
+        return "it was made from the Python in $($cfg.Home), but this setup uses $($Python.BasePrefix)"
+    }
+    return $null
+}
+
+function Move-VenvAside([string]$VenvDir) {
+    # Renames the old environment instead of deleting it; returns the new name.
+    $target = "$VenvDir.old-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+    try { Move-Item -LiteralPath $VenvDir -Destination $target -ErrorAction Stop }
+    catch {
+        throw ("The old Python environment ($VenvDir) could not be moved aside: $($_.Exception.Message) " +
+               'Close the programs that use CompuLab (or restart the computer) and run the setup again.')
+    }
+    return $target
+}
+
 function Install-PythonPackages([string]$Requirements) {
     # Offline first: the CompuLab-Server-Setup.exe ships the packages in
     # installer\server\wheels; a plain copy of the folder downloads them.
@@ -425,6 +493,9 @@ function Find-MySqlTool([string]$Name) {
 function New-MySqlDefaultsFile([string]$User, [string]$Password, [string]$DbHost = '127.0.0.1', [string]$Port = '3306') {
     # Credentials go in a temporary options file (not on the command line,
     # where other processes could read them). Caller deletes it.
+    # An empty host or port would make mysql fail with a misleading message.
+    if (-not "$DbHost".Trim()) { throw 'The database host is empty (DB_HOST in .env).' }
+    if ("$Port" -notmatch '^\d{1,5}$') { throw "The database port is empty or not a number ('$Port', DB_PORT in .env)." }
     $path = Join-Path $env:TEMP ("compulab-db-" + [guid]::NewGuid().ToString('N') + '.cnf')
     $content = "[client]`nuser=$User`npassword=$Password`nhost=$DbHost`nport=$Port`n"
     [IO.File]::WriteAllText($path, $content, (New-Object Text.UTF8Encoding $false))
@@ -432,11 +503,45 @@ function New-MySqlDefaultsFile([string]$User, [string]$Password, [string]$DbHost
     return $path
 }
 
-function Get-DbServerVersion([string]$MySqlExe, [string]$DefaultsFile) {
-    # Returns e.g. '10.11.6-MariaDB' or '8.4.3', or $null if it can't connect.
-    $out = Invoke-Quiet $MySqlExe @("--defaults-extra-file=$DefaultsFile", '--batch', '--skip-column-names') 'SELECT VERSION();'
-    if ($LASTEXITCODE -ne 0 -or -not $out) { return $null }
-    return ([string]($out | Select-Object -First 1)).Trim()
+function Get-DbSignIn([string]$MySqlExe, [string]$DefaultsFile) {
+    # Signs in with the options file and asks for the server version.
+    # @{ Version = e.g. '11.4.13-MariaDB' or '8.4.3'; Lines = @() } when it
+    # works, @{ Version = $null; Lines = what mysql printed } when it doesn't
+    # (ConvertTo-DbErrorText explains those lines).
+    $out = @(Invoke-Captured $MySqlExe @("--defaults-extra-file=$DefaultsFile", '--batch', '--skip-column-names', '-e', 'SELECT VERSION();'))
+    $code = $LASTEXITCODE
+    $version = @($out | Where-Object { $_ -match '^\s*\d+\.\d+\.\d+' })
+    if ($code -eq 0 -and $version.Count) { return @{ Version = $version[0].Trim(); Lines = @() } }
+    return @{ Version = $null; Lines = $out }
+}
+
+function ConvertTo-DbErrorText([string[]]$Lines, [string]$DbHost, [string]$Port, [string]$Secret = '', [string]$User = 'root') {
+    # mysql's own message, cleaned up (no password, no temporary file path, no
+    # warnings), after what it means in plain words. Never just "wrong
+    # password": an empty password, a stopped server or an empty port are
+    # different problems with different fixes.
+    $raw = @($Lines | ForEach-Object { "$_".Trim() } | Where-Object { $_ -and $_ -notmatch '\[Warning\]' })
+    $errors = @($raw | Where-Object { $_ -match 'ERROR|Unknown|Can.t connect|Empty value' })
+    $text = (@($(if ($errors.Count) { $errors } else { $raw })) | Select-Object -First 2) -join ' '
+    $text = $text -replace '(^|\s)(mysql|mariadb)(\.exe)?\s*:\s*', '$1'
+    $text = $text -replace '[A-Za-z]:\\[^\s''"]*?\.cnf', '<options file>'
+    # mysql never prints the password; masked anyway in case a message ever
+    # does (only when long enough not to give itself away by the masking).
+    if ($Secret -and $Secret.Length -ge 6) { $text = $text.Replace($Secret, '********') }
+    $text = $text.Trim()
+    if ($text.Length -gt 300) { $text = $text.Substring(0, 300) + '...' }
+    if (-not $text) { $text = '(no message)' }
+    $meaning = switch -Regex ($text) {
+        'Empty value for .port.' { 'The database port is empty (DB_PORT in .env).'; break }
+        '1045.*using password: NO' { "No password was given, but the database server needs one for '$User'. Type the MariaDB/MySQL root password: click into this window first; each character shows as *."; break }
+        '1045' { "The password for '$User' was not accepted: it is wrong, or '$User' may not sign in from $DbHost."; break }
+        '1130|is not allowed to connect' { "'$User' may not sign in to the database server from this computer (host $DbHost)."; break }
+        '2059|authentication plugin|caching_sha2' { 'This mysql.exe cannot use the database server''s sign-in method: use the client that came with the server (not XAMPP''s).'; break }
+        '2005|Unknown (MySQL|MariaDB) server host' { "The database host '$DbHost' was not found."; break }
+        '2002|2003|Can.t connect' { "No database server answered on ${DbHost}:$Port (is the MariaDB/MySQL service running?)."; break }
+        default { 'The database server refused the sign-in.' }
+    }
+    return "$meaning Database server said: $text"
 }
 
 function Assert-SupportedDbVersion([string]$VersionText) {

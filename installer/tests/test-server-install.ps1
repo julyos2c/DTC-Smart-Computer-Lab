@@ -20,7 +20,10 @@
        first, nothing duplicated, the new version registered;
     4. restore.ps1 brings back the backed-up data; the nightly backup
        command (backup.ps1 -Log) logs and reports success and failure;
-    5. invalid settings and a busy port stop the installer before any change;
+    5. invalid settings, a busy port, an existing .env without database
+       settings (developer copy) and a wrong root password stop the
+       installer, with the real reason, before any change;
+       5c. a venv made with another Python is replaced (kept aside);
     6. uninstall removes the program files and keeps the data.
 #>
 [CmdletBinding()]
@@ -299,6 +302,37 @@ try {
         Assert-True ($LASTEXITCODE -eq 1 -and $o -match 'not a MariaDB/MySQL server') "exit $LASTEXITCODE"
         Assert-True ((Get-FileHash (Join-Path $App '.env')).Hash -eq $envHash) '.env changed'
     }
+    Test-Case 'existing .env without database settings (developer copy): stops before installing or writing anything, names what is missing' {
+        $envPath = Join-Path $App '.env'
+        $saved = [IO.File]::ReadAllBytes($envPath)
+        $venvCfg = (Get-FileHash (Join-Path $App 'venv\pyvenv.cfg')).Hash
+        try {
+            # Like the development .env a real run was started with: no DB_ keys at all.
+            [IO.File]::WriteAllLines($envPath, [string[]]@(Get-Content $envPath | Where-Object { $_ -notmatch '^DB_' }))
+            $devHash = (Get-FileHash $envPath).Hash
+            $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -NonInteractive -SkipServices -SkipFirewall -SkipBackupTask -DbServiceName none -DbHost 127.0.0.1 -DbPort $dbPort 2>&1 | Out-String
+            Assert-True ($LASTEXITCODE -eq 1) "exit code $LASTEXITCODE"
+            Assert-True ($o -match 'has no DB_NAME, DB_USER, DB_PASSWORD' -and $o -match 'development copy' -and $o -match 'does not invent') 'missing settings not explained'
+            Assert-True ($o -notmatch 'Installing the Python environment|Preparing the database|Empty value') 'went on past the settings check'
+            Assert-True ((Get-FileHash $envPath).Hash -eq $devHash) '.env changed'
+            Assert-True ((Get-FileHash (Join-Path $App 'venv\pyvenv.cfg')).Hash -eq $venvCfg) 'Python environment changed'
+        } finally { [IO.File]::WriteAllBytes($envPath, $saved) }
+    }
+    Test-Case 'wrong root password: the database server''s own message and what it means; the password is not shown or logged' {
+        $wrong = 'Wrong-' + [guid]::NewGuid().ToString('N')
+        $before = Read-Env (Join-Path $App '.env')
+        $env:COMPULAB_DB_ROOT_PASSWORD = $wrong
+        try { $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -NonInteractive -SkipServices -SkipFirewall -SkipBackupTask -DbServiceName none 2>&1 | Out-String }
+        finally { $env:COMPULAB_DB_ROOT_PASSWORD = $rootPw }
+        Assert-True ($LASTEXITCODE -eq 1) "exit code $LASTEXITCODE"
+        Assert-True ($o -match 'was not accepted' -and $o -match 'Database server said: ERROR 1045' -and $o -match 'Access denied') 'real error not shown'
+        Assert-True ($o -notmatch 'wrong password, or the database service') 'still the generic guess'
+        Assert-True ($o -notmatch [regex]::Escape($wrong)) 'password shown'
+        $log = Get-ChildItem (Join-Path $App 'logs') -Filter 'install-*.log' | Sort-Object Name | Select-Object -Last 1
+        Assert-True ((Get-Content $log.FullName -Raw) -notmatch [regex]::Escape($wrong)) 'password in the install log'
+        $after = Read-Env (Join-Path $App '.env')
+        foreach ($k in $before.Keys) { Assert-True ($before[$k] -eq $after[$k]) "$k changed" }
+    }
 
     Write-Host "`n5b. No working Administrator: the installer never reports success" -ForegroundColor Cyan
     Invoke-DbSql 'UPDATE accounts_user SET is_active = 0 WHERE is_superuser = 1'
@@ -326,6 +360,33 @@ try {
         $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -NonInteractive -SkipServices -SkipFirewall -SkipBackupTask -DbServiceName none 2>&1 | Out-String
         Assert-True ($LASTEXITCODE -eq 0 -and $o -match 'OK: Administrator account:') "exit $LASTEXITCODE"
         Assert-True ((Get-DbCount 'SELECT COUNT(*) FROM accounts_user WHERE is_superuser = 1') -eq 1) 'a second Administrator was created'
+    }
+
+    Write-Host "`n5c. A Python environment made with another Python is replaced, not reused" -ForegroundColor Cyan
+    Test-Case 'repair with a venv of another Python: moved aside (kept), a new one made with the setup''s Python, repair succeeds' {
+        $venv = Join-Path $App 'venv'
+        $otherPy = $null
+        foreach ($line in @(& py -0p 2>$null)) { if ("$line" -match '-V:\S*3\.1[12]\S*\s+(?:\*\s+)?(\S.*python\.exe)\s*$') { $otherPy = $Matches[1].Trim(); break } }
+        if ($otherPy) {
+            # A real venv of Python 3.11/3.12, like the reused development venv.
+            Move-Item $venv (Join-Path $Tmp 'venv-before')
+            & $otherPy -m venv $venv 2>&1 | Out-Null
+            Assert-True (Test-Path (Join-Path $venv 'Scripts\python.exe')) "could not make a venv with $otherPy"
+        } else {
+            Write-Host '         (no Python 3.11/3.12 on this PC: the venv is marked as 3.11 in pyvenv.cfg instead)' -ForegroundColor DarkYellow
+            $cfg = Join-Path $venv 'pyvenv.cfg'
+            [IO.File]::WriteAllLines($cfg, [string[]]@(Get-Content $cfg | ForEach-Object { $_ -replace '^version\s*=.*', 'version = 3.11.16' }))
+        }
+        $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -NonInteractive -SkipServices -SkipFirewall -SkipBackupTask -DbServiceName none 2>&1 | Out-String
+        Assert-True ($LASTEXITCODE -eq 0) "exit code $LASTEXITCODE"
+        Assert-True ($o -match 'is not reused: it uses Python 3\.1[12], but this setup uses Python 3\.1[123]') 'old venv not detected'
+        $old = @(Get-ChildItem $App -Directory -Filter 'venv.old-*')
+        Assert-True ($old.Count -eq 1 -and (Get-Content (Join-Path $old[0].FullName 'pyvenv.cfg') -Raw) -match 'version\s*=\s*3\.1[12]') 'old venv not kept aside'
+        Assert-True ($o -match 'OK: Python (3\.\d+) 64-bit') 'Python line missing'
+        $chosen = $Matches[1]
+        Assert-True ((Get-Content (Join-Path $venv 'pyvenv.cfg') -Raw) -match "version\s*=\s*$([regex]::Escape($chosen))\.") "new venv is not Python $chosen"
+        & (Join-Path $venv 'Scripts\python.exe') (Join-Path $App 'manage.py') check 2>$null | Out-Null
+        Assert-True ($LASTEXITCODE -eq 0) 'CompuLab does not run with the new venv'
     }
 
     Write-Host "`n6. Uninstall" -ForegroundColor Cyan

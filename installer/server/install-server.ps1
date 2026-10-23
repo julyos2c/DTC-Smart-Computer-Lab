@@ -139,6 +139,15 @@ try {
     Write-Ok 'Application files present (including the offline copies of the page scripts)'
 
     Write-Step 'Checking the settings'
+    if (-not $firstRun) {
+        # Repair / update: the database settings must come from the existing
+        # .env, checked before anything is asked, installed or written (a
+        # developer copy's .env has none of them).
+        $givenDb = @()
+        foreach ($k in 'DbHost', 'DbPort') { if ($PSBoundParameters.ContainsKey($k) -or $fromFile.ContainsKey($k)) { $givenDb += $k } }
+        $dbProblems = @(Test-ExistingDbSettings $existingEnv $givenDb)
+        if ($dbProblems.Count) { throw ("The settings are not valid:`n      - " + ($dbProblems -join "`n      - ")) }
+    }
     $addresses = @(Get-LanAddresses)
     if (-not $S.ServerAddress -and -not $firstRun -and $existingEnv['SITE_URL'] -match '^https?://([^/:]+)') { $S.ServerAddress = $Matches[1] }
     if (-not $S.ServerAddress) {
@@ -260,6 +269,16 @@ try {
 
     # ------------------------------------------------------------ 2. venv + packages
     Write-Step 'Installing the Python environment'
+    $venvDir = Join-Path $script:AppDir 'venv'
+    if (Test-Path $venvDir) {
+        $venvProblem = Test-VenvMatchesPython $venvDir $python
+        if ($venvProblem) {
+            Write-Note "The existing Python environment (venv) is not reused: $venvProblem."
+            Stop-CompuLabServices   # they run from it
+            $oldVenv = Move-VenvAside $venvDir
+            Write-Note "Moved it to $oldVenv (it holds no CompuLab data; delete it once CompuLab works). A new one is made with Python $($python.Version)."
+        } else { Write-Ok "Existing Python environment (Python $($python.Version)) reused" }
+    }
     if (-not (Test-Path $script:VenvPython)) {
         Invoke-Logged $python.Command[0] (@($python.Command | Select-Object -Skip 1) + @('-m', 'venv', (Join-Path $script:AppDir 'venv')))
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path $script:VenvPython)) { throw 'Could not create the Python environment (venv).' }
@@ -290,34 +309,51 @@ try {
     Set-DotEnvValue 'COMPULAB_BACKUP_ROOT' "$($S.BackupRoot)"
     $envValues = Read-DotEnv
     $siteUrl = $envValues['SITE_URL']
+    $missingDb = @($script:DbEnvKeys | Where-Object { -not $envValues[$_] })
+    if ($missingDb.Count) { throw ".env has no $($missingDb -join ', ') after configuring it; the database was not touched." }
 
     # ------------------------------------------------------------ 4. database
     if (-not $SkipDatabaseSetup) {
         Write-Step 'Preparing the database'
-        $plainRoot = $env:COMPULAB_DB_ROOT_PASSWORD
-        if (-not $plainRoot) {
-            if ($NonInteractive) { throw 'Set the environment variable COMPULAB_DB_ROOT_PASSWORD (MariaDB root password) for an unattended install, or use -SkipDatabaseSetup.' }
-            $plainRoot = Read-SecretText 'MariaDB/MySQL root password (used once, not saved)'
-        }
-        $rootCnf = New-MySqlDefaultsFile 'root' $plainRoot $envValues['DB_HOST'] $envValues['DB_PORT']
+        $fromVariable = [bool]$env:COMPULAB_DB_ROOT_PASSWORD
+        if (-not $fromVariable -and $NonInteractive) { throw 'Set the environment variable COMPULAB_DB_ROOT_PASSWORD (MariaDB root password) for an unattended install, or use -SkipDatabaseSetup.' }
+        $rootCnf = $null; $plainRoot = $null
         try {
-            $serverVersion = Get-DbServerVersion $mysql $rootCnf
-            if (-not $serverVersion) { throw 'Could not sign in to the database server as root (wrong password, or the database service is not running).' }
-            Write-Ok "Database server: $(Assert-SupportedDbVersion $serverVersion)"
+            for ($attempt = 1; ; $attempt++) {
+                if ($fromVariable) { $plainRoot = $env:COMPULAB_DB_ROOT_PASSWORD }
+                else {
+                    if ($attempt -eq 1) { Write-Note 'Click into this window before typing: each character shows as * (the password is not saved or logged).' }
+                    $plainRoot = Read-SecretText 'MariaDB/MySQL root password (used once, not saved)'
+                }
+                $rootCnf = New-MySqlDefaultsFile 'root' $plainRoot $envValues['DB_HOST'] $envValues['DB_PORT']
+                $signIn = Get-DbSignIn $mysql $rootCnf
+                if ($signIn.Version) { break }
+                Remove-Item $rootCnf -Force -ErrorAction SilentlyContinue; $rootCnf = $null
+                $why = ConvertTo-DbErrorText $signIn.Lines $envValues['DB_HOST'] $envValues['DB_PORT'] $plainRoot
+                # Only a refused password is worth typing again; anything else
+                # (server stopped, wrong port, ...) has to be fixed first.
+                if ($fromVariable -or $attempt -ge 3 -or $why -notmatch 'ERROR 1045') { throw "Could not sign in to the database server as root. $why" }
+                Write-Note $why
+                Write-Note "Try again (attempt $($attempt + 1) of 3)."
+            }
+            Write-Ok "Database server: $(Assert-SupportedDbVersion $signIn.Version)"
             Get-DbSetupSql $envValues['DB_NAME'] $envValues['DB_USER'] $envValues['DB_PASSWORD'] | & $mysql "--defaults-extra-file=$rootCnf"
             if ($LASTEXITCODE -ne 0) { throw 'Creating the database or its user failed (see the message above).' }
             Write-Ok "Database '$($envValues['DB_NAME'])' and user '$($envValues['DB_USER'])' are ready"
         } finally {
-            Remove-Item $rootCnf -Force -ErrorAction SilentlyContinue
+            if ($rootCnf) { Remove-Item $rootCnf -Force -ErrorAction SilentlyContinue }
             $plainRoot = $null
         }
     } elseif ($mysql) {
         # Existing database: still refuse a server version this Django can't use.
         $appCnf = New-MySqlDefaultsFile $envValues['DB_USER'] $envValues['DB_PASSWORD'] $envValues['DB_HOST'] $envValues['DB_PORT']
         try {
-            $serverVersion = Get-DbServerVersion $mysql $appCnf
-            if ($serverVersion) { Write-Ok "Database server: $(Assert-SupportedDbVersion $serverVersion)" }
-            else { Write-Note 'Could not check the database server version with the credentials in .env.' }
+            $signIn = Get-DbSignIn $mysql $appCnf
+            if ($signIn.Version) { Write-Ok "Database server: $(Assert-SupportedDbVersion $signIn.Version)" }
+            else {
+                $why = ConvertTo-DbErrorText $signIn.Lines $envValues['DB_HOST'] $envValues['DB_PORT'] $envValues['DB_PASSWORD'] $envValues['DB_USER']
+                Write-Note "Could not check the database server version with the credentials in .env. $why"
+            }
         } finally { Remove-Item $appCnf -Force -ErrorAction SilentlyContinue }
     }
 

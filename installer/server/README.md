@@ -56,7 +56,10 @@ or:
    reserved in step 1). Press Enter to accept the first one. (Or pass it:
    `install-server.ps1 -ServerAddress 192.168.1.10`; another web port: `-Port 8080`; another
    database port: `-DbPort 3307`; backups elsewhere: `-BackupRoot E:\CompuLabBackups`.)
-4. When asked, type the MariaDB root password (used once, not saved).
+4. When asked, type the MariaDB root password (used once, not saved). Click into the window first: a
+   `*` appears for each character. A refused or empty password is explained (with the database
+   server's own message) and asked again, up to 3 times; any other sign-in problem (server stopped,
+   wrong port) stops the installer with that message.
 5. When asked, create the first Administrator account: a @gmail.com address (CompuLab accepts only
    Gmail addresses for every account) and a password typed twice. A refused value is explained and
    asked again; if no working Administrator exists at the end, the installer stops ("The first
@@ -69,7 +72,13 @@ on the campus network and sign in.
 The installer:
 - checks Windows, the CompuLab files, Python, the MariaDB version (10.5 or newer; it refuses
   XAMPP's 10.4) and WinSW, and stops with a clear message if one is missing;
-- creates `venv\` and installs the packages (needs internet the first time);
+- on a Repair/Update, first checks that the existing `.env` has all five database settings
+  (`DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`): it never invents credentials for
+  existing data, and refuses a `.env` it did not write (e.g. a developer copy of CompuLab) before
+  changing anything;
+- creates `venv\` and installs the packages (needs internet the first time). An existing `venv\`
+  made with another Python (another version, or another Python installation) is not reused: it is
+  renamed `venv.old-<date>` (delete it once CompuLab works) and a new one is made;
 - writes `.env` with random secrets (only Administrators can read it);
 - creates the `compulab_db` database and a `compulab` database user;
 - applies the database migrations;

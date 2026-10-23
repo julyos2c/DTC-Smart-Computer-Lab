@@ -138,6 +138,105 @@ Test-Case 'database version gate (Django 5.2)' {
     Assert-Equal 'MySQL 8.4.3' (Assert-SupportedDbVersion '8.4.3')
     Assert-Throws { Assert-SupportedDbVersion 'garbage' } 'Could not read'
 }
+Test-Case 'existing .env without database settings (developer copy): refused, credentials never invented' {
+    $full = @{ DB_NAME = 'compulab_db'; DB_USER = 'compulab'; DB_PASSWORD = 'x' * 32; DB_HOST = '127.0.0.1'; DB_PORT = '3306' }
+    Assert-Equal 0 @(Test-ExistingDbSettings $full).Count 'a complete installer .env refused'
+    # The development .env that broke a real run: no DB_ keys at all.
+    $dev = @{ DJANGO_DEBUG = 'True'; PC_AGENT_SHARED_SECRET = 'x'; COMPULAB_PORT = '8000' }
+    $p = @(Test-ExistingDbSettings $dev @('DbHost', 'DbPort'))
+    Assert-Equal 1 $p.Count
+    foreach ($k in $script:DbEnvKeys) { Assert-True ($p[0] -match $k) "$k not named: $($p[0])" }
+    Assert-True ($p[0] -match 'development copy' -and $p[0] -match 'does not invent') "unclear: $($p[0])"
+    foreach ($k in 'DB_NAME', 'DB_USER', 'DB_PASSWORD') {
+        $e = $full.Clone(); $e[$k] = ''
+        Assert-Equal 1 @(Test-ExistingDbSettings $e @('DbHost', 'DbPort')).Count "empty $k accepted"
+    }
+}
+Test-Case 'existing .env without DB_HOST/DB_PORT: only filled in when given explicitly' {
+    $e = @{ DB_NAME = 'compulab_db'; DB_USER = 'compulab'; DB_PASSWORD = 'x' * 32 }
+    $p = @(Test-ExistingDbSettings $e)
+    Assert-Equal 1 $p.Count
+    Assert-True ($p[0] -match 'DB_HOST / DB_PORT' -and $p[0] -match '-DbHost 127\.0\.0\.1 -DbPort 3306') "unclear: $($p[0])"
+    Assert-True ((@(Test-ExistingDbSettings $e @('DbHost'))[0]) -match 'no DB_PORT\.') 'DB_PORT not still required'
+    Assert-Equal 0 @(Test-ExistingDbSettings $e @('DbHost', 'DbPort')).Count 'explicit host and port refused'
+}
+Test-Case 'first install writes the chosen database host and port (127.0.0.1:3306 only as the default)' {
+    Remove-Item $script:EnvFile -ErrorAction SilentlyContinue
+    $s = $valid.Clone(); $s.DbHost = 'db.school.lan'; $s.DbPort = '3307'
+    Assert-True (Initialize-DotEnv $s @('192.168.1.10')) 'first run not detected'
+    $e = Read-DotEnv
+    Assert-Equal 'db.school.lan' $e.DB_HOST; Assert-Equal '3307' $e.DB_PORT
+    Assert-Equal 0 @($script:DbEnvKeys | Where-Object { -not $e[$_] }).Count 'a DB_ key missing in a new .env'
+    Remove-Item $script:EnvFile
+}
+Test-Case 'the database sign-in file refuses an empty host or port (regression: "Empty value for port")' {
+    Assert-Throws { New-MySqlDefaultsFile 'root' 'pw' '127.0.0.1' '' } 'port is empty'
+    Assert-Throws { New-MySqlDefaultsFile 'root' 'pw' '' '3306' } 'host is empty'
+    Assert-Throws { New-MySqlDefaultsFile 'root' 'pw' '127.0.0.1' 'abc' } 'not a number'
+    $cnf = New-MySqlDefaultsFile 'root' 'pw' '127.0.0.1' '3306'
+    try { Assert-True ((Get-Content $cnf -Raw) -match 'port=3306') 'port not written' } finally { Remove-Item $cnf -Force }
+}
+Test-Case 'sign-in errors: mysql''s own message with its meaning, never just "wrong password", password and file path hidden' {
+    $cases = @(
+        @('ERROR 1045 (28000): Access denied for user ''root''@''localhost'' (using password: NO)', 'No password was given'),
+        @('ERROR 1045 (28000): Access denied for user ''root''@''localhost'' (using password: YES)', 'was not accepted'),
+        @('ERROR 2003 (HY000): Can''t connect to MySQL server on ''127.0.0.1:3306'' (10061)', 'No database server answered on 127\.0\.0\.1:3306'),
+        @('mysql: [ERROR] C:\Program Files\MySQL\MySQL Server 8.4\bin\mysql.exe: Empty value for ''port'' specified.', 'port is empty'),
+        @('ERROR 2005 (HY000): Unknown MySQL server host ''nohost'' (11001)', 'was not found'),
+        @('ERROR 1130 (HY000): Host ''10.0.0.9'' is not allowed to connect to this MySQL server', 'may not sign in'),
+        @('ERROR 2059 (HY000): Authentication plugin ''caching_sha2_password'' cannot be loaded', 'sign-in method'),
+        @('ERROR 9999 (HY000): something new', 'refused the sign-in')
+    )
+    foreach ($c in $cases) {
+        $t = ConvertTo-DbErrorText @('mysql: [Warning] Using a password on the command line interface can be insecure.', $c[0]) '127.0.0.1' '3306'
+        Assert-True ($t -match $c[1]) "'$($c[0])' explained as: $t"
+        Assert-True ($t -match 'Database server said: ' -and $t -notmatch 'Warning') "raw message missing or warning kept: $t"
+    }
+    $t = ConvertTo-DbErrorText @('ERROR 1045: denied for S3cret-Pass-123 reading C:\Users\x\AppData\Local\Temp\compulab-db-abc.cnf') 'h' '1' 'S3cret-Pass-123'
+    Assert-True ($t -notmatch 'S3cret' -and $t -notmatch 'compulab-db-abc' -and $t -match '<options file>') "not cleaned: $t"
+    Assert-True ((ConvertTo-DbErrorText @() 'h' '1') -match 'no message') 'empty output'
+}
+Test-Case 'sign-in against a port with no database server: the real mysql.exe error is explained (nothing is changed)' {
+    $client = Find-MySqlTool 'mysql.exe'
+    if (-not $client) { Write-Host '         (no mysql.exe on this PC: not exercised)' -ForegroundColor DarkYellow; return }
+    $l = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $l.Start(); $free = $l.LocalEndpoint.Port; $l.Stop()
+    $cnf = New-MySqlDefaultsFile 'root' 'not-a-real-password' '127.0.0.1' "$free"
+    try { $r = Get-DbSignIn $client $cnf } finally { Remove-Item $cnf -Force }
+    Assert-True ($null -eq $r.Version) 'signed in to nothing'
+    $t = ConvertTo-DbErrorText $r.Lines '127.0.0.1' "$free" 'not-a-real-password'
+    Assert-True ($t -match "No database server answered on 127\.0\.0\.1:$free" -and $t -match '2003') $t
+    Assert-True ($t -notmatch 'not-a-real-password') 'password shown'
+}
+Test-Case 'Python environment: reused only when made from the same Python (regression: 3.11 venv reused)' {
+    $py = @{ Version = '3.13'; BasePrefix = 'C:\Program Files\Python313' }
+    $v = Join-Path $Tmp 'venv-check'
+    New-Item -ItemType Directory -Force (Join-Path $v 'Scripts') | Out-Null
+    Assert-True ((Test-VenvMatchesPython $v $py) -match 'python\.exe is missing') 'empty venv reused'
+    Set-Content (Join-Path $v 'Scripts\python.exe') 'x'
+    Assert-True ((Test-VenvMatchesPython $v $py) -match 'pyvenv\.cfg') 'venv without pyvenv.cfg reused'
+    $cfg = Join-Path $v 'pyvenv.cfg'
+    # The real pyvenv.cfg of the development venv that was reused.
+    Set-Content $cfg @('home = C:\Users\x\AppData\Roaming\uv\python\cpython-3.11.16-windows-x86_64-none', 'include-system-site-packages = false', 'version = 3.11.16')
+    Assert-Equal '3.11' (Read-VenvConfig $v).Version
+    Assert-True ((Test-VenvMatchesPython $v $py) -match 'Python 3\.11.*Python 3\.13') '3.11 venv reused for 3.13'
+    Set-Content $cfg @('home = C:\Users\x\AppData\Local\Programs\Python\Python313', 'version = 3.13.5')
+    Assert-True ((Test-VenvMatchesPython $v $py) -match 'made from the Python in') 'per-user venv kept after an all-users Python was chosen'
+    Set-Content $cfg @('home = c:\program files\python313\', 'version_info = 3.13.5.final.0')
+    Assert-True ($null -eq (Test-VenvMatchesPython $v $py)) 'matching venv not reused'
+    $moved = Move-VenvAside $v
+    Assert-True ((-not (Test-Path $v)) -and (Test-Path (Join-Path $moved 'pyvenv.cfg')) -and $moved -like "$v.old-*") "not moved aside: $moved"
+}
+Test-Case 'install-server.ps1: database settings checked before anything is asked, installed or written; real sign-in errors' {
+    $t = Get-Content (Join-Path $Repo 'installer\server\install-server.ps1') -Raw
+    $order = 'Test-ExistingDbSettings', 'Campus address of this server', 'Test-VenvMatchesPython', 'Install-PythonPackages', 'Initialize-DotEnv', 'Get-DbSignIn'
+    $at = @($order | ForEach-Object { $t.IndexOf($_) })
+    for ($i = 0; $i -lt $order.Count; $i++) { Assert-True ($at[$i] -ge 0) "$($order[$i]) not used" }
+    for ($i = 1; $i -lt $order.Count; $i++) { Assert-True ($at[$i - 1] -lt $at[$i]) "$($order[$i - 1]) must come before $($order[$i])" }
+    Assert-True ($t -match 'ConvertTo-DbErrorText') 'sign-in errors not explained'
+    foreach ($f in Get-ChildItem (Join-Path $Repo 'installer\server') -Filter *.ps1) {
+        Assert-True ((Get-Content $f.FullName -Raw) -notmatch 'wrong password, or the database service') "$($f.Name) still guesses 'wrong password'"
+    }
+}
 Test-Case 'WinSW service definition: boot start, crash restart, database dependency, XML-safe' {
     $defs = Get-ServiceDefinitions 8000
     Assert-Equal 2 $defs.Count

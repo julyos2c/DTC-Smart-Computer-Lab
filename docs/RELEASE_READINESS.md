@@ -31,6 +31,16 @@ Step-by-step instructions for the installation itself, including every check bel
 | "CompuLab Server Status" could not read admin-only items and did not say so | `Server Status.cmd` offers **F** (full report, normal UAC prompt) or **L** (limited); `server-status.ps1` labels skipped lines "needs administrator" and adds a backup section | no silent elevation |
 | "PC status" in setup texts and docs | "PC power status" everywhere the operator is told where to click | test checks installer files and user docs |
 
+### Since 2026.10.23.0716 (server installer; found on a real test install)
+
+Release 2026.10.23.0716 (commit `2b689ea`) has the fixes above but not these; use a later build.
+
+| Problem | Fix (where) | Tests |
+|---|---|---|
+| Started in a folder whose `.env` lacks the database settings (a developer copy), the installer went on as a repair and tried to sign in to MariaDB/MySQL with an empty port, then blamed the password | Repair/Update first check that the existing `.env` has `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` and stop otherwise, before any question, package install or `.env` change; credentials are never invented, a missing host/port only taken from an explicit `-DbHost`/`-DbPort` (`common.ps1` `Test-ExistingDbSettings`; `install-server.ps1`). The sign-in file refuses an empty host/port | logic tests; end-to-end "existing .env without database settings" |
+| Every sign-in failure was reported as "wrong password, or the database service is not running", including an empty password that never reached the installer | `Get-DbSignIn` keeps mysql's own message; `ConvertTo-DbErrorText` says what it means (empty password, wrong password, no server on host:port, unknown host, empty port, sign-in method, host not allowed) followed by `Database server said: ...` (password and temporary file path removed). A typed root password that is refused is asked again (3 tries), with a hint to click into the window first | logic tests (each message, plus a real `mysql.exe` against a port with no server); end-to-end "wrong root password" (message shown, password not in output or log) |
+| An existing `venv\` was reused whatever Python made it (a 3.11 venv with the 3.13 packages) | `pyvenv.cfg` must show the Python the setup chose (same version and installation); otherwise the CompuLab services are stopped, the old `venv\` is renamed `venv.old-<date>` (kept) and a new one is made (`common.ps1` `Test-VenvMatchesPython`, `Move-VenvAside`) | logic tests; end-to-end repair over a real Python 3.11 venv |
+
 **Upgrade notes (existing installations):**
 
 - Database migration `labs 0022_pc_agent_secret` adds two columns (`agent_secret`, `agent_secret_in_use`) to `labs_pc`. Additive; applied by the setup after its automatic backup. Rollback: restore that backup (`restore.ps1`) and reinstall the previous setup.
