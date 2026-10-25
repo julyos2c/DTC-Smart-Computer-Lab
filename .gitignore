@@ -1,5 +1,12 @@
 # Secrets — never commit these
 .env
+# ...nor copies of it (.env.bak, .env.production, env-original.txt), saved
+# permissions or database credential files; the template stays tracked
+.env.*
+!.env.example
+env-original*.txt
+*.sddl
+db-admin.cnf
 lab_pc_agent/agent_config.local.json
 lab_pc_agent/pending_callbacks.json*
 lab_pc_agent/agent_status.json*
