@@ -20,6 +20,8 @@ urlpatterns = [
     path('', include('system.urls')),
     # Admin view of the optional cloud-sync queue
     path('system/cloud-sync/', include('cloud_sync.urls')),
+    # /api/ping/, /api/sync/: the cloud receiver (404 unless CLOUD_RECEIVER_ENABLED)
+    path('', include('cloud_receiver.urls')),
 ]
 
 # Only uploaded avatars are public. Everything else under MEDIA_ROOT (e.g.

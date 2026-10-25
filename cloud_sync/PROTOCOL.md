@@ -1,12 +1,22 @@
 # CompuLab cloud sync — protocol and rules (version 2)
 
 CompuLab's campus server can publish selected records to a **cloud receiver**: a separate web
-service run by the college, e.g. for a read-only dashboard reachable from outside the campus.
-**This repository contains only the sending side.** No receiver exists yet. Until one is built
-and configured, sync stays off (nothing is queued) and System status says
-*"cloud synchronization not configured"*. Local operation never depends on it.
+service run by the college, e.g. for a read-only copy reachable from outside the campus.
+This repository contains **both sides**: the sender (`cloud_sync/`) and a receiver
+(`cloud_receiver/`, off unless `CLOUD_RECEIVER_ENABLED=True`; then `/api/ping/` and `/api/sync/`
+answer). The two are tested together (`cloud_receiver/tests.py`: offline queueing, resume,
+lost replies, duplicates, conflicts, pauses), but **no receiver is deployed anywhere yet**, so on a
+campus server sync stays off (nothing is queued) and System status says *"cloud synchronization
+not configured"*. Local operation never depends on it. The college's public CompuLab website is a
+separate installation with its own data: nothing is synchronized with it.
 
-This document is the contract a receiver must implement.
+This document is the contract a receiver must implement (`cloud_receiver/` implements it).
+
+**Turning it on (both sides, when approved):** on the cloud server, `python manage.py
+cloud_receiver_key --site dtc-main` prints the `.env` lines for both servers (the cloud keeps only
+the key's SHA-256: `CLOUD_RECEIVER_SITES=dtc-main:<sha256>`, `CLOUD_RECEIVER_ENABLED=True`, and runs
+the `cloud_receiver` migration); the campus server gets `CLOUD_SERVER_URL` (HTTPS),
+`CLOUD_SYNC_SITE_ID` and `CLOUD_SYNC_API_KEY`, then `cloud_sync_backfill --yes` once.
 
 ## 1. Direction and authority
 
@@ -146,7 +156,14 @@ can do it on demand).
   conflict decisions.
 - `/healthz/ready` (from the server itself, or for Admins): the same numbers as JSON.
 
-## 8. Building a receiver (checklist)
+## 8. Building a receiver (checklist; `cloud_receiver/receiver.py` follows it)
+
+The included receiver stores one `ReplicaRecord` per `(site_id, object_type, local_id)` (a delete
+keeps a tombstone) and one `AppliedChange` per applied `edge_id`. Conflicting or rejected changes are
+not recorded as applied, so the campus server can send the same change again (forced after an Admin's
+"Keep campus copy"). Editing a replica in the Django admin marks it as edited on the cloud: the next
+campus change to it is answered `conflict`. Plain HTTP is refused (`CLOUD_RECEIVER_ALLOW_HTTP` only
+for tests or a TLS proxy that does not set X-Forwarded-Proto).
 
 1. HTTPS only; compare the bearer key in constant time; reject unknown `site_id`.
 2. Tables: one per object type keyed by `(site_id, local_id)`, plus processed `edge_id`s and the

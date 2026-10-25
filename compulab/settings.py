@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 import os
+import re
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
@@ -106,6 +107,7 @@ INSTALLED_APPS = [
     'issues',
     'notifications',
     'cloud_sync',
+    'cloud_receiver',
     'system',
 ]
 
@@ -424,6 +426,24 @@ CLOUD_SYNC_OBJECT_TYPES = tuple(env_list('CLOUD_SYNC_OBJECT_TYPES', 'reservation
 # copy of the data (docs/HYBRID_ARCHITECTURE.md §7, cloud_sync/PROTOCOL.md).
 # While off, nothing is queued, so the SyncQueue table never grows.
 CLOUD_SYNC_ENABLED = bool(CLOUD_SERVER_URL and CLOUD_SYNC_API_KEY)
+
+# --- Cloud receiver: the cloud side of the same protocol (cloud_receiver/).
+# Only on the server that receives the copies; a campus server leaves it off
+# (then /api/ping/ and /api/sync/ answer 404).
+CLOUD_RECEIVER_ENABLED = env_bool('CLOUD_RECEIVER_ENABLED', False)
+# The campus servers allowed to send, as site_id:SHA-256-of-its-API-key pairs,
+# comma separated (manage.py cloud_receiver_key prints them). The keys
+# themselves are never stored on the cloud side.
+CLOUD_RECEIVER_SITES = {}
+for _pair in env_list('CLOUD_RECEIVER_SITES'):
+    _site, _sep, _digest = _pair.partition(':')
+    if not _sep or not re.fullmatch(r'[0-9a-fA-F]{64}', _digest.strip()):
+        raise ImproperlyConfigured('CLOUD_RECEIVER_SITES entries must be site_id:<64 hex characters> (manage.py cloud_receiver_key).')
+    CLOUD_RECEIVER_SITES[_site.strip()] = _digest.strip().lower()
+# The API key is sent in a header: plain HTTP is refused unless allowed here
+# (tests, or a receiver behind a TLS proxy that does not set X-Forwarded-Proto).
+CLOUD_RECEIVER_ALLOW_HTTP = env_bool('CLOUD_RECEIVER_ALLOW_HTTP', False)
+CLOUD_RECEIVER_MAX_RECORDS = 500
 
 # How many days' worth of activity_log_backups/*.xlsx files to keep before
 # those are pruned too, so the backup folder doesn't grow forever either.
