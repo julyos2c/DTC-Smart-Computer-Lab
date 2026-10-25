@@ -361,6 +361,84 @@ function Test-BackupRoot([string]$Path) {
     return $null
 }
 
+function Get-BackupSpaceNeed([string]$BackupRoot) {
+    # Free space a new backup needs: twice the newest earlier backup, at least 100 MB.
+    $last = Get-ChildItem -LiteralPath $BackupRoot -Directory -Filter 'compulab-*' -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+    $size = 0
+    if ($last) { $size = [double](Get-ChildItem -LiteralPath $last.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum }
+    return [long][Math]::Max(100MB, 2 * $size)
+}
+
+function Get-BackupSpaceProblem([string]$BackupRoot, [long]$NeedBytes) {
+    # $null if the backup drive has $NeedBytes free (a network share is not checked).
+    if ($BackupRoot -like '\\*') { return $null }
+    try { $free = (New-Object IO.DriveInfo ([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($BackupRoot)))).AvailableFreeSpace } catch { return $null }
+    if ($free -ge $NeedBytes) { return $null }
+    return ("Only {0:N0} MB free for the backup folder '{1}'; a backup needs about {2:N0} MB. Free some space or use another drive (-BackupRoot). Nothing was written." -f ($free / 1MB), $BackupRoot, ($NeedBytes / 1MB))
+}
+
+function Get-BackupAllowedSids { return @(@('S-1-5-32-544', 'S-1-5-18', (Get-CurrentUserSid)) | Sort-Object -Unique) }
+
+function Test-BackupFolderProtected([string]$Path) {
+    # True if $Path inherits nothing and grants access only to Administrators,
+    # SYSTEM and the account running the backup.
+    $acl = Get-Acl -LiteralPath $Path
+    $allowed = Get-BackupAllowedSids
+    $sids = @($acl.Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value })
+    return [bool]($acl.AreAccessRulesProtected -and $sids.Count -and -not @($sids | Where-Object { $allowed -notcontains $_ }).Count)
+}
+
+function New-ProtectedBackupFolder([string]$BackupRoot, [string]$Stamp) {
+    # Creates <BackupRoot>\partial-compulab-<Stamp>[-n] and closes it to
+    # everyone but Administrators, SYSTEM and this account BEFORE anything is
+    # written into it (the backup holds the database and a copy of .env).
+    # New-Item refuses an existing name, so two backups started in the same
+    # second never share a folder. Returns the folder; Invoke-ProtectedBackup
+    # renames it to compulab-... once complete.
+    for ($n = 1; $n -le 100; $n++) {
+        $name = "compulab-$Stamp" + $(if ($n -gt 1) { "-$n" } else { '' })
+        $target = Join-Path $BackupRoot "partial-$name"
+        if ((Test-Path -LiteralPath $target) -or (Test-Path -LiteralPath (Join-Path $BackupRoot $name))) { continue }
+        try { New-Item -ItemType Directory -Path $target -ErrorAction Stop | Out-Null }
+        catch { if (Test-Path -LiteralPath $target) { continue }; throw }   # taken by a backup running at the same time
+        try {
+            $ds = New-Object Security.AccessControl.DirectorySecurity
+            $ds.SetAccessRuleProtection($true, $false)
+            foreach ($sid in Get-BackupAllowedSids) {
+                $ds.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier $sid), 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow')))
+            }
+            [IO.Directory]::SetAccessControl($target, $ds)
+            if (-not (Test-BackupFolderProtected $target)) { throw 'its permissions could not be restricted' }
+            if (@(Get-ChildItem -LiteralPath $target -Force).Count) { throw 'something was put into it before it was protected' }
+        } catch {
+            $why = $_.Exception.Message
+            try { [IO.Directory]::Delete($target, $false) } catch { }   # only an empty folder, never recursively
+            throw "The backup folder $target could not be protected ($why). Nothing was written."
+        }
+        return $target
+    }
+    throw "No free backup folder name for compulab-$Stamp in $BackupRoot."
+}
+
+function Invoke-ProtectedBackup([string]$BackupRoot, [string]$Stamp, [scriptblock]$Write) {
+    # Runs $Write (which fills the folder) in a folder protected first, then
+    # gives it its final name compulab-... and returns that. Only complete
+    # backups are ever named compulab-* (what restore lists and the retention
+    # counts): a backup that fails is renamed incomplete-compulab-..., one
+    # whose process is killed stays partial-compulab-... - both kept and still
+    # protected, never counted as a backup. The error is passed on.
+    $work = New-ProtectedBackupFolder $BackupRoot $Stamp
+    $final = Join-Path $BackupRoot ((Split-Path $work -Leaf) -replace '^partial-', '')
+    try { $null = & $Write $work }
+    catch {
+        $err = $_
+        try { Rename-Item -LiteralPath $work -NewName ('incomplete-' + (Split-Path $final -Leaf)) -ErrorAction Stop } catch { }
+        throw $err
+    }
+    Rename-Item -LiteralPath $work -NewName (Split-Path $final -Leaf) -ErrorAction Stop
+    return $final
+}
+
 # ---------------------------------------------------------------- network
 function Get-LanAddresses {
     Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |

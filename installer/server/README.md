@@ -134,7 +134,12 @@ The installer:
   run writes `logs\backup-<time>.log`, and a failure shows as Last Run Result 0x1 in Task Scheduler)
   to the backup folder (`-BackupRoot`, default `C:\CompuLab\backups`), which it checks is writable
   and records as `COMPULAB_BACKUP_ROOT` in `.env`. Repair, Update, **Back Up CompuLab Now** and
-  restore keep using that folder until `-BackupRoot` is given again.
+  restore keep using that folder until `-BackupRoot` is given again. Each backup folder is closed
+  to everyone but Administrators, SYSTEM and the account running it before anything is written,
+  filled as `partial-compulab-<time>` and renamed `compulab-<time>` only when complete; a failed
+  backup stays as `incomplete-compulab-<time>` (an interrupted one as `partial-...`), kept for
+  inspection and never counted as a backup. A backup needs free space of twice the previous one
+  (at least 100 MB), else it stops before writing anything.
 
 It works without internet (after the packages are installed), email, Tailscale or a cloud
 server: those are optional and added later. Running it again later is safe (it keeps your

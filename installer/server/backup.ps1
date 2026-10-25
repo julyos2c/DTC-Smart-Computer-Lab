@@ -7,6 +7,11 @@
     database.sql   - full dump (mysqldump --single-transaction, no downtime)
     media.zip      - uploaded avatars and activity-log spreadsheets
     env.txt        - a copy of .env (contains passwords: keep backups private)
+  The folder is closed to everyone but Administrators, SYSTEM and the account
+  running the backup BEFORE anything is written into it. It is filled as
+  partial-compulab-... and renamed compulab-... only when complete; a failed
+  backup is kept as incomplete-compulab-... (never counted as a backup). A
+  backup needs free space of twice the previous one (at least 100 MB).
   Keeps the newest 14 daily backups plus one per week for 8 weeks.
   Runs every night from the "CompuLab nightly backup" scheduled task
   (install-server.ps1); can also be run by hand at any time ("Back Up
@@ -48,6 +53,8 @@ try {
     }
     $rootProblem = Test-BackupRoot $BackupRoot
     if ($rootProblem) { throw $rootProblem }
+    $spaceProblem = Get-BackupSpaceProblem $BackupRoot (Get-BackupSpaceNeed $BackupRoot)
+    if ($spaceProblem) { throw $spaceProblem }
     $envValues = Read-DotEnv
     # The dump program of the server on DB_PORT (MySQL's mysqldump can fail
     # against MariaDB; MariaDB 11 may only have mariadb-dump.exe).
@@ -55,32 +62,31 @@ try {
     if (-not $dump) { throw 'mysqldump.exe / mariadb-dump.exe not found (is MariaDB/MySQL still installed?).' }
 
     $stamp = if ($Stamp -match '^\d{8}-\d{6}$') { $Stamp } else { Get-Date -Format 'yyyyMMdd-HHmmss' }
-    $target = Join-Path $BackupRoot "compulab-$stamp"
-    # Never write into an existing backup (two runs in the same second).
-    for ($n = 2; Test-Path -LiteralPath $target; $n++) { $target = Join-Path $BackupRoot "compulab-$stamp-$n" }
-    New-Item -ItemType Directory -Path $target | Out-Null
+    # The folder is protected before anything is written into it; a backup
+    # that fails is kept as incomplete-compulab-... (never counted as a backup).
+    $target = Invoke-ProtectedBackup $BackupRoot $stamp {
+        param($target)
+        Write-Step "Backing up to $target"
+        $cnf = New-MySqlDefaultsFile $envValues['DB_USER'] $envValues['DB_PASSWORD'] $envValues['DB_HOST'] $envValues['DB_PORT']
+        try {
+            # --no-tablespaces: MySQL 8.0.21+ otherwise needs the PROCESS privilege,
+            # which the CompuLab database user does not have (and does not need).
+            & $dump "--defaults-extra-file=$cnf" --single-transaction --routines --triggers --no-tablespaces --default-character-set=utf8mb4 `
+                "--result-file=$(Join-Path $target 'database.sql')" $envValues['DB_NAME']
+            if ($LASTEXITCODE -ne 0) { throw 'The database dump failed.' }
+        } finally {
+            Remove-Item $cnf -Force -ErrorAction SilentlyContinue
+        }
+        Write-Ok 'Database saved'
 
-    Write-Step "Backing up to $target"
-    $cnf = New-MySqlDefaultsFile $envValues['DB_USER'] $envValues['DB_PASSWORD'] $envValues['DB_HOST'] $envValues['DB_PORT']
-    try {
-        # --no-tablespaces: MySQL 8.0.21+ otherwise needs the PROCESS privilege,
-        # which the CompuLab database user does not have (and does not need).
-        & $dump "--defaults-extra-file=$cnf" --single-transaction --routines --triggers --no-tablespaces --default-character-set=utf8mb4 `
-            "--result-file=$(Join-Path $target 'database.sql')" $envValues['DB_NAME']
-        if ($LASTEXITCODE -ne 0) { throw 'The database dump failed.' }
-    } finally {
-        Remove-Item $cnf -Force -ErrorAction SilentlyContinue
+        $media = Join-Path $script:AppDir 'media'
+        if (Test-Path $media) {
+            Compress-Archive -Path (Join-Path $media '*') -DestinationPath (Join-Path $target 'media.zip') -Force
+            Write-Ok 'Uploaded files saved'
+        }
+        Copy-Item $script:EnvFile (Join-Path $target 'env.txt')
+        Write-Ok 'Settings saved'
     }
-    Write-Ok 'Database saved'
-
-    $media = Join-Path $script:AppDir 'media'
-    if (Test-Path $media) {
-        Compress-Archive -Path (Join-Path $media '*') -DestinationPath (Join-Path $target 'media.zip') -Force
-        Write-Ok 'Uploaded files saved'
-    }
-    Copy-Item $script:EnvFile (Join-Path $target 'env.txt')
-    & icacls $target /inheritance:r /grant:r 'Administrators:(OI)(CI)F' 'SYSTEM:(OI)(CI)F' "*$(Get-CurrentUserSid):(OI)(CI)F" | Out-Null
-    Write-Ok 'Settings saved'
 
     # Retention: 14 newest + the newest backup of each of the last 8 weeks.
     $all = Get-ChildItem $BackupRoot -Directory -Filter 'compulab-*' | Sort-Object Name -Descending

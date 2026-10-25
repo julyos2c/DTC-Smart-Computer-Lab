@@ -404,6 +404,91 @@ Test-Case 'backup folder: format rules, writable check, and the nightly task lin
     Assert-Equal 'D:\B' (Get-BackupRootFromTaskArguments '-File x.ps1 -BackupRoot D:\B -Log')
     Assert-True ($null -eq (Get-BackupRootFromTaskArguments '-File x.ps1 -Log')) 'no -BackupRoot'
 }
+function New-UsersReadableRoot([string]$Name) {
+    # A backup root like C:\CompuLab\backups: BUILTIN\Users may read (inheritable).
+    $r = Join-Path $Tmp $Name; New-Item -ItemType Directory -Path $r | Out-Null
+    & icacls $r /grant '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
+    return $r
+}
+function Get-AceSids([string]$Path) { return @((Get-Acl -LiteralPath $Path).Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } | Sort-Object -Unique) }
+Test-Case 'backup folder is protected BEFORE anything is written (regression: files inherited Users read until the end)' {
+    $root = New-UsersReadableRoot 'bk-order'
+    $seen = @{}
+    $final = Invoke-ProtectedBackup $root '20990101-010101' {
+        param($t)
+        $seen.Folder = Get-AceSids $t; $seen.Protected = (Get-Acl -LiteralPath $t).AreAccessRulesProtected; $seen.Name = Split-Path $t -Leaf
+        [IO.File]::WriteAllText((Join-Path $t 'env.txt'), 'test-only-content')
+        $seen.File = Get-AceSids (Join-Path $t 'env.txt')
+    }
+    $allowed = Get-BackupAllowedSids
+    Assert-Equal 'partial-compulab-20990101-010101' $seen.Name 'written under the partial- name'
+    Assert-True $seen.Protected 'folder inherited permissions while being written'
+    Assert-True (-not @($seen.Folder | Where-Object { $allowed -notcontains $_ }).Count) "folder open to: $($seen.Folder -join ', ')"
+    Assert-True (-not @($seen.File | Where-Object { $allowed -notcontains $_ }).Count) "env.txt open to: $($seen.File -join ', ') while written"
+    Assert-True ($seen.File -notcontains 'S-1-5-32-545') 'BUILTIN\Users could read env.txt'
+    Assert-Equal (Join-Path $root 'compulab-20990101-010101') $final 'final name'
+    Assert-True (Test-BackupFolderProtected $final) 'final folder not protected'
+    Assert-Equal 0 @(Get-ChildItem $root -Directory -Filter 'partial-*').Count 'partial- folder left behind'
+    $sha = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes('test-only-content'))) -replace '-', ''
+    Assert-Equal $sha (Get-FileHash (Join-Path $final 'env.txt') -Algorithm SHA256).Hash 'content changed'
+}
+Test-Case 'backup folder: same-second and simultaneous backups never share a folder (contention)' {
+    $root = New-UsersReadableRoot 'bk-contention'
+    New-Item -ItemType Directory (Join-Path $root 'compulab-20990101-020202') | Out-Null   # an existing backup with the same time
+    $a = Invoke-ProtectedBackup $root '20990101-020202' { param($t) Set-Content (Join-Path $t 'x') 'a' }
+    Assert-Equal (Join-Path $root 'compulab-20990101-020202-2') $a 'existing name not skipped'
+    $common = Join-Path $Repo 'installer\server\common.ps1'
+    $jobs = 1..4 | ForEach-Object { Start-Job -ScriptBlock { param($c, $r) . $c; New-ProtectedBackupFolder $r '20990101-030303' } -ArgumentList $common, $root }
+    $names = @($jobs | Wait-Job -Timeout 120 | Receive-Job); $jobs | Remove-Job -Force
+    Assert-Equal 4 $names.Count "4 simultaneous backups returned $($names.Count) folders"
+    Assert-Equal 4 @($names | Sort-Object -Unique).Count "folders shared: $($names -join ', ')"
+    foreach ($n in $names) { Assert-True (Test-BackupFolderProtected $n) "$n not protected" }
+}
+Test-Case 'backup folder: a backup root this account cannot write to is refused before anything is written' {
+    $root = Join-Path $Tmp 'bk-denied'; New-Item -ItemType Directory -Path $root | Out-Null
+    & icacls $root /deny "*$(Get-CurrentUserSid):(OI)(CI)(WD,AD)" | Out-Null
+    try {
+        Assert-True ((Test-BackupRoot $root) -match 'Cannot write') 'Test-BackupRoot accepted a folder it cannot write to'
+        Assert-Throws { New-ProtectedBackupFolder $root '20990101-040404' } ''
+        Assert-Equal 0 @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue).Count 'something was created'
+    } finally { & icacls $root /remove:d "*$(Get-CurrentUserSid)" | Out-Null }
+}
+Test-Case 'backup space: too little free space is refused before any folder exists; need = 2x the newest backup, at least 100 MB' {
+    $root = New-UsersReadableRoot 'bk-space'
+    Assert-Equal (100MB) (Get-BackupSpaceNeed $root) 'empty root'
+    $old = Join-Path $root 'compulab-20990101-050505'; New-Item -ItemType Directory $old | Out-Null
+    $fs = [IO.File]::Create((Join-Path $old 'database.sql')); $fs.SetLength(60MB); $fs.Close()
+    Assert-Equal (120MB) (Get-BackupSpaceNeed $root) 'twice the newest backup'
+    Assert-True ((Get-BackupSpaceProblem $root ([long]1e18)) -match 'Nothing was written') 'impossible need accepted'
+    Assert-True ($null -eq (Get-BackupSpaceProblem $root 1KB)) 'small need refused'
+    Assert-True ($null -eq (Get-BackupSpaceProblem '\\nas\share\x' ([long]1e18))) 'network share must not be refused'
+    $text = Get-Content (Join-Path $Repo 'installer\server\backup.ps1') -Raw
+    Assert-True ($text.IndexOf('Get-BackupSpaceProblem') -gt 0 -and $text.IndexOf('Get-BackupSpaceProblem') -lt $text.IndexOf('Invoke-ProtectedBackup $BackupRoot')) 'backup.ps1 does not check the space before creating the folder'
+}
+Test-Case 'failed backup: kept as incomplete-compulab-... (protected), error passed on, earlier backups untouched' {
+    $root = New-UsersReadableRoot 'bk-fail'
+    $good = Invoke-ProtectedBackup $root '20990101-060606' { param($t) Set-Content (Join-Path $t 'database.sql') 'good backup' }
+    $goodHash = (Get-FileHash (Join-Path $good 'database.sql')).Hash
+    Assert-Throws { Invoke-ProtectedBackup $root '20990101-070707' { param($t) Set-Content (Join-Path $t 'database.sql') 'half a dump'; throw 'simulated dump failure' } } 'simulated dump failure'
+    $inc = Join-Path $root 'incomplete-compulab-20990101-070707'
+    Assert-True (Test-Path $inc) 'partial backup not kept as incomplete-'
+    Assert-True (Test-BackupFolderProtected $inc) 'incomplete backup not protected'
+    Assert-True (-not (Test-Path (Join-Path $root 'compulab-20990101-070707'))) 'a failed backup got a compulab- name'
+    Assert-Equal "$good" "$(@(Get-ChildItem $root -Directory -Filter 'compulab-*').FullName)" 'retention would count something other than the good backup'
+    Assert-Equal $goodHash (Get-FileHash (Join-Path $good 'database.sql')).Hash 'earlier backup changed'
+}
+Test-Case 'interrupted backup (process killed while writing): stays partial-compulab-..., protected, never a compulab- backup' {
+    $root = New-UsersReadableRoot 'bk-killed'
+    $common = Join-Path $Repo 'installer\server\common.ps1'
+    $job = Start-Job -ScriptBlock { param($c, $r) . $c; Invoke-ProtectedBackup $r '20990101-080808' { param($t) Set-Content (Join-Path $t 'database.sql') 'half'; Start-Sleep 60 } } -ArgumentList $common, $root
+    $file = Join-Path $root 'partial-compulab-20990101-080808\database.sql'
+    $deadline = (Get-Date).AddSeconds(60); while (-not (Test-Path $file) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 300 }
+    Assert-True (Test-Path $file) 'the job never started writing'
+    $job | Stop-Job; $job | Remove-Job -Force
+    Assert-True (Test-BackupFolderProtected (Split-Path $file)) 'killed backup folder not protected'
+    Assert-True (-not @(Get-AceSids $file | Where-Object { (Get-BackupAllowedSids) -notcontains $_ }).Count) 'killed backup file readable by others'
+    Assert-Equal 0 @(Get-ChildItem $root -Directory -Filter 'compulab-*').Count 'a killed backup counts as a backup'
+}
 Test-Case 'configured backup folder: .env value wins, otherwise the default (never silently reset)' {
     [IO.File]::WriteAllLines($script:EnvFile, [string[]]@('SITE_URL=http://10.0.0.5:8000', 'COMPULAB_BACKUP_ROOT=E:\CompuLabBackups'))
     $c = Get-ConfiguredBackupRoot
