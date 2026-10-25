@@ -29,7 +29,11 @@ param(
     [string]$Dist = '',
     [string]$Version = '',
     [switch]$WriteManifest,
-    [switch]$Rehash
+    [switch]$Rehash,
+    # A build from uncommitted changes (build-installers.ps1 -AllowDirty) is
+    # then reported as an unapproved candidate instead of failing; it is
+    # never reported as fit for distribution.
+    [switch]$AllowDirty
 )
 
 $ErrorActionPreference = 'Stop'
@@ -124,7 +128,13 @@ Write-Check (Test-Path $infoFile) "$(Split-Path $infoFile -Leaf) present"
 if (Test-Path $infoFile) {
     $info = Get-Content $infoFile -Raw | ConvertFrom-Json
     Write-Check ($info.version -eq $Version) "build record is for $Version"
-    Write-Check ($info.clean_tree -eq $true) "built from a clean tree (commit $($info.commit))"
+    if ($info.clean_tree -ne $true -and $AllowDirty) {
+        Write-Host "    NOTE: built from UNCOMMITTED changes on top of $($info.commit): an unapproved candidate, NOT for distribution." -ForegroundColor Yellow
+    } else { Write-Check ($info.clean_tree -eq $true) "built from a clean tree (commit $($info.commit))" }
+    if ($info.runtime) {
+        Write-Check ([bool]($info.runtime.mariadb.version -and $info.runtime.mariadb.sha256 -match '^[0-9a-f]{64}$')) "server setup bundles MariaDB $($info.runtime.mariadb.version) ($($info.runtime.mariadb.package), $($info.runtime.mariadb.files) files)"
+        Write-Check ([bool]($info.runtime.python.version -and $info.runtime.python.sha256 -match '^[0-9a-f]{64}$')) "server setup bundles Python $($info.runtime.python.version) ($($info.runtime.python.package), $($info.runtime.python.files) files)"
+    } else { Write-Host '    NOTE: this build has no bundled runtime: the server needs Python 3.13 and MariaDB/MySQL installed first.' -ForegroundColor Yellow }
     $git = Get-Command git -ErrorAction SilentlyContinue
     $repo = Join-Path $PSScriptRoot '..\..'
     if ($git -and (Test-Path (Join-Path $repo '.git'))) {
@@ -145,8 +155,43 @@ if ($WriteManifest) {
     $rows = ($files | ForEach-Object { "| ``$($_.Name)`` | $($_.Purpose) | $($_.Size.ToString('N0')) bytes ($(& $mb $_.Size)) | ``$($_.Sha256)`` | $(if ($_.Signature) { $_.Signature } else { 'n/a (zip)' }) |" }) -join "`r`n"
     $commitText = if ($info) { "$($info.commit) ($($info.branch), committed $($info.commit_date))" } else { 'unknown (BUILDINFO missing)' }
     $treeText = if ($info -and $info.clean_tree) { 'clean (the setups contain exactly that commit)' } else { 'NOT CLEAN - not for distribution' }
-    $tools = if ($info) { "Python $($info.tools.python), PyInstaller $($info.tools.pyinstaller), Inno Setup $($info.tools.inno_setup), WinSW $($info.tools.winsw)" } else { 'unknown' }
+    $tools = if ($info) { "Python $($info.tools.python), PyInstaller $($info.tools.pyinstaller), Inno Setup $("$($info.tools.inno_setup)".Trim()), WinSW $($info.tools.winsw)" } else { 'unknown' }
     $built = if ($info) { $info.built_at_utc } else { 'unknown' }
+    $rt = if ($info) { $info.runtime } else { $null }
+    if ($rt) {
+        $runtimeText = "MariaDB $($rt.mariadb.version) (``$($rt.mariadb.package)``, SHA-256 ``$($rt.mariadb.sha256)``, $($rt.mariadb.licence), source $($rt.mariadb.source)) and Python $($rt.python.version) (``$($rt.python.package)``, SHA-256 ``$($rt.python.sha256)``, $($rt.python.licence)), in the server setup"
+        $prereq = @"
+**Server** - nothing to install first. The server setup brings its own **Python $($rt.python.version)** (with CompuLab's
+packages) and its own **MariaDB $($rt.mariadb.version)** database server: it creates CompuLab's own database (Windows
+service ``CompuLabMariaDB``, data in ``C:\CompuLab\data\mariadb``, reachable from this computer only on 127.0.0.1, port
+3308 or the next free one). No internet, no root password and no existing MySQL/MariaDB are needed, and any MySQL,
+MariaDB or XAMPP already on the computer is never stopped, changed or used. Needed:
+
+1. A **fixed IP address** for the server (DHCP reservation in the router) and its network set to **Private**.
+2. About **1 GB** of free disk space on the install drive (program and runtime about 400 MB, plus the database and backups).
+
+(An existing MariaDB 10.5+/MySQL 8.0.11+ can be used instead: ``/DBMODE=external /DBPORT=<port>`` and its root password.)
+"@
+        $silent = "CompuLab-Server-Setup-$Version.exe /VERYSILENT /SERVERADDRESS=192.168.1.10 /PORT=8000`r`n    (a new installation needs the environment variables DJANGO_SUPERUSER_EMAIL (@gmail.com) and`r`n     DJANGO_SUPERUSER_PASSWORD for the first Administrator)"
+        $serverStep = 'campus address and port -> a console window runs the checks and the installation (creates CompuLab''s own database; asks only for the first Administrator account)'
+    } else {
+        $runtimeText = 'none: the server needs Python 3.13 and MariaDB/MySQL installed first'
+        $prereq = @"
+**Server** - installed by the school before running the server setup (the setup checks them, explains what is missing and
+stops; it never installs, upgrades or replaces Python or the database server):
+
+1. **Python 3.13, 64-bit** from python.org ("Windows installer (64-bit)"): *Customize installation*, tick
+   *Install Python 3.13 for all users* and *Add Python to environment variables*. 3.12 / 3.11 64-bit are accepted;
+   3.14 and 32-bit Python are refused.
+2. **MariaDB 11.4 LTS** (or 10.11 LTS; any 10.5+) 64-bit MSI from mariadb.org, *Install as service* ticked, a strong
+   root password written down safely - or **MySQL 8.0.11+** (8.4 LTS). XAMPP's MariaDB 10.4 is refused (too old).
+3. A **fixed IP address** for the server (DHCP reservation in the router) and its network set to **Private**.
+
+The setup includes everything else: CompuLab, the Python packages (offline) and the service wrapper (WinSW 2.12.0).
+"@
+        $silent = "CompuLab-Server-Setup-$Version.exe /VERYSILENT /SERVERADDRESS=192.168.1.10 /PORT=8000 /DBPORT=3306`r`n    (needs the environment variables COMPULAB_DB_ROOT_PASSWORD, and for a new installation`r`n     DJANGO_SUPERUSER_EMAIL (@gmail.com) and DJANGO_SUPERUSER_PASSWORD for the first Administrator)"
+        $serverStep = 'campus address and port -> a console window runs the checks and the installation (asks for the MariaDB root password and the first Administrator account)'
+    }
     $md = @"
 # CompuLab $Version - distribution manifest
 
@@ -157,6 +202,7 @@ if ($WriteManifest) {
 | Source commit | $commitText |
 | Working tree | $treeText |
 | Build tools | $tools |
+| Bundled runtime | $runtimeText |
 | Code signing | **Not code-signed** unless the table below says "signed". |
 | Status | Built and tested without administrator rights. The first installation must be **supervised**: the administrator-level checks in ``docs/RELEASE_READINESS.md`` have not been done yet. |
 
@@ -196,17 +242,7 @@ Both setups need Windows PowerShell 5.1 (built into every supported Windows) and
 
 ## Prerequisites
 
-**Server** - installed by the school before running the server setup (the setup checks them, explains what is missing and
-stops; it never installs, upgrades or replaces Python or the database server):
-
-1. **Python 3.13, 64-bit** from python.org ("Windows installer (64-bit)"): *Customize installation*, tick
-   *Install Python 3.13 for all users* and *Add Python to environment variables*. 3.12 / 3.11 64-bit are accepted;
-   3.14 and 32-bit Python are refused.
-2. **MariaDB 11.4 LTS** (or 10.11 LTS; any 10.5+) 64-bit MSI from mariadb.org, *Install as service* ticked, a strong
-   root password written down safely - or **MySQL 8.0.11+** (8.4 LTS). XAMPP's MariaDB 10.4 is refused (too old).
-3. A **fixed IP address** for the server (DHCP reservation in the router) and its network set to **Private**.
-
-The setup includes everything else: CompuLab, the Python packages (offline) and the service wrapper (WinSW 2.12.0).
+$prereq
 
 **Lab PC agent** - nothing to install first (no Python: the agent is a packaged program). Needed:
 the PC's ``agent_config.local.json`` (CompuLab > PC power status > Agent config, with that PC's own agent secret), the PC
@@ -223,8 +259,7 @@ Windows account(s) students sign in with - only those get the lock screen (local
    the antivirus off. If the school's Group Policy / AppLocker / Smart App Control blocks unsigned programs, the IT
    administrator must allow these exact files (by hash) or sign them with the school's code-signing certificate
    (then run ``installer\build\verify-dist.ps1 -Rehash`` to update the hashes here).
-4. **Server:** ``CompuLab-Server-Setup-$Version.exe`` -> campus address and port -> a console window runs the checks and
-   the installation (asks for the MariaDB root password and the first Administrator account). Log:
+4. **Server:** ``CompuLab-Server-Setup-$Version.exe`` -> $serverStep. Log:
    ``C:\CompuLab\logs\install-<time>.log``. Guide: ``docs\SCHOOL_DEPLOYMENT_GUIDE.md``, ``installer\server\README.md``.
 5. **Each lab PC:** put ``CompuLab-Agent-Setup-$Version.exe`` and that PC's ``agent_config.local.json`` side by side, run
    the setup, then sign out and back in. Log: ``C:\ProgramData\CompuLab Agent\install-<time>.log``. Guide:
@@ -233,9 +268,7 @@ Windows account(s) students sign in with - only those get the lock screen (local
 Silent installs (as administrator):
 
 ``````
-CompuLab-Server-Setup-$Version.exe /VERYSILENT /SERVERADDRESS=192.168.1.10 /PORT=8000 /DBPORT=3306
-    (needs the environment variables COMPULAB_DB_ROOT_PASSWORD, and for a new installation
-     DJANGO_SUPERUSER_EMAIL (@gmail.com) and DJANGO_SUPERUSER_PASSWORD for the first Administrator)
+$silent
 CompuLab-Agent-Setup-$Version.exe /VERYSILENT /CONFIG="C:\Setup\PC-01.json" /STUDENTS="student"
 ``````
 
@@ -252,6 +285,10 @@ kept.
 if ($script:problems.Count) {
     Write-Host "`n$($script:problems.Count) problem(s): do not distribute these files." -ForegroundColor Red
     exit 1
+}
+if ($info -and $info.clean_tree -ne $true) {
+    Write-Host "`nAll other checks passed for CompuLab $Version, an UNAPPROVED CANDIDATE built from uncommitted changes: not for distribution." -ForegroundColor Yellow
+    exit 0
 }
 Write-Host "`nAll checks passed for CompuLab $Version." -ForegroundColor Green
 exit 0

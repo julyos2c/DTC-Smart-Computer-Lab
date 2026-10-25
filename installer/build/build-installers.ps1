@@ -49,7 +49,15 @@ param(
     [string]$IsccPath = '',
     [switch]$InstallInnoSetup,
     [switch]$SkipWheels,
-    [switch]$AllowDirty
+    [switch]$AllowDirty,
+    # Where the build stages its files and where the setups go (defaults:
+    # installer\build\work and installer\dist). A build to another -OutDir
+    # never touches installer\dist.
+    [string]$WorkDir = '',
+    [string]$OutDir = '',
+    # Where the pinned downloads (MariaDB, Python, WinSW) are kept between
+    # builds; every file is checked against its SHA-256 before use.
+    [string]$DownloadDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -70,14 +78,66 @@ function Invoke-Tool([string]$Exe, [string[]]$Arguments, [string]$What) {
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $Build = $PSScriptRoot
-$Work = Join-Path $Build 'work'
-$Dist = Join-Path $Repo 'installer\dist'
+$Work = if ($WorkDir) { $WorkDir } else { Join-Path $Build 'work' }
+$Dist = if ($OutDir) { $OutDir } else { Join-Path $Repo 'installer\dist' }
 $Tools = Join-Path $Build 'tools'
+$Downloads = if ($DownloadDir) { $DownloadDir } else { Join-Path $Tools 'download' }
 $WinSWUrl = 'https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe'
 # SHA-256 of WinSW-x64.exe v2.12.0 (unsigned upstream), recorded at the first
 # download on 2026-10-22; the build stops if the download ever differs.
 $WinSWSha256 = '05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA'
 $InnoUrl = 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe'
+# The bundled runtime. SHA-256 values as published by the projects (MariaDB:
+# downloads.mariadb.org REST API and archive.mariadb.org sha256sums.txt;
+# Python: python.org release file API), checked on 2026-10-23. The build stops
+# if a download ever differs.
+$MariaDbVersion = '11.4.13'
+$MariaDbZip = "mariadb-$MariaDbVersion-winx64.zip"
+$MariaDbUrl = "https://archive.mariadb.org/mariadb-$MariaDbVersion/winx64-packages/$MariaDbZip"
+$MariaDbSha256 = 'd62986d433eeebfde218560b276103831604a61e929e87f1a17f5aebd80257e2'
+$MariaDbSourceUrl = "https://archive.mariadb.org/mariadb-$MariaDbVersion/source/mariadb-$MariaDbVersion.tar.gz"
+$PythonRuntimeVersion = '3.13.16'
+$PythonZip = "python-$PythonRuntimeVersion-embed-amd64.zip"
+$PythonUrl = "https://www.python.org/ftp/python/$PythonRuntimeVersion/$PythonZip"
+$PythonSha256 = '97dae5274cc54867065e8d5a3226e48c35017ed332a0fdb0e27d5b5821961297'
+# Only what the database server and CompuLab's backup / restore / repair need
+# (unmodified files). Not packaged: headers and import libraries (include\,
+# *.lib, *.pdb), the backup/replication/packing tools, and storage engines
+# CompuLab does not use (RocksDB, CONNECT, Spider, the Java bridges).
+$MariaDbBinFiles = @('mariadbd.exe', 'mysqld.exe', 'server.dll', 'mariadb.exe', 'mariadb-dump.exe', 'mariadb-admin.exe',
+    'mariadb-install-db.exe', 'mariadb-upgrade.exe', 'mariadb-check.exe', 'my_print_defaults.exe', 'perror.exe')
+$MariaDbSkipPlugins = @('ha_rocksdb.dll', 'ha_connect.dll', 'ha_spider.dll')
+
+function Get-VerifiedDownload([string]$Url, [string]$Name, [string]$Sha256) {
+    # The pinned file from the download folder, downloaded first if needed.
+    # Fails safely: a file with any other SHA-256 is never used or kept.
+    New-Item -ItemType Directory -Force $Downloads | Out-Null
+    $path = Join-Path $Downloads $Name
+    if (Test-Path $path) {
+        if ((Get-FileHash $path -Algorithm SHA256).Hash -eq $Sha256) { return $path }
+        Remove-Item $path -Force
+    }
+    $part = "$path.part"
+    Invoke-WebRequest $Url -OutFile $part -UseBasicParsing
+    $hash = (Get-FileHash $part -Algorithm SHA256).Hash
+    if ($hash -ne $Sha256) {
+        Remove-Item $part -Force
+        throw "$Name has an unexpected SHA-256 ($hash, expected $Sha256); not packaging it."
+    }
+    Move-Item $part $path -Force
+    return $path
+}
+
+function Write-RuntimeManifest([string]$Dir) {
+    # COMPULAB-MANIFEST.txt: "<sha256>  <relative path>" for every file, so
+    # the installer can refuse an incomplete or damaged runtime folder.
+    # Python's caches (__pycache__) are left out: Python may write them.
+    $lines = Get-ChildItem -LiteralPath $Dir -Recurse -File | Where-Object { $_.Name -ne 'COMPULAB-MANIFEST.txt' -and $_.FullName -notmatch '\\__pycache__\\' } | Sort-Object FullName | ForEach-Object {
+        "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.FullName.Substring($Dir.Length + 1))"
+    }
+    [IO.File]::WriteAllLines((Join-Path $Dir 'COMPULAB-MANIFEST.txt'), [string[]]$lines, (New-Object Text.UTF8Encoding $false))
+    return @($lines).Count
+}
 
 function Invoke-Git([string[]]$Arguments) {
     # git prints warnings (e.g. line endings) on stderr: not an error here.
@@ -175,10 +235,7 @@ foreach ($rel in $files) {
 }
 $bin = Join-Path $serverPayload 'installer\server\bin'
 New-Item -ItemType Directory -Force $bin | Out-Null
-$winsw = Join-Path $bin 'WinSW-x64.exe'
-Invoke-WebRequest $WinSWUrl -OutFile $winsw -UseBasicParsing
-$hash = (Get-FileHash $winsw -Algorithm SHA256).Hash
-if ($hash -ne $WinSWSha256) { throw "WinSW-x64.exe has an unexpected SHA-256 ($hash); not packaging it." }
+Copy-Item (Get-VerifiedDownload $WinSWUrl 'WinSW-x64.exe' $WinSWSha256) (Join-Path $bin 'WinSW-x64.exe')
 Write-Ok "$count application files ($skipped build/test files left out) + WinSW-x64.exe 2.12.0 (SHA-256 verified)"
 
 if (-not $SkipWheels) {
@@ -192,6 +249,61 @@ if (-not $SkipWheels) {
     }
     Write-Ok "$(@(Get-ChildItem $wheels -Filter *.whl).Count) Python packages for offline installation"
 }
+
+# ------------------------------------------------------------ 3b. bundled runtime
+Write-Step "Bundling MariaDB $MariaDbVersion and Python $PythonRuntimeVersion (runtime\)"
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$runtime = Join-Path $serverPayload 'runtime'
+# MariaDB: the official Windows x64 package, unmodified files, only the parts
+# the server and CompuLab's backup / restore / repair use.
+$mdbZip = Get-VerifiedDownload $MariaDbUrl $MariaDbZip $MariaDbSha256
+$mdbExtract = Join-Path $Work 'mariadb-extract'
+[IO.Compression.ZipFile]::ExtractToDirectory($mdbZip, $mdbExtract)
+$mdbSrc = Join-Path $mdbExtract "mariadb-$MariaDbVersion-winx64"
+$mdb = Join-Path $runtime 'mariadb'
+New-Item -ItemType Directory -Force (Join-Path $mdb 'bin'), (Join-Path $mdb 'lib\plugin') | Out-Null
+foreach ($f in $MariaDbBinFiles) { Copy-Item (Join-Path $mdbSrc "bin\$f") (Join-Path $mdb 'bin') }
+Get-ChildItem (Join-Path $mdbSrc 'bin') -Filter '*.dll' | Copy-Item -Destination (Join-Path $mdb 'bin')   # VC++ runtime, zlib, curl
+Get-ChildItem (Join-Path $mdbSrc 'lib\plugin') -Filter '*.dll' | Where-Object { $_.Name -notin $MariaDbSkipPlugins } | Copy-Item -Destination (Join-Path $mdb 'lib\plugin')
+Copy-Item (Join-Path $mdbSrc 'share') $mdb -Recurse
+Get-ChildItem (Join-Path $mdb 'share') -Recurse -Filter '*.jar' | Remove-Item -Force
+foreach ($f in 'COPYING', 'CREDITS', 'README.md', 'THIRDPARTY') { Copy-Item (Join-Path $mdbSrc $f) $mdb }
+[IO.File]::WriteAllLines((Join-Path $mdb 'SOURCE.txt'), [string[]]@(
+    "MariaDB Server $MariaDbVersion for Windows x64 (64-bit), bundled with CompuLab.",
+    "Files copied unmodified from the official package $MariaDbZip",
+    "  $MariaDbUrl",
+    "  SHA-256 $MariaDbSha256",
+    'Only the files needed to run the server and its client, dump, admin, install and upgrade tools are included;',
+    'nothing was changed. Licence: GNU General Public License version 2 (COPYING); third-party notices: THIRDPARTY.',
+    "Complete corresponding source code: $MariaDbSourceUrl",
+    '(also available from https://mariadb.org/download/ and on request from the distributor of this CompuLab setup).'
+), (New-Object Text.UTF8Encoding $false))
+Remove-Item $mdbExtract -Recurse -Force
+$mdbFiles = Write-RuntimeManifest $mdb
+
+# Python: the official embeddable package, with CompuLab's packages installed
+# into it here (from the same offline wheels), so the server installs nothing.
+$pyZip = Get-VerifiedDownload $PythonUrl $PythonZip $PythonSha256
+$pyRt = Join-Path $runtime 'python'
+[IO.Compression.ZipFile]::ExtractToDirectory($pyZip, $pyRt)
+# python313._pth: the standard library, site-packages, and the CompuLab folder
+# two levels up (so manage.py, waitress and the services find the code).
+[IO.File]::WriteAllLines((Join-Path $pyRt 'python313._pth'), [string[]]@('python313.zip', '.', 'Lib\site-packages', '..\..', 'import site'), (New-Object Text.UTF8Encoding $false))
+$wheelDir = Join-Path $serverPayload 'installer\server\wheels'
+if (-not (Test-Path $wheelDir)) { throw 'The bundled Python needs the offline packages (do not use -SkipWheels).' }
+Invoke-Tool $py @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-index', '--find-links', $wheelDir, '--no-compile',
+    '--target', (Join-Path $pyRt 'Lib\site-packages'), '-r', (Join-Path $Repo 'requirements-production.txt'),
+    '-r', (Join-Path $Repo 'installer\server\requirements-server.txt')) 'Installing the packages into the bundled Python'
+# Console launchers made by pip point at the build machine's Python: not used.
+Remove-Item (Join-Path $pyRt 'Lib\site-packages\bin') -Recurse -Force -ErrorAction SilentlyContinue
+# unchecked-hash: Python uses these .pyc files as they are and never rewrites
+# them (the program folder stays as built; the first start is fast).
+Invoke-Tool (Join-Path $pyRt 'python.exe') @('-m', 'compileall', '-q', '--invalidation-mode', 'unchecked-hash', (Join-Path $pyRt 'Lib\site-packages')) 'Precompiling the bundled packages'
+$probe = [string](& (Join-Path $pyRt 'python.exe') -c 'import sys, django, MySQLdb, PIL, reportlab, openpyxl, waitress, whitenoise, dotenv; print(sys.version.split()[0], django.get_version())')
+if ($LASTEXITCODE -ne 0 -or $probe -notmatch "^$([regex]::Escape($PythonRuntimeVersion)) ") { throw "The bundled Python cannot load CompuLab's packages ($probe)." }
+$pyFiles = Write-RuntimeManifest $pyRt
+Write-Ok "runtime\mariadb: MariaDB $MariaDbVersion server + tools, $mdbFiles files (SHA-256 of the package verified; licence and source notice included)"
+Write-Ok "runtime\python: Python $PythonRuntimeVersion + CompuLab's packages (Django $(($probe -split ' ')[1])), $pyFiles files"
 
 # ------------------------------------------------------------ 4. agent payload
 Write-Step 'Staging the agent payload'
@@ -232,15 +344,21 @@ function Find-PayloadProblems([string]$Root, [string[]]$SecretValues) {
     $latin1 = [Text.Encoding]::GetEncoding(28591)
     foreach ($item in Get-ChildItem -LiteralPath $Root -Recurse -Force) {
         $rel = $item.FullName.Substring($Root.Length + 1).Replace('\', '/')
-        $thirdParty = $rel -like 'agent-bundle/_internal/*'
+        # Third-party files: the packaged agent's libraries and the bundled
+        # runtime (Python packages, MariaDB). Still never settings, keys,
+        # logs, data files or secrets; MariaDB's own setup scripts
+        # (share\*.sql) are its program files, not data.
+        $thirdParty = $rel -like 'agent-bundle/_internal/*' -or $rel -like 'runtime/*'
+        $mariaDbScript = $rel -like 'runtime/mariadb/share/*.sql'
         if ($item.PSIsContainer) {
             if (-not $thirdParty -and $item.Name -in @('.git', 'venv', '.venv', '__pycache__', 'media', 'logs', 'backups', 'staticfiles', 'service')) { $problems += "folder $rel" }
+            if ($item.Name -in @('data', '.git') -and $rel -notlike '*/site-packages/*') { $problems += "folder $rel" }
             continue
         }
         $n = $item.Name.ToLower()
         if ($n -eq '.env' -or ($n -like '.env.*' -and $n -ne '.env.example')) { $problems += "settings file $rel" }
-        elseif ($n -in @('agent_config.local.json', 'pending_callbacks.json', 'agent_status.json', 'self_test.json')) { $problems += "per-PC file $rel" }
-        elseif ($item.Extension -in @('.sqlite3', '.sqlite', '.sql', '.dump', '.bak', '.log', '.pfx', '.p12', '.key')) { $problems += "data/log/key file $rel" }
+        elseif ($n -in @('agent_config.local.json', 'pending_callbacks.json', 'agent_status.json', 'self_test.json', 'db-admin.cnf')) { $problems += "per-PC file $rel" }
+        elseif ($item.Extension -in @('.sqlite3', '.sqlite', '.sql', '.dump', '.bak', '.log', '.pfx', '.p12', '.key') -and -not $mariaDbScript) { $problems += "data/log/key file $rel" }
         elseif (-not $thirdParty -and ($n -eq 'tests.py' -or $n -like 'test_*.py' -or $rel -match '(^|/)tests/')) { $problems += "test file $rel" }
         if ($SecretValues.Count -and $item.Extension -ne '.whl' -and $item.Length -lt 64MB) {
             $text = $latin1.GetString([IO.File]::ReadAllBytes($item.FullName))
@@ -265,6 +383,11 @@ $buildInfo = [ordered]@{
     product = 'CompuLab'; version = $Version; commit = $commit; branch = $branch; commit_date = $commitDate
     clean_tree = (-not $dirty); built_at_utc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     tools = [ordered]@{ python = $buildPython; pyinstaller = $pyInstallerVersion; inno_setup = $isccVersion; winsw = "2.12.0 (SHA-256 $WinSWSha256)" }
+    # Bundled in the server setup (runtime\): what a new installation runs on.
+    runtime = [ordered]@{
+        mariadb = [ordered]@{ version = $MariaDbVersion; package = $MariaDbZip; sha256 = $MariaDbSha256; files = $mdbFiles; licence = 'GPL-2.0 (runtime\mariadb\COPYING)'; source = $MariaDbSourceUrl }
+        python = [ordered]@{ version = $PythonRuntimeVersion; package = $PythonZip; sha256 = $PythonSha256; files = $pyFiles; licence = 'PSF-2.0 (runtime\python\LICENSE.txt)' }
+    }
     code_signed = $false
     payload_files = [ordered]@{ server = @(Get-ChildItem $serverPayload -Recurse -File).Count; agent = @(Get-ChildItem $agentPayload -Recurse -File).Count }
 }
@@ -304,7 +427,7 @@ $sums = $outputs | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA2
 
 # ------------------------------------------------------------ 7. manifest + verification
 Write-Step 'Writing the distribution manifest and verifying the files'
-& (Join-Path $Build 'verify-dist.ps1') -Dist $Dist -Version $Version -WriteManifest
+& (Join-Path $Build 'verify-dist.ps1') -Dist $Dist -Version $Version -WriteManifest -AllowDirty:$AllowDirty
 if ($LASTEXITCODE -ne 0) { throw 'verify-dist.ps1 found a problem with the built files (see above).' }
 Write-Host "`nBuilt in $($Dist):" -ForegroundColor Green
 Get-ChildItem $Dist -File | Where-Object { $_.Name -like "*$Version*" } | ForEach-Object { Write-Host ("  {0,-52} {1,8:N1} MB" -f $_.Name, ($_.Length / 1MB)) }

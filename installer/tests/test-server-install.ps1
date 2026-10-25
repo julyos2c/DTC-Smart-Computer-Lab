@@ -39,11 +39,17 @@ $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if (-not $Payload) { $Payload = Join-Path $Repo 'installer\build\work\server-payload' }
 $Tmp = Join-Path $env:TEMP ("compulab-server-install-test-" + (Get-Date -Format 'HHmmss'))
 $App = Join-Path $Tmp 'CompuLab'
-$script:passed = 0; $script:failed = @()
+$script:passed = 0; $script:failed = @(); $script:skipped = @()
 function Test-Case([string]$Name, [scriptblock]$Body) {
     try { & $Body; $script:passed++; Write-Host "  [PASS] $Name" -ForegroundColor Green }
     catch { $script:failed += $Name; Write-Host "  [FAIL] $Name`n         $($_.Exception.Message)" -ForegroundColor Red }
 }
+function Skip-Case([string]$Name, [string]$Why) { $script:skipped += $Name; Write-Host "  [SKIP] $Name ($Why)" -ForegroundColor DarkYellow }
+# This test always uses an EXTERNAL database server (/DBMODE=external). A
+# payload with runtime\ (a real build) still brings its own Python: then the
+# venv-only checks are skipped, never counted as passed.
+$script:bundledPy = Test-Path (Join-Path $Payload 'runtime\python\python.exe')
+function Get-AppPy { if ($script:bundledPy) { Join-Path $App 'runtime\python\python.exe' } else { Join-Path $App 'venv\Scripts\python.exe' } }
 function Assert-True($Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 function Get-FreePort { $l = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $l.Start(); $p = $l.LocalEndpoint.Port; $l.Stop(); return $p }
 function Read-Env([string]$Path) {
@@ -110,7 +116,8 @@ try {
     $env:DJANGO_SUPERUSER_PASSWORD = $adminPw
     function Invoke-Setup([string]$Log, [string]$ExtraPsArgs = '') {
         $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$App`"",
-            '/SERVERADDRESS=127.0.0.1', "/PORT=$webPort", "/DBPORT=$dbPort", "/PSARGS=`"$psArgs $ExtraPsArgs`"", "/LOG=`"$Log`"" -Wait -PassThru
+            '/SERVERADDRESS=127.0.0.1', "/PORT=$webPort", "/DBPORT=$dbPort", '/DBMODE=external', "/PSARGS=`"$psArgs $ExtraPsArgs`"", "/LOG=`"$Log`"" -PassThru
+        $p.WaitForExit()   # not -Wait: that also waits for every descendant process
         return $p.ExitCode
     }
     function Get-DbCount([string]$Sql) {
@@ -134,7 +141,9 @@ try {
         Assert-True ($setupLog -notmatch 'install-server.ps1 failed') 'install-server.ps1 reported a failure (see logs in the test folder)'
     }
     Test-Case 'program files, Python environment and settings are in place' {
-        foreach ($f in 'manage.py', 'venv\Scripts\python.exe', 'venv\Scripts\waitress-serve.exe', '.env', 'installer\server\bin\WinSW-x64.exe', 'staticfiles') {
+        $pyFiles = if ($script:bundledPy) { @('runtime\python\python.exe') } else { @('venv\Scripts\python.exe', 'venv\Scripts\waitress-serve.exe') }
+        Assert-True ((Read-Env (Join-Path $App '.env')).COMPULAB_DB_MODE -eq 'external') 'not installed with the external database'
+        foreach ($f in @('manage.py', '.env', 'installer\server\bin\WinSW-x64.exe', 'staticfiles') + $pyFiles) {
             Assert-True (Test-Path (Join-Path $App $f)) "missing $f"
         }
         $e = Read-Env (Join-Path $App '.env')
@@ -148,7 +157,7 @@ try {
         $log = Get-ChildItem (Join-Path $App 'logs') -Filter 'install-*.log' | Sort-Object Name | Select-Object -First 1
         $t = Get-Content $log.FullName -Raw
         Assert-True ($t -match 'RESULT: CREATED|Administrator in\*\*\*@gmail\.com created|OK: Administrator account: in\*\*\*@gmail\.com') 'no verified Administrator in the log'
-        $o = & (Join-Path $App 'venv\Scripts\python.exe') (Join-Path $App 'manage.py') ensure_admin --check 2>$null | Out-String
+        $o = & (Get-AppPy) (Join-Path $App 'manage.py') ensure_admin --check 2>$null | Out-String
         Assert-True ($LASTEXITCODE -eq 0 -and $o -match 'ADMIN_OK') $o
     }
     Test-Case 'the database port check names the server that owns the port' {
@@ -158,19 +167,20 @@ try {
     Test-Case 'packages came from the bundled offline folder; Python reported as 64-bit' {
         $log = Get-ChildItem (Join-Path $App 'logs') -Filter 'install-*.log' | Sort-Object Name | Select-Object -First 1
         $t = Get-Content $log.FullName -Raw
-        Assert-True ($t -match 'OK: Packages installed \(offline package folder\)') 'not installed offline'
+        if ($script:bundledPy) { Assert-True ($t -match 'bundled in runtime\\python') 'bundled Python not used' }
+        else { Assert-True ($t -match 'OK: Packages installed \(offline package folder\)') 'not installed offline' }
         Assert-True ($t -match 'OK: Python 3\.1[123] 64-bit') 'Python line missing'
     }
     Test-Case 'no developer tests or build tools installed; build record present' {
-        $tests = @(Get-ChildItem $App -Recurse -File -Include 'tests.py', 'test_*.py' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\venv\\' })
+        $tests = @(Get-ChildItem $App -Recurse -File -Include 'tests.py', 'test_*.py' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\(venv|runtime)\\' })
         Assert-True ($tests.Count -eq 0) "test modules installed: $(($tests | Select-Object -First 5 | ForEach-Object { $_.FullName.Substring($App.Length + 1) }) -join ', ')"
         foreach ($d in 'installer\tests', 'installer\build', 'lab_pc_agent\tests') { Assert-True (-not (Test-Path (Join-Path $App $d))) "$d installed" }
         $b = Get-Content (Join-Path $App 'BUILDINFO.json') -Raw | ConvertFrom-Json
         Assert-True ($b.commit -match '^[0-9a-f]{40}$' -and $b.version) "BUILDINFO: $($b | ConvertTo-Json -Compress)"
     }
     Test-Case 'database created, every migration applied, one Administrator' {
-        $expected = @(Get-ChildItem $App -Recurse -Filter '0*.py' | Where-Object { $_.Directory.Name -eq 'migrations' -and $_.FullName -notmatch '\\venv\\' }).Count
-        $applied = Get-DbCount "SELECT COUNT(*) FROM django_migrations WHERE app IN ('accounts','labs','scheduling','issues','notifications','cloud_sync','system')"
+        $expected = @(Get-ChildItem $App -Recurse -Filter '0*.py' | Where-Object { $_.Directory.Name -eq 'migrations' -and $_.FullName -notmatch '\\(venv|runtime)\\' }).Count
+        $applied = Get-DbCount "SELECT COUNT(*) FROM django_migrations WHERE app IN ('accounts','labs','scheduling','issues','notifications','cloud_sync','cloud_receiver','system')"
         Assert-True ($applied -eq $expected) "applied $applied of $expected project migrations"
         Assert-True ((Get-DbCount 'SELECT COUNT(*) FROM accounts_user WHERE is_superuser = 1') -eq 1) 'superuser count'
     }
@@ -182,7 +192,7 @@ try {
     }
 
     Write-Host "`n2. The installed site answers" -ForegroundColor Cyan
-    $web = Start-Process (Join-Path $App 'venv\Scripts\waitress-serve.exe') -ArgumentList "--listen=127.0.0.1:$webPort", 'compulab.wsgi:application' `
+    $web = Start-Process (Get-AppPy) -ArgumentList '-m', 'waitress', "--listen=127.0.0.1:$webPort", 'compulab.wsgi:application' `
         -WorkingDirectory $App -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $Tmp 'web.err')
     Test-Case '/healthz, login page and /healthz/ready (database OK)' {
         $ok = $false
@@ -224,7 +234,7 @@ try {
     Write-Host "`n4. Restore" -ForegroundColor Cyan
     Test-Case 'restore.ps1 brings back the backed-up data' {
         $backup = Get-ChildItem $customBackups -Directory -Filter 'compulab-*' | Sort-Object Name | Select-Object -First 1
-        & (Join-Path $App 'venv\Scripts\python.exe') (Join-Path $App 'manage.py') shell -c "import datetime; from labs.models import Lab; Lab.objects.create(name='Added after backup', opening_time=datetime.time(7), closing_time=datetime.time(17))" 2>$null
+        & (Get-AppPy) (Join-Path $App 'manage.py') shell -c "import datetime; from labs.models import Lab; Lab.objects.create(name='Added after backup', opening_time=datetime.time(7), closing_time=datetime.time(17))" 2>$null
         Assert-True ((Get-DbCount "SELECT COUNT(*) FROM labs_lab WHERE name = 'Added after backup'") -eq 1) 'marker not created'
         & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $App 'installer\server\restore.ps1') -BackupFolder $backup.FullName -Force *> (Join-Path $Tmp 'restore.log')
         Assert-True ($LASTEXITCODE -eq 0) "restore exit code $LASTEXITCODE (see restore.log)"
@@ -305,7 +315,8 @@ try {
     Test-Case 'existing .env without database settings (developer copy): stops before installing or writing anything, names what is missing' {
         $envPath = Join-Path $App '.env'
         $saved = [IO.File]::ReadAllBytes($envPath)
-        $venvCfg = (Get-FileHash (Join-Path $App 'venv\pyvenv.cfg')).Hash
+        $pyMarker = Join-Path $App $(if ($script:bundledPy) { 'runtime\python\python313._pth' } else { 'venv\pyvenv.cfg' })
+        $venvCfg = (Get-FileHash $pyMarker).Hash
         try {
             # Like the development .env a real run was started with: no DB_ keys at all.
             [IO.File]::WriteAllLines($envPath, [string[]]@(Get-Content $envPath | Where-Object { $_ -notmatch '^DB_' }))
@@ -315,7 +326,7 @@ try {
             Assert-True ($o -match 'has no DB_NAME, DB_USER, DB_PASSWORD' -and $o -match 'development copy' -and $o -match 'does not invent') 'missing settings not explained'
             Assert-True ($o -notmatch 'Installing the Python environment|Preparing the database|Empty value') 'went on past the settings check'
             Assert-True ((Get-FileHash $envPath).Hash -eq $devHash) '.env changed'
-            Assert-True ((Get-FileHash (Join-Path $App 'venv\pyvenv.cfg')).Hash -eq $venvCfg) 'Python environment changed'
+            Assert-True ((Get-FileHash $pyMarker).Hash -eq $venvCfg) 'Python environment changed'
         } finally { [IO.File]::WriteAllBytes($envPath, $saved) }
     }
     Test-Case 'wrong root password: the database server''s own message and what it means; the password is not shown or logged' {
@@ -363,7 +374,9 @@ try {
     }
 
     Write-Host "`n5c. A Python environment made with another Python is replaced, not reused" -ForegroundColor Cyan
-    Test-Case 'repair with a venv of another Python: moved aside (kept), a new one made with the setup''s Python, repair succeeds' {
+    $venvCaseName = 'repair with a venv of another Python: moved aside (kept), a new one made with the setup''s Python, repair succeeds'
+    if ($script:bundledPy) { Skip-Case $venvCaseName 'this payload brings its own Python: no venv is used' }
+    else { Test-Case $venvCaseName {
         $venv = Join-Path $App 'venv'
         $otherPy = $null
         foreach ($line in @(& py -0p 2>$null)) { if ("$line" -match '-V:\S*3\.1[12]\S*\s+(?:\*\s+)?(\S.*python\.exe)\s*$') { $otherPy = $Matches[1].Trim(); break } }
@@ -387,13 +400,13 @@ try {
         Assert-True ((Get-Content (Join-Path $venv 'pyvenv.cfg') -Raw) -match "version\s*=\s*$([regex]::Escape($chosen))\.") "new venv is not Python $chosen"
         & (Join-Path $venv 'Scripts\python.exe') (Join-Path $App 'manage.py') check 2>$null | Out-Null
         Assert-True ($LASTEXITCODE -eq 0) 'CompuLab does not run with the new venv'
-    }
+    } }
 
     Write-Host "`n6. Uninstall" -ForegroundColor Cyan
     Test-Case 'uninstall removes the program files and keeps the data' {
         $unins = Get-ChildItem $App -Filter 'unins*.exe' | Select-Object -First 1
         Assert-True $unins 'no uninstaller registered'
-        Start-Process $unins.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+        $u = Start-Process $unins.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru; $u.WaitForExit()
         foreach ($i in 1..30) { if (-not (Test-Path (Join-Path $App 'manage.py'))) { break }; Start-Sleep 1 }   # the uninstaller finishes from a temp copy
         Assert-True (-not (Test-Path (Join-Path $App 'manage.py'))) 'program files still there'
         foreach ($keep in '.env', 'logs') { Assert-True (Test-Path (Join-Path $App $keep)) "$keep was deleted" }
@@ -410,6 +423,6 @@ try {
     Remove-Item Env:\COMPULAB_DB_ROOT_PASSWORD, Env:\DJANGO_SUPERUSER_EMAIL, Env:\DJANGO_SUPERUSER_PASSWORD -ErrorAction SilentlyContinue
     if (-not $KeepFiles -and -not $script:failed.Count) { Start-Sleep 2; Remove-Item $Tmp -Recurse -Force -ErrorAction SilentlyContinue }
 }
-Write-Host "`n$($script:passed) passed, $($script:failed.Count) failed" -ForegroundColor $(if ($script:failed.Count) { 'Red' } else { 'Green' })
+Write-Host "`n$($script:passed) passed, $($script:failed.Count) failed, $($script:skipped.Count) skipped" -ForegroundColor $(if ($script:failed.Count) { 'Red' } else { 'Green' })
 if ($KeepFiles -or $script:failed.Count) { Write-Host "Test files: $Tmp" }
 exit [int]($script:failed.Count -gt 0)

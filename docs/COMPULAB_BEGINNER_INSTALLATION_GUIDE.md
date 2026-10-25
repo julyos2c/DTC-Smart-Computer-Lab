@@ -16,6 +16,14 @@ The short version (a checklist to tick off) is [COMPULAB_QUICK_START.md](COMPULA
 > build is needed first (`installer\build\build-installers.ps1`, run by the developer). Its file
 > names, sizes and SHA-256 hashes are in `DISTRIBUTION-MANIFEST-<version>.md` next to the setups; in
 > this guide `<version>` stands for that version number (for example `2026.10.24.1000`).
+>
+> **Setups that bundle their own Python and database** (builds newer than 2026.10.23.1050: the
+> manifest's "Bundled runtime" line names MariaDB 11.4.13 and Python 3.13.16) need **nothing
+> installed first**: no Python, no MariaDB/MySQL, no root password, no internet. Skip sections G and
+> H with them. The setup creates CompuLab's **own** database server (Windows service
+> `CompuLabMariaDB`, data in `C:\CompuLab\data\mariadb`, reachable only from the Server PC itself)
+> and never touches any other MySQL, MariaDB or XAMPP on the computer. Older setups (2026.10.23.1050
+> and before) still need sections G and H.
 
 > **Please read first — what this guide is and is not**
 >
@@ -54,9 +62,11 @@ Tick each box when you have understood it.
       can only reach a lab PC from the **Server PC** (lab PCs accept commands from the server's IP
       only) and needs that PC's agent secret. It has never been tried on real machines. The reliable
       recovery is signing in with an administrator account (Ctrl+Alt+Del → Switch user / Sign out).
-- [ ] **Database port: 3306 unless you choose another.** The setup never uses, stops or changes XAMPP
-      or another database. If something else already uses port 3306, install MariaDB on another port
-      (for example 3307) and enter that port in the setup's **Database port** field (section H4).
+- [ ] **CompuLab's own database (setups with a bundled runtime).** It uses port **3308**, or the next
+      free one if another program uses 3308; it listens on the Server PC only (127.0.0.1). The setup
+      never uses, stops, changes or reconfigures any other database (MySQL, XAMPP, another program's
+      MariaDB) — check it yourself afterwards (section L7). *Older setups:* database port 3306 unless
+      you choose another; with XAMPP on 3306 install MariaDB on another port (section H4).
 - [ ] **The first Administrator needs a `@gmail.com` address.** CompuLab accepts only Gmail addresses
       for every account (an application rule). If the Administrator cannot be created, the setup
       **stops and says why** — it never says "CompuLab is installed" without one. Run **Repair
@@ -71,7 +81,8 @@ Tick each box when you have understood it.
 - [ ] **No internet exposure.** Never set up port forwarding on the router. The database (3306) and
       the agents (5555) must never be reachable from outside the campus network.
 - [ ] **Not set up, and not needed:** Tailscale remote access is **not configured** by the setup (and
-      not tested); **cloud sync is switched off** because no cloud receiver exists. Leave both alone.
+      not tested); **cloud sync is switched off**. A cloud receiver now exists in the code but is not
+      deployed anywhere, so there is nothing to send to yet. Leave both alone.
 - [ ] **Unsigned setups:** check the SHA-256 hash first (section E); only then allow the SmartScreen
       warning for that one file (section F). Never turn SmartScreen or the antivirus off.
 
@@ -106,7 +117,7 @@ Each step starts with a line like this:
 | `192.168.1.21` | a Lab PC's fixed IP address | section M |
 | `192.168.1.1` | the router | `ipconfig` → "Default Gateway" |
 | `8000` | the CompuLab web port | keep `8000` |
-| `3306` | the MariaDB port | keep `3306` unless section H4 applies |
+| `3308` | CompuLab's own database port (chosen by the setup; the next free one if 3308 is in use) | `C:\CompuLab\.env`, line `DB_PORT=`; older setups: `3306` unless section H4 applies |
 | `lab.admin.example@gmail.com` | the first CompuLab Administrator | your own Gmail address |
 | `Ex4mple-Only-Pass!` | a password | choose your own; never use the examples |
 | `student` | the Windows account students sign in with on a lab PC | section M1 |
@@ -140,17 +151,21 @@ There are three kinds of computers:
    +----------------------+        +-------------------+        +-------------------+
 ```
 
-Everything works on the campus network **without internet**. Internet is only needed once, to
-download Python and MariaDB, and later only for optional email.
+Everything works on the campus network **without internet**. With a setup that bundles its runtime,
+the installation itself needs no internet either; later, internet is only used for optional email
+(sent automatically when the internet is back). Older setups need internet once, to download Python
+and MariaDB.
 
 Not part of this installation (leave them alone):
 
 - **Tailscale remote access** — not configured by the setup; optional for later, separate guide
   `installer\REMOTE_ACCESS.md`, not tested on real machines. System status shows "Remote address
   (Tailscale VPN): Not configured".
-- **Cloud sync** — switched off, because there is no cloud receiver to send to. System status says
-  "Cloud synchronization not configured. This server is the only copy of the data (back it up
-  nightly)" — that is correct.
+- **Cloud sync** — switched off. It is one-way (this server -> a cloud copy), and the cloud side
+  (`cloud_receiver`) exists in the code but is not deployed anywhere. The CompuLab website on the
+  internet (MochaHost) is a **separate installation with its own accounts and data**; nothing is
+  synchronized with it. System status says "Cloud synchronization not configured. This server is the
+  only copy of the data (back it up nightly)" — that is correct.
 
 ---
 
@@ -182,8 +197,9 @@ Both setups need Windows PowerShell 5.1, which is built into every supported Win
 | Item | For | Section |
 |---|---|---|
 | A Windows **administrator account** on the Server PC and on every Lab PC | running the setups | — |
-| **Python 3.13, 64-bit, for all users** | Server PC only | G |
-| **MariaDB 11.4 LTS** (or 10.11 LTS; or MySQL 8.0.11+) as a Windows service, with a root password you know | Server PC only | H |
+| **Python 3.13, 64-bit, for all users** — *only for older setups without a bundled runtime* | Server PC only | G |
+| **MariaDB 11.4 LTS** (or 10.11 LTS; or MySQL 8.0.11+) as a Windows service, with a root password you know — *only for older setups, or `/DBMODE=external`* | Server PC only | H |
+| About **1 GB** free on the Server PC's install drive (program and bundled runtime about 400 MB, plus database and backups) | Server PC | — |
 | A **fixed IP address** for the Server PC and for every Lab PC (DHCP reservation in the router) | all | J, M |
 | The Server PC's network set to **Private** | Server PC | J |
 | A **Gmail address** for the first CompuLab Administrator (CompuLab accepts only `@gmail.com`) | Server setup | I |
@@ -193,11 +209,15 @@ Both setups need Windows PowerShell 5.1, which is built into every supported Win
 
 **Installed automatically by the setups (you do not install these):**
 
-- Server setup: the CompuLab program in `C:\CompuLab`, its own Python packages (included, no internet
-  needed), the service wrapper (WinSW), the settings file `.env` with new random secrets, the
-  CompuLab database and database user, the first Administrator (with your details), the two Windows
-  services **CompuLab Web** and **CompuLab Worker**, the firewall rule **CompuLab Web**, the scheduled
-  task **CompuLab nightly backup**, and Start-menu shortcuts.
+- Server setup: the CompuLab program in `C:\CompuLab`; with a bundled runtime its **own Python 3.13**
+  (`runtime\python`, all packages included) and its **own MariaDB 11.4 database server**
+  (`runtime\mariadb`, data in `data\mariadb`, Windows service **CompuLab Database (MariaDB)** /
+  `CompuLabMariaDB`, 127.0.0.1 only, random passwords nobody types); the service wrapper (WinSW), the
+  settings file `.env` with new random secrets, the CompuLab database and its user (allowed to use
+  only that database), the first Administrator (with your details), the two Windows services
+  **CompuLab Web** and **CompuLab Worker**, the firewall rule **CompuLab Web**, the scheduled task
+  **CompuLab nightly backup**, and Start-menu shortcuts. Every bundled file is checked against the
+  build (SHA-256) before use.
 - Agent setup: the packaged agent `CompuLabAgent.exe` (contains its own Python — none needed on the
   PC) in `C:\Program Files\CompuLab Agent`, the local group **CompuLab Students** (with the accounts
   you enter), the scheduled task **CompuLab Agent**, the firewall rules **CompuLab Agent** and
@@ -206,8 +226,10 @@ Both setups need Windows PowerShell 5.1, which is built into every supported Win
 **Not needed:** Python on Lab PCs, internet for daily use, email (optional, later), Tailscale,
 a cloud receiver, XAMPP.
 
-**The setups never install, upgrade or replace Python or MariaDB/MySQL, and never change XAMPP or
-another database.** If one is missing or unsuitable, the server setup stops and says what to do.
+**The setups never install, upgrade, stop, reconfigure or replace any other Python or
+MariaDB/MySQL on the computer, and never change XAMPP or another program's database.** The bundled
+Python and MariaDB live inside `C:\CompuLab` and are used only by CompuLab. If something is missing
+or unsuitable, the server setup stops and says what to do.
 
 ---
 
@@ -398,6 +420,9 @@ automatic locking depend on it.
 
 ## G. Install Python 3.13 (64-bit, for all users) on the Server PC
 
+> **Skip this section** with a setup that bundles its runtime (the manifest's "Bundled runtime"
+> line names Python 3.13.16): it brings its own Python. Only older setups need it.
+
 The server needs Python. The setup **requires a 64-bit Python 3.11, 3.12 or 3.13; 3.13 is
 recommended**. It refuses 3.14, 32-bit Python, and gives a warning for a Python installed "just for
 me". Lab PCs do **not** need Python.
@@ -436,6 +461,11 @@ Another Python version already on the PC (e.g. 3.14) can stay; the setup picks 3
 ---
 
 ## H. Install MariaDB (or check an existing MariaDB/MySQL)
+
+> **Skip this section** with a setup that bundles its runtime: it creates CompuLab's own database
+> server and needs no root password. Leave any MySQL, MariaDB or XAMPP already on the computer as it
+> is. This section is only for older setups, or for using an existing server on purpose
+> (`CompuLab-Server-Setup-<version>.exe /DBMODE=external /DBPORT=<port>`).
 
 CompuLab stores its data in MariaDB (MySQL works too). The setup **does not install it**; it creates
 its own database `compulab_db` and its own database user `compulab` inside the server you install,
@@ -522,8 +552,9 @@ real PC.
 
 > **PC:** Server PC · **Administrator:** yes · **Takes:** 10–20 minutes
 
-Before you start: Python (G) and MariaDB (H) are installed, the Server PC has its fixed IP (J), and
-you have the MariaDB root password and a Gmail address for the first Administrator.
+Before you start: the Server PC has its fixed IP (J) and you have a Gmail address for the first
+Administrator. With a setup that bundles its runtime that is all; with an older setup, Python (G) and
+MariaDB (H) are installed and you know the MariaDB root password.
 
 1. Copy `CompuLab-Server-Setup-<version>.exe` and `SHA256SUMS-<version>.txt` to
    `C:\Users\<you>\Downloads\CompuLab\` and check the hash (section E).
@@ -534,7 +565,8 @@ you have the MariaDB root password and a Gmail address for the first Administrat
      address — no `http://`, no `:8000`. (If you leave it empty, the console asks later and lists
      this PC's addresses.)
    - **Port:** keep `8000`.
-   - **Database port:** keep `3306` (or the port from H4).
+   - **Database port:** keep `3308` (CompuLab's own database; if another program uses 3308 the setup
+     takes the next free port and says which). Older setups: keep `3306` (or the port from H4).
    - **Next.** If a message says "Enter only the address" or "... must be a number", correct it.
 5. **Ready to Install** → **Install**. The files are copied to `C:\CompuLab`.
 6. A **console window** (black/blue text window) opens and runs the real installation. Watch it.
@@ -544,12 +576,12 @@ you have the MariaDB root password and a Gmail address for the first Administrat
    |---|---|---|
    | Checking Windows and the CompuLab files | | nothing |
    | Checking the settings | validates the address and ports; checks that the backup folder can be written (`backups in C:\CompuLab\backups`) | nothing (or pick the address if you left it empty) |
-   | Checking Python | finds Python 3.13 64-bit | nothing |
-   | Checking the database server | finds MariaDB and its service, starts it if stopped and sets it to start automatically (and says so); `OK: Port 3306 is served by the MariaDB service` | nothing |
+   | Checking the bundled Python | checks every file of `runtime\python` against the build; `OK: Python 3.13.16 with Django 5.2.18, bundled ...` (older setups: **Checking Python** finds Python 3.13 64-bit) | nothing |
+   | Checking the database server | checks every file of `runtime\mariadb`; picks the port (yellow lines name ports in use by other programs, which are skipped and **not touched**); `OK: CompuLab's own database: bundled MariaDB, port 3308 on 127.0.0.1 only` (older setups: finds your MariaDB and its service) | nothing |
    | Checking the service wrapper (WinSW) | | nothing |
-   | Installing the Python environment | creates `C:\CompuLab\venv` from the included packages | wait (a few minutes) |
+   | Installing the Python environment | only older setups: creates `C:\CompuLab\venv` from the included packages | wait (a few minutes) |
    | Configuring settings (.env) | creates `C:\CompuLab\.env` with **new random secrets** | nothing |
-   | Preparing the database | asks **`MariaDB/MySQL root password (used once, not saved):`** | type the MariaDB root password (nothing appears while typing — that is normal), press **Enter** |
+   | Setting up CompuLab's own database | creates `data\mariadb`, sets a random administrator password (saved for Administrators only in `data\db-admin.cnf`), registers and starts the service **CompuLabMariaDB**, creates the database and its user. **No password to type.** (Older setups: **Preparing the database** asks for the MariaDB root password — nothing appears while typing; a `*` per character in newer setups.) | nothing |
    | Updating the database structure | creates all tables | wait (a few minutes) |
    | Checking the Administrator account | there is none yet on a new installation | nothing |
    | Create the first Administrator account | asks **`Administrator email (@gmail.com)`**, **`Password`**, **`Password (again)`** | see step 7 |
@@ -586,9 +618,12 @@ you have the MariaDB root password and a Gmail address for the first Administrat
 text is in `C:\CompuLab\logs\install-<date-time>.log`. Fix the cause (section S), then run the same
 setup again; it continues safely and keeps what was already done.
 
-**About the secrets.** You typed only two secrets: the MariaDB root password (used once, never
-saved) and the Administrator password (stored only as a hash; passed to CompuLab without appearing on
-screen or in the log). Everything else is generated: `C:\CompuLab\.env` holds the website's secret
+**About the secrets.** With a bundled runtime you type only one secret: the Administrator password
+(stored only as a hash; passed to CompuLab without appearing on screen or in the log). CompuLab's own
+database gets random passwords nobody types: its administrator password is in
+`C:\CompuLab\data\db-admin.cnf` (only Administrators and SYSTEM can read it; Repair needs it), and
+passwords never appear on a command line or in a log. (Older setups: the MariaDB root password is
+typed once and never saved.) Everything else is generated: `C:\CompuLab\.env` holds the website's secret
 key and the `compulab` database user's password, and the **shared agent secret**
 (`PC_AGENT_SHARED_SECRET`) kept only for lab PCs from older installations. Each lab PC gets **its own**
 agent secret when you download its Agent config (section M4); those are stored in the CompuLab
@@ -606,8 +641,18 @@ What the setup created on the **Server PC**:
 |---|---|---|---|
 | **CompuLab Web** | TCP port **8000** inbound | private campus/VPN ranges only: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10` | Private, Domain |
 
-The database port is **not opened** by CompuLab. Do not add rules yourself and do not turn the
-firewall off.
+The database port is **not opened** by CompuLab. CompuLab's own database also listens on
+`127.0.0.1` only, so even without a firewall no other computer can reach it. Do not add rules
+yourself and do not turn the firewall off.
+
+**K0. CompuLab's own database listens on this computer only** (bundled runtime; normal PowerShell;
+use the port from `DB_PORT=` in `.env` if it is not 3308):
+
+```powershell
+Get-NetTCPConnection -LocalPort 3308 -State Listen | Format-Table LocalAddress, LocalPort, OwningProcess
+```
+
+**Expected:** only `127.0.0.1` in LocalAddress (never `0.0.0.0` or `::`).
 
 **K1. Check the CompuLab Web rule (elevated):**
 
@@ -620,8 +665,8 @@ Get-NetFirewallRule -DisplayName 'CompuLab Web' | Get-NetFirewallAddressFilter |
 **Expected:** Enabled `True`, Direction `Inbound`, Action `Allow`, Profile `Private, Domain`, Protocol
 `TCP`, LocalPort `8000`, RemoteAddress the four ranges above.
 
-**K2. Check that no rule opens the database port (elevated)** — use `3307` instead of `3306` if H4
-applied:
+**K2. Check that no rule opens the database port (elevated)** — use CompuLab's database port
+(`3308` with a bundled runtime; `3307` if H4 applied):
 
 ```powershell
 Get-NetFirewallPortFilter -Protocol TCP | Where-Object { $_.LocalPort -eq '3306' } | Get-NetFirewallRule | Format-Table DisplayName, Enabled, Direction, Action, Profile
@@ -642,11 +687,12 @@ Disable-NetFirewallRule -DisplayName '<the DisplayName shown above>'
 
 ```powershell
 Test-NetConnection 192.168.1.10 -Port 8000
-Test-NetConnection 192.168.1.10 -Port 3306
+Test-NetConnection 192.168.1.10 -Port 3308
 ```
 
-**Expected:** port 8000 → `TcpTestSucceeded : True`; port 3306 → `TcpTestSucceeded : False` (a
-warning "TCP connect ... failed" is the good result here).
+**Expected:** port 8000 → `TcpTestSucceeded : True`; port 3308 (CompuLab's database port; 3306 with
+an older setup) → `TcpTestSucceeded : False` (a warning "TCP connect ... failed" is the good result
+here).
 
 **K4. Internet:** in the router, make sure there is **no port forwarding** to the Server PC (neither
 8000 nor the database port) and none to any lab PC (5555). CompuLab is for the campus network only.
@@ -687,15 +733,19 @@ Sidebar → **System status**. **Expected:**
 > **PC:** Server PC · **Administrator:** no · **Where:** normal PowerShell (note: type `sc.exe`, not `sc`)
 
 ```powershell
-Get-Service CompuLabWeb, CompuLabWorker
+Get-Service CompuLabMariaDB, CompuLabWeb, CompuLabWorker
+sc.exe qc CompuLabMariaDB
 sc.exe qc CompuLabWeb
 sc.exe qfailure CompuLabWeb
 ```
 
-**Expected:** both `Running`; `START_TYPE : 2 AUTO_START (DELAYED)`; `DEPENDENCIES : MariaDB` (your
-database service name); failure actions `RESTART -- Delay = 10000`, `30000`, `60000` milliseconds.
-The same is visible in the **Services** app (Windows key + R → `services.msc`): "CompuLab Web" and
-"CompuLab Worker", Status Running, Startup Type **Automatic (Delayed Start)**.
+**Expected:** all three `Running` (older setups have no `CompuLabMariaDB`: your MariaDB service
+instead). `CompuLabMariaDB`: `START_TYPE : 2 AUTO_START`, `SERVICE_START_NAME : NT
+SERVICE\CompuLabMariaDB` (its own account, not LocalSystem). `CompuLabWeb`: `START_TYPE : 2
+AUTO_START (DELAYED)`, `DEPENDENCIES : CompuLabMariaDB` (older setups: your database service name);
+failure actions `RESTART -- Delay = 10000`, `30000`, `60000` milliseconds. The same is visible in the
+**Services** app (Windows key + R → `services.msc`): "CompuLab Database (MariaDB)", "CompuLab Web" and
+"CompuLab Worker", Status Running.
 
 ### L4. Whole-server check
 
@@ -736,6 +786,23 @@ All in `C:\CompuLab\logs\` (open with Notepad; administrator rights may be neede
 | `worker.log` | background work (lab PC online/offline checks, emails, reminders) |
 | `CompuLabWeb.*.log`, `CompuLabWorker.*.log` | the service wrapper (starts/stops/crashes) |
 | `backup-<date-time>.log` | each nightly backup and each "Back Up CompuLab Now" |
+| `C:\CompuLab\data\mariadb\compulab-mariadb.err` | CompuLab's own database (start, stop, errors) |
+
+### L7. Other database servers on this computer were not touched
+
+> **PC:** Server PC · **Administrator:** no · **Where:** normal PowerShell
+
+Do this **before** running the setup and again **after** it, and compare:
+
+```powershell
+Get-CimInstance Win32_Service | Where-Object { $_.PathName -match 'mysqld|mariadbd' } | Format-Table Name, State, StartMode, ProcessId
+Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 3306, 3307, 3308, 3309 } | Format-Table LocalAddress, LocalPort, OwningProcess
+```
+
+**Expected:** every service that was there before (for example `MySQL84`, XAMPP's `mysql`, another
+program's database) has the same State, StartMode and ProcessId afterwards and still owns the same
+port. The only new entries are `CompuLabMariaDB` and its port (127.0.0.1 only). If anything else
+changed, stop and report it.
 
 ---
 
@@ -965,8 +1032,15 @@ without real machines.
 
 > **PC:** Server PC · **Administrator:** yes
 
-Task Manager (Ctrl+Shift+Esc) → **Details** → right-click **waitress-serve.exe** → **End task**.
+Task Manager (Ctrl+Shift+Esc) → **Details** → right-click the CompuLab Web process → **End task**.
+With a bundled runtime it is the **python.exe** whose *Command line* column (right-click a column
+header → Select columns → Command line) contains `-m waitress`; older setups: **waitress-serve.exe**.
 **Expected:** within about a minute `http://192.168.1.10:8000` answers again.
+
+Optional, the same for CompuLab's own database: end **mariadbd.exe** whose command line contains
+`CompuLabMariaDB` (never another mariadbd/mysqld). **Expected:** Windows restarts the
+**CompuLab Database (MariaDB)** service within about a minute (`Get-Service CompuLabMariaDB` →
+Running) and the site works again.
 
 ### Q3. Lab PC after a restart
 
@@ -1067,8 +1141,10 @@ data before the restore is in `<backup folder>\before-restore\`.
 
 ## R. Repair, update, back up, restore, uninstall — keeping the data
 
-All server data lives in `C:\CompuLab` (`.env`, `media\`, `logs\`), the backup folder, and the
-MariaDB database `compulab_db`. Lab PC data lives in `C:\Program Files\CompuLab Agent`
+All server data lives in `C:\CompuLab` (`.env`, `media\`, `logs\`, and with a bundled runtime the
+database itself in `data\mariadb` plus its administrator sign-in `data\db-admin.cnf`), the backup
+folder, and the database `compulab_db` (in CompuLab's own MariaDB, or in your MariaDB with an older
+setup). Lab PC data lives in `C:\Program Files\CompuLab Agent`
 (`agent_config.local.json`) and `C:\ProgramData\CompuLab Agent` (queued events). None of the actions
 below deletes them.
 
@@ -1083,20 +1159,23 @@ below deletes them.
 | **Server IP address changed** | Server, admin, elevated PowerShell | `powershell -ExecutionPolicy Bypass -File C:\CompuLab\installer\server\set-server-address.ps1 -Primary 192.168.1.10`, then on **every** Lab PC (elevated): `powershell -ExecutionPolicy Bypass -File "C:\Program Files\CompuLab Agent\tools\set-agent-server.ps1" -ServerUrl http://192.168.1.10:8000` | better: keep the reservation so it never changes |
 | **Repair / update a Lab PC** | Lab PC, admin | run the (newer) agent setup; leave **Agent config file** and **Student accounts** empty | keeps the PC's settings, its own secret, the student accounts and queued events |
 | **Add or change student accounts on a Lab PC** | Lab PC, admin | run the agent setup again with the account(s) in **Student accounts**, or in an elevated Command Prompt: `net localgroup "CompuLab Students" student2 /add` | takes effect at that account's next sign-in. A PC updated from an older agent locks every account until this is done once |
-| **Replace a Lab PC's secret** (e.g. the PC was stolen or tampered with) | Server, admin, elevated PowerShell in `C:\CompuLab` | `venv\Scripts\python manage.py agent_secret` (list, shows each PC's id) then `venv\Scripts\python manage.py agent_secret --rotate <id>` | that PC's agent is refused until you download its Agent config again and re-run the agent setup on it. Secrets are never printed |
+| **Replace a Lab PC's secret** (e.g. the PC was stolen or tampered with) | Server, admin, elevated PowerShell in `C:\CompuLab` | `runtime\python\python.exe manage.py agent_secret` (list, shows each PC's id) then `runtime\python\python.exe manage.py agent_secret --rotate <id>` (older setups: `venv\Scripts\python` instead of `runtime\python\python.exe`) | that PC's agent is refused until you download its Agent config again and re-run the agent setup on it. Secrets are never printed |
 | **Switch off the old shared secret** | Server, admin | when System status says every PC uses its own secret: add `PC_AGENT_REQUIRE_PER_PC_SECRET=True` to `C:\CompuLab\.env` (Notepad as administrator), then restart CompuLab Web and CompuLab Worker | PCs still on the shared secret stop working, so check the table first |
 | **Send queued events now** | Lab PC, no admin needed | in a Command Prompt: `start /wait "" "C:\Program Files\CompuLab Agent\CompuLabAgent.exe" --flush` then `echo %errorlevel%` | 0 = all sent, 2 = server still unreachable (events kept). The agent also does this by itself |
 | **Uninstall the agent** | Lab PC, admin | Settings → Apps → **CompuLab Agent** → Uninstall | removes task, firewall rules, program **and this PC's settings file**; keeps `C:\ProgramData\CompuLab Agent` (queued events) and the **CompuLab Students** group. To reinstall, download its **Agent config** again |
-| **Uninstall the server** | Server, admin | Settings → Apps → **CompuLab Server** → Uninstall | removes services, firewall rule, backup task and program files; **keeps** the database, `.env`, uploads, backups and logs. Removing those too is a separate manual step (`installer\server\README.md`) — only after a final backup |
+| **Uninstall the server** | Server, admin | Settings → Apps → **CompuLab Server** → Uninstall | stops CompuLab's database cleanly, removes the services (including `CompuLabMariaDB`), firewall rule, backup task and program files; **keeps** the database (`data\`), `.env`, uploads, backups and logs — installing again brings everything back. Removing those too is a separate manual step (`installer\server\README.md`) — only after a final backup |
+| **Stop CompuLab completely** (e.g. before copying `data\`) | Server, admin, elevated PowerShell | `powershell -ExecutionPolicy Bypass -File C:\CompuLab\installer\server\stop-compulab.ps1` | stops CompuLab Worker, CompuLab Web and CompuLab's own database (never another database); start again with Repair or a restart |
+| **Interrupted installation** (power cut, closed window) | Server, admin | run the same setup again (or **Repair CompuLab Server**) | it continues: a half-created database folder is moved to `data\mariadb.incomplete-<date>` (kept) and made again; an existing database is never created again or emptied; a lost `db-admin.cnf` is replaced offline without touching the data |
 | **Optional email** | Server, admin, elevated PowerShell | `powershell -ExecutionPolicy Bypass -File C:\CompuLab\installer\server\configure-email.ps1` | not needed for the first installation; use a Gmail **App Password** |
 
-Never uninstall or "clean up" MariaDB to fix a CompuLab problem: the data is in it.
+Never uninstall or "clean up" MariaDB, or delete `C:\CompuLab\data`, to fix a CompuLab problem: the
+data is in it.
 
 ### What a backup contains — and what is kept elsewhere
 
 | Item | Where it lives | In the server backup? | How it is preserved |
 |---|---|---|---|
-| Database (accounts, labs, PCs, **each PC's own agent secret**, reservations, logs) | MariaDB `compulab_db` | yes: `database.sql` | restore with `restore.ps1` |
+| Database (accounts, labs, PCs, **each PC's own agent secret**, reservations, logs) | `compulab_db` in CompuLab's own MariaDB (`C:\CompuLab\data\mariadb`) or your MariaDB | yes: `database.sql` (made with the database's own dump tool) | restore with `restore.ps1` |
 | Uploaded files (photos, spreadsheets) | `C:\CompuLab\media` | yes: `media.zip` | restore with `restore.ps1` |
 | Settings and secrets (`.env`: secret key, database password and port, shared agent secret, backup folder) | `C:\CompuLab\.env` | yes: `env.txt` (a copy) | kept by Repair/Update/Uninstall. `restore.ps1` does **not** apply `env.txt` (it is never applied automatically) — on the same server the existing `.env` stays |
 | Program, Python environment, static files | `C:\CompuLab` | no | recreated by Repair / the setup |
@@ -1141,12 +1220,20 @@ Source-code reviewed, partly tested automatically, **not yet tested on real lab 
 | Hash `MISMATCH` / different value | E | damaged or wrong file | copy again from `installer\dist`; never run it |
 | No "Run anyway", "blocked by your organization" or Smart App Control | F | policy blocks unsigned programs | ask IT to allow the files by hash or sign them; do not disable protection |
 | `The install folder ... is a junction or symbolic link` | server/agent setup | unusual install folder | keep the default folder `C:\CompuLab` |
-| `Installation stopped: A 64-bit Python 3.13 (or 3.12 / 3.11) is required. Found instead: ...` | server console | no Python, 32-bit Python, or only 3.14 | install Python as in G, run the setup again |
+| `The bundled Python (runtime\python)` / `The bundled database (runtime\mariadb) is incomplete or damaged: ...` | server console | the setup file was damaged in copying, or files were changed or removed (antivirus quarantine?) | nothing was changed. Copy the setup again, check its hash (E), run it again (Repair) |
+| Yellow `Port 3308 is in use by ...: skipped. It was not stopped or changed.` | server console | another program uses that port | nothing to do: CompuLab takes the next free port (the line `OK: CompuLab's own database: ... port <n>` says which) |
+| `CompuLab's database did not start on port <n>. Its log says: ...` | server console | disk full, files blocked, antivirus | the end of the line is the database's own message (also `C:\CompuLab\data\mariadb\compulab-mariadb.err`); fix it, run Repair. The data is not changed |
+| `Port <n>, CompuLab's database port, is used by ...` | server console | another program took the port while CompuLab's database was stopped | stop that program, or move CompuLab's database (elevated): `install-server.ps1 -DbPort <free port>` |
+| `CompuLab's database listens on ..., not only on 127.0.0.1` | server console | `data\mariadb\my.ini` was edited | run Repair (it rewrites `my.ini`); never edit it by hand |
+| `A Windows service named CompuLabMariaDB already exists and runs ...` | server console | a service with that name that is not CompuLab's | nothing was changed; ask IT what it is |
+| `The current database (...) already holds CompuLab data. Switching ...` | server console | `-DbMode bundled` on an installation whose external database has data | follow the three steps in the message (backup, switch with `-LeaveOldDatabase`, restore) |
+| `Installation stopped: A 64-bit Python 3.13 (or 3.12 / 3.11) is required. Found instead: ...` | server console | older setup: no Python, 32-bit Python, or only 3.14 | install Python as in G, run the setup again |
 | Note `This Python is installed for one Windows account only` | server console | "Install Now" was used | works, but reinstall Python "for all users" (G) and run **Repair** |
 | `No MariaDB or MySQL database server was found` | server console | MariaDB not installed | H2, then run the setup again |
 | `No database server is listening on port 3306 of this computer` | server console | MariaDB stopped, or it uses another port | `Get-Service MariaDB` must be Running; if it uses another port, run the setup again with that **Database port** (first install) or, elevated: `powershell -ExecutionPolicy Bypass -File C:\CompuLab\installer\server\install-server.ps1 -DbPort 3307` |
 | `Port 3306 is used by XAMPP's database (...)` | server console | XAMPP on 3306 | nothing was changed. H4: MariaDB on another port, enter that **Database port** |
 | `Port 3306 is used by '...', which is not a MariaDB/MySQL server` | server console | another program on the port | free the port, or use another port as in H4 |
+| `Port 3307 is used by the database of another program: the service '...'` | server console | another program (e.g. an inventory system) runs its own MariaDB on that port | nothing was changed, and CompuLab never uses it. Install MariaDB 11.4 on a free port (check with `Get-NetTCPConnection -LocalPort 3308`) and use that **Database port** |
 | `Port 3306 belongs to the service 'X', not to 'Y'` | server console | the service given does not own the port | run the setup with `-DbServiceName X` (elevated PowerShell, as above) |
 | `No password was given, but the database server needs one for 'root'` (asked again, up to 3 times) | server console | Enter was pressed with nothing typed, or the typing went to another window | click into the black window, type the root password (a `*` appears for each character), press Enter |
 | `The password for 'root' was not accepted` (asked again, up to 3 times) | server console | wrong root password | type the right one; test it alone first: `& "C:\Program Files\MariaDB 11.4\bin\mysql.exe" -u root -p -h 127.0.0.1 -P 3306 -e "SELECT VERSION();"` |
@@ -1197,8 +1284,8 @@ Server PC name/IP: ______________________  Lab PC tested: ______________________
 | 1 | The warning checklist (top of this guide) was read and ticked | top | ☐ | |
 | 2 | Manifest says "clean"; hashes of both setups say OK | D, E | ☐ | |
 | 3 | Server has a fixed IP (reservation), network Private, correct time zone | J | ☐ | |
-| 4 | `py -0p` shows Python 3.13 64-bit in `C:\Program Files\Python313` | G | ☐ | |
-| 5 | MariaDB/MySQL service Running, supported version, root password known; database port noted | H | ☐ | |
+| 4 | Bundled runtime: the console said `OK: Python 3.13.16 ..., bundled` (older setups: `py -0p` shows Python 3.13 64-bit in `C:\Program Files\Python313`) | I (G) | ☐ | |
+| 5 | Bundled runtime: `CompuLabMariaDB` Running, its port listens on 127.0.0.1 only, and other database services unchanged (older setups: your MariaDB Running, root password known) | K0, L3, L7 (H) | ☐ | |
 | 6 | Server setup ended with "CompuLab is installed." and `OK: Administrator account:` | I | ☐ | |
 | 7 | Administrator can sign in at `http://<server>:8000` from another PC | L1 | ☐ | |
 | 8 | System status: Database OK, Background worker Running | L2 | ☐ | |
@@ -1206,7 +1293,7 @@ Server PC name/IP: ______________________  Lab PC tested: ______________________
 | 10 | Full status report (F) shows no [FAIL] | L4 | ☐ | |
 | 11 | Backup task action and "Backup folder" show the same folder | L5 | ☐ | |
 | 12 | Firewall rule CompuLab Web: TCP 8000, campus ranges, Private/Domain | K1 | ☐ | |
-| 13 | No open rule for the database port; from a Lab PC port 3306 fails, 8000 succeeds | K2, K3 | ☐ | |
+| 13 | No open rule for the database port; from a Lab PC the database port (3308; 3306 with an older setup) fails, 8000 succeeds | K2, K3 | ☐ | |
 | 14 | No port forwarding on the router | K4 | ☐ | |
 | 15 | Lab PC registered with fixed IP; standard student account exists; Agent config downloaded | M | ☐ | |
 | 16 | Agent setup ended with "The CompuLab agent is installed." and self-test "server: answers" | O1 | ☐ | |
@@ -1215,7 +1302,7 @@ Server PC name/IP: ______________________  Lab PC tested: ______________________
 | 19 | PC power status: Available; System status: agent 2.2.0, recent contact, Agent secret "own" | O3 | ☐ | |
 | 20 | Manual Unlock (Guest) unlocks; Lock locks; activity log shows both | O3 | ☐ | |
 | 21 | Server restart: site back within ~3 minutes without signing in | Q1 | ☐ | |
-| 22 | Ended waitress-serve.exe: site back within ~1 minute | Q2 | ☐ | |
+| 22 | Ended the CompuLab Web process (python.exe -m waitress; older: waitress-serve.exe): site back within ~1 minute | Q2 | ☐ | |
 | 23 | Lab PC restart: lock screen at student sign-in, none for the administrator | Q3 | ☐ | |
 | 24 | Ended CompuLabAgent.exe in the student session: lock screen back within ~2 minutes | Q4 | ☐ | |
 | 25 | Cable unplugged: "Server offline · 1 queued"; reconnected: delivered once | Q6 | ☐ | |

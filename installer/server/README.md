@@ -10,7 +10,41 @@ Do this once, on the computer that will be the CompuLab server. Allow about an h
 - In the campus router, give it a **fixed IP address** (DHCP reservation), e.g. `192.168.1.10`.
 - In Windows Settings → Network, set the connection to **Private**.
 
-## 2. Install the three prerequisites (needs internet once)
+## 2. Prerequisites
+
+**With `CompuLab-Server-Setup.exe` (builds that bundle their runtime): none.** The setup contains
+its own Python 3.13 (`runtime\python`, all packages installed) and its own MariaDB 11.4 server
+(`runtime\mariadb`, the official Windows x64 files, GPL v2: `runtime\mariadb\COPYING` and
+`SOURCE.txt`). The installer then:
+
+- checks every bundled file against the build (`COMPULAB-MANIFEST.txt`, SHA-256) and refuses a
+  damaged or incomplete copy before changing anything;
+- creates **CompuLab's own database server**: data in `data\mariadb`, its own `my.ini` (rewritten by
+  every repair) with `bind-address=127.0.0.1` (never reachable from the LAN), port **3308** or the
+  next free one (ports used by other programs are skipped, never touched; `-DbPort` sets the first
+  port tried), the Windows service **CompuLabMariaDB** under its own virtual account
+  (`NT SERVICE\CompuLabMariaDB`), started automatically at boot, before CompuLab Web and Worker;
+- secures it before it ever listens: `mariadbd --bootstrap` (no network) sets a random root
+  password and removes every root account except localhost/127.0.0.1/::1 and anonymous accounts. The
+  root sign-in is saved in `data\db-admin.cnf` (Administrators and SYSTEM only) **before** it is set,
+  so it is never lost; passwords travel only on stdin, never on a command line or in a log;
+- creates `compulab_db` and the application user `compulab` (random password in `.env`, rights on
+  that database only), then runs `mariadb-upgrade` (a no-op unless the MariaDB files were updated);
+- is idempotent: Repair/Update reuse the data (never initialized again); a half-created data folder
+  from an interrupted install is moved to `data\mariadb.incomplete-<date>` (kept) and made again; a
+  lost `db-admin.cnf` is replaced offline without touching the data; database files an earlier
+  installer left unreadable get their permissions repaired first (nothing is moved or deleted).
+
+A silent setup (`/VERYSILENT`) whose CompuLab step (`install-server.ps1`) failed exits with code
+**10**, not 0: the reason is in `logs\install-*.log`.
+
+No Python, no MariaDB/MySQL, no root password and no internet are needed, and any other database on
+the computer (MySQL, XAMPP, another program's MariaDB) is never stopped, changed, reused or
+initialized. `COMPULAB_DB_MODE=bundled` is recorded in `.env`.
+
+**An existing MariaDB/MySQL instead** (`/DBMODE=external` for the setup, `-DbMode external` for the
+script), **a plain folder copy** (no `runtime\`), and **installations made before the bundled
+runtime** (they keep their database on Repair/Update) need these prerequisites (internet once):
 
 | Program | Where | Notes |
 |---|---|---|
@@ -22,8 +56,13 @@ Do **not** use XAMPP for the server: it is not a supervised service and its Mari
 the current Django version. If XAMPP must stay on the computer, install MariaDB on another port
 (e.g. 3307) and give that port to the installer (setup field **Database port**, or `-DbPort 3307`).
 
-The CompuLab installer never installs, upgrades, replaces or stops Python or a database server, and
-never touches XAMPP. Before changing anything it checks which program listens on the database port
+To move an installation from an external server to CompuLab's own database (Repair, elevated):
+`install-server.ps1 -DbMode bundled`. It refuses when the external database already holds CompuLab
+data (then: backup.ps1, `-DbMode bundled -LeaveOldDatabase`, restore.ps1 with that backup); the old
+database is never changed or deleted.
+
+In external mode the CompuLab installer never installs, upgrades, replaces or stops Python or a
+database server, and never touches XAMPP. Before changing anything it checks which program listens on the database port
 and refuses XAMPP or anything that is not MariaDB/MySQL. It uses the database service that owns the
 port: if that service is stopped it starts it, and if it is not set to start automatically it
 changes that (CompuLab needs it at boot) and says so. With several MariaDB/MySQL services and none on
@@ -72,6 +111,11 @@ on the campus network and sign in.
 The installer:
 - checks Windows, the CompuLab files, Python, the MariaDB version (10.5 or newer; it refuses
   XAMPP's 10.4) and WinSW, and stops with a clear message if one is missing;
+- checks who owns the database port before it starts or changes any database service: XAMPP's
+  database and a database another program installed as its own service (e.g. an inventory
+  system's bundled MariaDB) are refused untouched. The database tools (`mariadb.exe` /
+  `mysql.exe`, `mariadb-dump.exe` / `mysqldump.exe`) are taken from the folder of the server on
+  that port, so MariaDB 11 (which may ship only the `mariadb*` names) works next to MySQL;
 - on a Repair/Update, first checks that the existing `.env` has all five database settings
   (`DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`): it never invents credentials for
   existing data, and refuses a `.env` it did not write (e.g. a developer copy of CompuLab) before
@@ -130,7 +174,8 @@ downloads a ready file per PC with **that PC's own agent secret** (`labs/agent_a
 `PC_AGENT_SHARED_SECRET` in `.env` only keeps agents installed with an older file working; System
 status shows which PCs still use it. When none do, set `PC_AGENT_REQUIRE_PER_PC_SECRET=True` in
 `.env` and restart both services. Replace one PC's secret (e.g. a stolen PC):
-`venv\Scripts\python manage.py agent_secret` (list) and `... agent_secret --rotate <id>`, then
+`runtime\python\python.exe manage.py agent_secret` (list; `venv\Scripts\python` without a bundled
+runtime) and `... agent_secret --rotate <id>`, then
 reinstall that PC with its new Agent config.
 
 ## Maintenance
@@ -142,7 +187,8 @@ reinstall that PC with its new Agent config.
 | Restore a backup | `... installer\server\restore.ps1 -BackupFolder E:\CompuLabBackups\compulab-20261022-013000` |
 | Install a new CompuLab version | run the newer setup; or replace the files (or `git pull`), then `... installer\server\update.ps1` |
 | Is everything working? | Start → CompuLab → **CompuLab Server Status** → F, or `... installer\server\server-status.ps1` (add `-StartServices` to start stopped services) |
-| First Administrator missing / broken | `venv\Scripts\python manage.py ensure_admin --check`; re-run the installer (Repair) to create one |
+| First Administrator missing / broken | `runtime\python\python.exe manage.py ensure_admin --check` (or `venv\Scripts\python`); re-run the installer (Repair) to create one |
+| CompuLab's own database | `Get-Service CompuLabMariaDB`; its log `data\mariadb\compulab-mariadb.err`; `server-status.ps1` shows "Database port ... on 127.0.0.1 only". Stop everything cleanly: `stop-compulab.ps1` |
 | Server IP changed | `... installer\server\set-server-address.ps1 -Primary 192.168.1.10`, then `installer\agent\set-agent-server.ps1` on each lab PC |
 | Remote access (Tailscale) | `... installer\server\configure-remote-access.ps1` (see `installer\REMOTE_ACCESS.md`) |
 | Stop / start | Services app → CompuLab Web / CompuLab Worker, or `Stop-Service CompuLabWeb,CompuLabWorker` |

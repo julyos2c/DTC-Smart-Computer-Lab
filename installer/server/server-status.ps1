@@ -47,6 +47,16 @@ foreach ($name in $script:WebService, $script:WorkerService) {
     if ($svc.Status -ne 'Running' -and $StartServices) { Start-Service $name -ErrorAction SilentlyContinue; $svc.Refresh() }
     Show $name ($svc.Status -eq 'Running') "$($svc.Status), start type $($svc.StartType)"
 }
+if ($envReadable -and $values['DB_PORT']) {
+    # CompuLab's own database must never be reachable from the network.
+    $addresses = Get-ListenerAddresses ([int]$values['DB_PORT'])
+    if ($values['COMPULAB_DB_MODE'] -eq 'bundled') {
+        $okLocal = Test-LocalOnlyAddresses $addresses
+        Show 'Database port' $okLocal $(if (-not $addresses.Count) { "nothing listens on $($values['DB_PORT']): CompuLab's database is not running" } elseif ($okLocal) { "$($values['DB_PORT']) on 127.0.0.1 only (CompuLab's own database, data in data\mariadb)" } else { "$($values['DB_PORT']) is open on $($addresses -join ', '): it should be 127.0.0.1 only (run install-server.ps1 to repair)" })
+    } else {
+        Show 'Database port' ($addresses.Count -gt 0) "$($values['DB_HOST']):$($values['DB_PORT']) (external MariaDB/MySQL)$(if ($addresses.Count) { ', listening on ' + ($addresses -join ', ') })"
+    }
+} elseif (-not $envReadable) { Show 'Database port' $null 'needs administrator (settings file)' }
 
 Write-Host "`n2. Website on this computer"
 $web = $false

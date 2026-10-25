@@ -21,6 +21,25 @@ $script:BackupTaskName = 'CompuLab nightly backup'
 $script:DefaultBackupRoot = Join-Path $script:AppDir 'backups'
 $script:DefaultAllowFrom = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10')
 
+# Bundled runtime (CompuLab-Server-Setup.exe ships it; a plain folder copy of
+# the source has none and uses an installed Python + venv and an existing
+# MariaDB/MySQL instead). Program files under runtime\ are replaced by every
+# update; the database's data under data\ is never touched by the setup.
+$script:RuntimeDir = Join-Path $script:AppDir 'runtime'
+$script:BundledPython = Join-Path $script:RuntimeDir 'python\python.exe'
+$script:BundledDbDir = Join-Path $script:RuntimeDir 'mariadb'
+$script:BundledDbBin = Join-Path $script:BundledDbDir 'bin'
+$script:DataDir = Join-Path $script:AppDir 'data'
+$script:BundledDbData = Join-Path $script:DataDir 'mariadb'
+$script:BundledDbConfig = Join-Path $script:BundledDbData 'my.ini'
+$script:BundledDbMarker = Join-Path $script:BundledDbData 'compulab-provisioned.txt'
+# The database administrator's (root's) sign-in: only Administrators and
+# SYSTEM can read it. Never printed, never on a command line.
+$script:DbAdminCnf = Join-Path $script:DataDir 'db-admin.cnf'
+$script:BundledDbService = 'CompuLabMariaDB'
+$script:BundledDbPreferredPort = 3308
+$script:RuntimeManifestName = 'COMPULAB-MANIFEST.txt'
+
 function Write-Step([string]$Text) { Write-Host "`n==> $Text" -ForegroundColor Cyan }
 function Write-Ok([string]$Text) { Write-Host "    OK: $Text" -ForegroundColor Green }
 function Write-Note([string]$Text) { Write-Host "    $Text" -ForegroundColor Yellow }
@@ -193,7 +212,19 @@ function Set-DotEnvValue([string]$Key, [string]$Value) {
 function Protect-EnvFile {
     # Only Administrators, SYSTEM (the services) and the account that ran the
     # installer (an administrator) may read .env: it holds passwords.
-    & icacls $script:EnvFile /inheritance:r /grant:r 'Administrators:F' 'SYSTEM:F' "*$(Get-CurrentUserSid):F" | Out-Null
+    Protect-SecretFile $script:EnvFile
+}
+
+function Get-SecretFileAclArgs([string]$Path) {
+    # icacls arguments for a file holding passwords: inherited permissions
+    # removed; Administrators, SYSTEM and the installing account only. SIDs,
+    # not names, so it also works on a non-English Windows.
+    return @($Path, '/inheritance:r', '/grant:r', '*S-1-5-32-544:F', '*S-1-5-18:F', "*$(Get-CurrentUserSid):F")
+}
+
+function Protect-SecretFile([string]$Path) {
+    & icacls @(Get-SecretFileAclArgs $Path) | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not restrict access to $Path (icacls exit code $LASTEXITCODE)." }
 }
 
 function New-DotEnvSettings([hashtable]$S, [string[]]$LanAddresses, [string]$ComputerName) {
@@ -604,16 +635,23 @@ function Get-ListenerInfo([int]$Port) {
     if (-not $conn) { return $null }
     $procId = [int]$conn.OwningProcess
     $svc = Get-CimInstance Win32_Service -Filter "ProcessId = $procId" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $svc) {
+        # MySQL 8.4 runs as a service process that starts a second mysqld,
+        # which owns the port: the service is the parent's.
+        $parent = (Get-CimInstance Win32_Process -Filter "ProcessId = $procId" -ErrorAction SilentlyContinue).ParentProcessId
+        if ($parent) { $svc = Get-CimInstance Win32_Service -Filter "ProcessId = $parent" -ErrorAction SilentlyContinue | Select-Object -First 1 }
+    }
     $path = ''
     try { $path = [string](Get-Process -Id $procId -ErrorAction Stop).Path } catch { }
     if (-not $path -and $svc) { $path = [string]$svc.PathName }
     return @{ ProcessId = $procId; ProcessPath = $path; ServiceName = $(if ($svc) { [string]$svc.Name } else { '' }) }
 }
 
-function Test-DbListener($Listener, [string]$DbHost, [int]$Port) {
+function Test-DbListener($Listener, [string]$DbHost, [int]$Port, [string]$AllowedService = '') {
     # $null if CompuLab may use the database server listening on $Port of
     # this computer, else what is wrong and what to do. Pure (tested).
     # CompuLab never stops, changes or replaces another database: it refuses.
+    # $AllowedService: a service named explicitly with -DbServiceName.
     if ($DbHost -notin @('127.0.0.1', 'localhost')) { return $null }   # a database on another computer: not checked here
     if (-not $Listener) {
         return ("No database server is listening on port $Port of this computer. Start the MariaDB/MySQL service (Services app), " +
@@ -628,6 +666,59 @@ function Test-DbListener($Listener, [string]$DbHost, [int]$Port) {
     }
     if ($path -and $path -notmatch '(?i)(mysqld|mariadbd)(\.exe)?\b') {
         return "Port $Port is used by '$path', which is not a MariaDB/MySQL server. Free that port, or give the database's real port with -DbPort."
+    }
+    # A MariaDB/MySQL that another program installed as its own service (for
+    # example an inventory or accounting program's bundled database) holds
+    # that program's data: never used, unless named with -DbServiceName.
+    $service = "$($Listener.ServiceName)"
+    if ($service -and $service -notmatch '^(MariaDB|MySQL)' -and $service -ne $AllowedService) {
+        $where = if ($path) { " ($path)" } else { '' }
+        return ("Port $Port is used by the database of another program: the service '$service'$where. CompuLab does not use, stop or change it. " +
+                'Install MariaDB 11.4 LTS on a free port (for example 3308: choose it in the MariaDB setup) and enter that port as the ' +
+                '"Database port" in the setup (or -DbPort 3308).')
+    }
+    return $null
+}
+
+function Get-DbServerBinDir($Listener) {
+    # The folder of the database server program that owns the port (from
+    # its path, or its service command line), or $null.
+    if (-not $Listener) { return $null }
+    $exe = "$($Listener.ProcessPath)".Trim()
+    if ($exe -match '^"([^"]+)"') { $exe = $Matches[1] }
+    elseif ($exe -match '^(.+?\.exe)\b') { $exe = $Matches[1] }
+    if (-not $exe -or $exe -notmatch '(?i)\.exe$') { return $null }
+    $dir = Split-Path -Parent $exe
+    if ($dir -and (Test-Path -LiteralPath $dir)) { return $dir }
+    return $null
+}
+
+function Select-DbClientInDir([string]$Dir, [string]$Kind) {
+    # The client ('client': mariadb.exe / mysql.exe) or dump program ('dump':
+    # mariadb-dump.exe / mysqldump.exe) in that folder, or $null. MariaDB 11
+    # may ship only the mariadb* names.
+    if (-not $Dir) { return $null }
+    $names = if ($Kind -eq 'dump') { @('mariadb-dump.exe', 'mysqldump.exe') } else { @('mariadb.exe', 'mysql.exe') }
+    foreach ($n in $names) {
+        $p = Join-Path $Dir $n
+        if (Test-Path -LiteralPath $p) { return $p }
+    }
+    return $null
+}
+
+function Find-DbClient([string]$Kind, [string]$Port = '', [string]$DbHost = '127.0.0.1') {
+    # The client or dump program that belongs to the database server CompuLab
+    # uses: from the folder of the server listening on its port on this
+    # computer (another product's tools can fail against it, e.g. MySQL's
+    # mysqldump against MariaDB), else the first one installed.
+    if ("$Port" -match '^\d{1,5}$' -and $DbHost -in @('127.0.0.1', 'localhost')) {
+        $own = Select-DbClientInDir (Get-DbServerBinDir (Get-ListenerInfo ([int]$Port))) $Kind
+        if ($own) { return $own }
+    }
+    $names = if ($Kind -eq 'dump') { @('mysqldump.exe', 'mariadb-dump.exe') } else { @('mysql.exe', 'mariadb.exe') }
+    foreach ($n in $names) {
+        $found = Find-MySqlTool $n
+        if ($found) { return $found }
     }
     return $null
 }
@@ -695,15 +786,17 @@ function Test-WinSWExe([string]$Path) {
 }
 
 function Get-ServiceDefinitions([int]$Port) {
-    $waitress = Join-Path $script:AppDir 'venv\Scripts\waitress-serve.exe'
+    $python = Get-AppPython
     return @(
         # 0.0.0.0: reachable on the campus LAN and, if configured, the
         # Tailscale address; the firewall rule limits who may connect.
-        @{ Id = $script:WebService; Name = 'CompuLab Web'; Exe = $waitress;
-           Args = "--listen=0.0.0.0:$Port --threads=8 compulab.wsgi:application";
+        # "python -m waitress" works with the bundled Python (which has no
+        # Scripts\ folder) and with a venv alike.
+        @{ Id = $script:WebService; Name = 'CompuLab Web'; Exe = $python;
+           Args = "-m waitress --listen=0.0.0.0:$Port --threads=8 compulab.wsgi:application";
            Desc = "CompuLab website (waitress). Serves the campus network on port $Port.";
            Env = [ordered]@{ 'COMPULAB_BACKGROUND_TASKS' = 'False' } },
-        @{ Id = $script:WorkerService; Name = 'CompuLab Worker'; Exe = $script:VenvPython;
+        @{ Id = $script:WorkerService; Name = 'CompuLab Worker'; Exe = $python;
            Args = 'manage.py run_worker';
            Desc = 'CompuLab background work: lab PC online/offline checks, email outbox, cloud sync, reminders, durable jobs.';
            Env = [ordered]@{ 'COMPULAB_BACKGROUND_TASKS' = 'False'; 'DJANGO_LOG_FILE_NAME' = 'worker.log' } }
@@ -764,18 +857,38 @@ function New-BackupTaskDefinition([string]$BackupScript, [string]$BackupRoot) {
     return @{ Action = $action; Trigger = $trigger; Principal = $principal; Settings = $taskSettings }
 }
 
+function Get-OwnService([string]$Name) {
+    # The Windows service of that name, but only if it belongs to THIS
+    # CompuLab folder (its program is inside $script:AppDir). Service names
+    # are global: a service of another CompuLab installation (or of a test
+    # installation) on the same computer is never stopped, started, changed
+    # or removed from here.
+    $w = Get-CimInstance Win32_Service -Filter "Name = '$Name'" -ErrorAction SilentlyContinue
+    if (-not $w) { return $null }
+    if ("$($w.PathName)".IndexOf($script:AppDir.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -lt 0) { return $null }
+    return Get-Service -Name $Name -ErrorAction SilentlyContinue
+}
+
+function Get-ForeignServicePath([string]$Name) {
+    # The program path of a service of that name that does NOT belong to this
+    # folder, or '' (none, or ours).
+    $w = Get-CimInstance Win32_Service -Filter "Name = '$Name'" -ErrorAction SilentlyContinue
+    if (-not $w -or (Get-OwnService $Name)) { return '' }
+    return "$($w.PathName)"
+}
+
 function Stop-CompuLabServices {
     foreach ($name in $script:WorkerService, $script:WebService) {
-        $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+        $svc = Get-OwnService $name
         if ($svc -and $svc.Status -ne 'Stopped') { Stop-Service -Name $name -Force; Write-Ok "Stopped $name" }
     }
 }
 
 function Start-CompuLabServices {
     foreach ($name in $script:WebService, $script:WorkerService) {
-        $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+        $svc = Get-OwnService $name
         if ($svc) { Start-Service -Name $name; Write-Ok "Started $name" }
-        else { Write-Note "Service $name is not installed (run install-server.ps1)." }
+        else { Write-Note "Service $name is not installed for $($script:AppDir) (run install-server.ps1)." }
     }
 }
 
@@ -806,7 +919,7 @@ function Invoke-EnsureAdmin([string[]]$Arguments, [string]$Password = '') {
     Push-Location $script:AppDir
     try {
         if ($Password) { $env:COMPULAB_ADMIN_PASSWORD = $Password } else { Remove-Item Env:\COMPULAB_ADMIN_PASSWORD -ErrorAction SilentlyContinue }
-        $out = @(Invoke-Captured $script:VenvPython (@('manage.py', 'ensure_admin') + $Arguments))
+        $out = @(Invoke-Captured (Get-AppPython) (@('manage.py', 'ensure_admin') + $Arguments))
         $code = $LASTEXITCODE
     } finally {
         Remove-Item Env:\COMPULAB_ADMIN_PASSWORD -ErrorAction SilentlyContinue
@@ -826,7 +939,486 @@ function Read-SecretText([string]$Prompt) {
 function Invoke-Manage([string[]]$Arguments) {
     Push-Location $script:AppDir
     try {
-        Invoke-Logged $script:VenvPython (@('manage.py') + $Arguments)
+        Invoke-Logged (Get-AppPython) (@('manage.py') + $Arguments)
         if ($LASTEXITCODE -ne 0) { throw "manage.py $($Arguments -join ' ') failed (exit code $LASTEXITCODE)." }
     } finally { Pop-Location }
+}
+
+# ---------------------------------------------------------------- bundled runtime
+# CompuLab-Server-Setup.exe ships runtime\python (the official Python
+# embeddable package with CompuLab's packages already installed) and
+# runtime\mariadb (the official MariaDB server files), so the server needs
+# no Python, no database server, no root password and no internet.
+$script:BundledDbRequiredFiles = @('bin\mariadbd.exe', 'bin\server.dll', 'bin\mariadb.exe', 'bin\mariadb-dump.exe',
+    'bin\mariadb-admin.exe', 'bin\mariadb-install-db.exe', 'bin\mariadb-upgrade.exe', 'share\english\errmsg.sys', 'COPYING')
+$script:BundledPythonRequiredFiles = @('python.exe', 'python313.dll', 'python313.zip', 'python313._pth', 'LICENSE.txt')
+
+function Get-AppPython {
+    # The Python that runs CompuLab: the bundled one if present, else the
+    # venv of a plain folder copy.
+    if (Test-Path -LiteralPath $script:BundledPython) { return $script:BundledPython }
+    return $script:VenvPython
+}
+
+function Test-BundledPython { return (Test-Path -LiteralPath $script:BundledPython) }
+function Test-BundledDbAvailable { return (Test-Path -LiteralPath (Join-Path $script:BundledDbBin 'mariadbd.exe')) }
+
+function Test-RuntimeFiles([string]$Dir, [string[]]$Required) {
+    # Problems with a bundled runtime folder (none: usable). Every required
+    # file must be there, and every file listed in COMPULAB-MANIFEST.txt
+    # (written by the build: "<sha256>  <relative path>") must have exactly
+    # that SHA-256: an incomplete or damaged copy is refused before use.
+    $problems = @()
+    foreach ($r in $Required) { if (-not (Test-Path -LiteralPath (Join-Path $Dir $r))) { $problems += "missing $r" } }
+    $manifest = Join-Path $Dir $script:RuntimeManifestName
+    if (-not (Test-Path -LiteralPath $manifest)) { $problems += "missing $($script:RuntimeManifestName)"; return $problems }
+    $listed = 0
+    foreach ($line in Get-Content -LiteralPath $manifest) {
+        if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { continue }
+        $listed++
+        $expected = $Matches[1]; $rel = $Matches[2]
+        $file = Join-Path $Dir $rel
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { $problems += "missing $rel"; continue }
+        if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLower() -ne $expected) { $problems += "damaged $rel (SHA-256 differs from the build)" }
+    }
+    if ($listed -eq 0) { $problems += "$($script:RuntimeManifestName) lists no files" }
+    return $problems
+}
+
+function Test-TcpPortFree([int]$Port) {
+    # Nothing listens on it, and it can be opened on 127.0.0.1 (this also
+    # catches ports Windows reserves, e.g. for Hyper-V).
+    if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) { return $false }
+    $l = $null
+    try { $l = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port); $l.Start(); return $true }
+    catch { return $false }
+    finally { if ($l) { $l.Stop() } }
+}
+
+function Select-DbPort([int]$Preferred, [scriptblock]$IsFree = $null, [int]$Tries = 92) {
+    # The preferred port if free, else the next free one above it. A port in
+    # use is only skipped: the program using it (MySQL, another program's
+    # database, ...) is never stopped, changed or asked.
+    if (-not $IsFree) { $IsFree = { param($p) Test-TcpPortFree $p } }
+    $last = [Math]::Min(65535, $Preferred + $Tries - 1)
+    for ($p = $Preferred; $p -le $last; $p++) { if (& $IsFree $p) { return $p } }
+    throw "No free port for CompuLab's database between $Preferred and $last. Free one, or choose another starting port with -DbPort."
+}
+
+function New-BundledDbConfig([string]$DataDir, [int]$Port, [string]$BaseDir) {
+    # CompuLab's own my.ini, written as a whole (settings appended to the one
+    # mariadb-install-db writes would end up in its [client] section). The
+    # server listens on 127.0.0.1 only: never reachable from the LAN.
+    $fwd = { param($p) ("$p" -replace '\\', '/') }
+    return (@(
+        '# Written by CompuLab (installer\server\install-server.ps1) and rewritten on every repair: do not edit.',
+        '[mysqld]',
+        "datadir=$(& $fwd $DataDir)",
+        "port=$Port",
+        'bind-address=127.0.0.1',
+        'character-set-server=utf8mb4',
+        'collation-server=utf8mb4_unicode_ci',
+        "log-error=$(& $fwd (Join-Path $DataDir 'compulab-mariadb.err'))",
+        'innodb_buffer_pool_size=256M',
+        'max_allowed_packet=64M',
+        '[client]',
+        "port=$Port",
+        "plugin-dir=$(& $fwd (Join-Path $BaseDir 'lib\plugin'))"
+    ) -join "`r`n") + "`r`n"
+}
+
+function Get-BundledDbPort {
+    # The port in CompuLab's my.ini ([mysqld] section), or 0 if there is none
+    # yet or it cannot be read (an earlier installer could leave it without
+    # permissions; Repair-BundledDbFiles fixes that before it is used).
+    if (-not (Test-Path -LiteralPath $script:BundledDbConfig)) { return 0 }
+    try { $lines = @(Get-Content -LiteralPath $script:BundledDbConfig -ErrorAction Stop) } catch { return 0 }
+    $section = ''
+    foreach ($line in $lines) {
+        if ($line -match '^\s*\[(.+)\]\s*$') { $section = $Matches[1].ToLower(); continue }
+        if ($section -eq 'mysqld' -and $line -match '^\s*port\s*=\s*(\d+)\s*$') { return [int]$Matches[1] }
+    }
+    return 0
+}
+
+function Get-BundledDbRootSql([string]$RootPassword) {
+    # Run by mariadbd --bootstrap, which has no network at all, before the
+    # server ever listens: root gets a password (mariadb-install-db leaves it
+    # empty) and may sign in from this computer only (the root@<computer
+    # name> account mariadb-install-db also creates, without a password, is
+    # removed); no anonymous accounts.
+    # Bootstrap runs with --skip-grant-tables: FLUSH PRIVILEGES loads the
+    # account tables first, else ALTER USER is refused (error 1290).
+    $pw = $RootPassword.Replace('\', '\\').Replace("'", "''")
+    return @"
+FLUSH PRIVILEGES;
+ALTER USER 'root'@'localhost' IDENTIFIED BY '$pw';
+ALTER USER IF EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '$pw';
+ALTER USER IF EXISTS 'root'@'::1' IDENTIFIED BY '$pw';
+DELETE FROM mysql.global_priv WHERE User = 'root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+DROP USER IF EXISTS ''@'localhost';
+DROP USER IF EXISTS ''@'%';
+FLUSH PRIVILEGES;
+"@
+}
+
+function Get-BundledDbHardeningSql([switch]$DropTestDatabase) {
+    # CompuLab's own server only (never an external one). mariadb-install-db
+    # gives every account (the PUBLIC role) full rights on `test` and on any
+    # database named test_...: those rights are removed on every install and
+    # repair (idempotent). The empty `test` database itself is dropped only
+    # for a data folder created in this run (never one that holds data).
+    $sql = "DELETE FROM mysql.db WHERE User = 'PUBLIC' AND Db IN ('test', 'test\\_%');`r`nFLUSH PRIVILEGES;`r`n"
+    if ($DropTestDatabase) { $sql = "DROP DATABASE IF EXISTS ``test``;`r`n" + $sql }
+    return $sql
+}
+
+function Hide-Secret([string]$Text, [string[]]$Secrets) {
+    # Masks passwords in program output before it is shown or logged.
+    foreach ($s in $Secrets) { if ($s -and $s.Length -ge 6) { $Text = $Text.Replace($s, '********') } }
+    return $Text
+}
+
+function Invoke-WithStdin([string]$Exe, [string[]]$Arguments, [string]$InputText, [string[]]$Secrets = @()) {
+    # Runs a program with text on its standard input as UTF-8 WITHOUT a byte
+    # order mark (Windows PowerShell 5.1 adds one when piping, which
+    # mariadbd --bootstrap rejects). Passwords travel only this way, never on
+    # a command line. Returns @{ ExitCode; Lines } with the secrets masked.
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    $psi.Arguments = (@($Arguments | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } })) -join ' '
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    # .NET Framework opens the program's stdin with the console's input
+    # encoding and, when that is UTF-8 (code page 65001), writes a BOM as soon
+    # as the program starts: start it with UTF-8 *without* BOM instead.
+    $previousEncoding = $null
+    try { $previousEncoding = [Console]::InputEncoding; [Console]::InputEncoding = New-Object Text.UTF8Encoding $false } catch { $previousEncoding = $null }
+    try { $p = [Diagnostics.Process]::Start($psi) }
+    finally { if ($previousEncoding) { try { [Console]::InputEncoding = $previousEncoding } catch { } } }
+    $out = $p.StandardOutput.ReadToEndAsync()
+    $err = $p.StandardError.ReadToEndAsync()
+    $bytes = (New-Object Text.UTF8Encoding $false).GetBytes($InputText)
+    $p.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+    $p.StandardInput.Close()
+    $p.WaitForExit()
+    $text = Hide-Secret ($out.Result + "`n" + $err.Result) $Secrets
+    return @{ ExitCode = $p.ExitCode; Lines = @($text -split "`r?`n" | Where-Object { $_.Trim() }) }
+}
+
+function Read-DbAdminCnf {
+    # @{ Password; Port } from db-admin.cnf, or $null.
+    if (-not (Test-Path -LiteralPath $script:DbAdminCnf)) { return $null }
+    $v = @{}
+    foreach ($line in Get-Content -LiteralPath $script:DbAdminCnf) { if ($line -match '^\s*(password|port)\s*=\s*(.*)$') { $v[$Matches[1]] = $Matches[2].Trim() } }
+    if (-not $v['password']) { return $null }
+    return @{ Password = $v['password']; Port = $v['port'] }
+}
+
+function Write-DbAdminCnf([string]$Password, [int]$Port) {
+    New-Item -ItemType Directory -Force -Path $script:DataDir | Out-Null
+    [IO.File]::WriteAllText($script:DbAdminCnf, "[client]`r`nuser=root`r`npassword=$Password`r`nhost=127.0.0.1`r`nport=$Port`r`n", (New-Object Text.UTF8Encoding $false))
+    Protect-SecretFile $script:DbAdminCnf
+}
+
+function Get-BundledDbProcess {
+    # mariadbd processes started from CompuLab's own runtime\mariadb\bin (never
+    # another program's database).
+    $prefix = $script:BundledDbBin.TrimEnd('\') + '\'
+    return @(Get-CimInstance Win32_Process -Filter "Name = 'mariadbd.exe'" -ErrorAction SilentlyContinue |
+             Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
+}
+
+function Test-ListenerIsBundledDb($Listener) {
+    if (-not $Listener) { return $false }
+    if ($Listener.ServiceName -eq $script:BundledDbService) { return $true }
+    $dir = Get-DbServerBinDir $Listener
+    return [bool]($dir -and $dir.TrimEnd('\') -ieq $script:BundledDbBin.TrimEnd('\'))
+}
+
+function Get-ListenerAddresses([int]$Port) {
+    return @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $_.LocalAddress } | Select-Object -Unique)
+}
+
+function Test-LocalOnlyAddresses([string[]]$Addresses) {
+    # True when a server listens on 127.0.0.1 only (not reachable from the LAN).
+    return ($Addresses.Count -gt 0 -and @($Addresses | Where-Object { $_ -ne '127.0.0.1' }).Count -eq 0)
+}
+
+function Get-BundledDbServiceSpec {
+    # How the CompuLabMariaDB service is registered (checked by the tests
+    # without registering it): mariadbd runs as a service when the service
+    # name is its last argument; it gets its own virtual account
+    # (NT SERVICE\CompuLabMariaDB), not LocalSystem.
+    $exe = Join-Path $script:BundledDbBin 'mariadbd.exe'
+    return @{
+        Name = $script:BundledDbService
+        DisplayName = 'CompuLab Database (MariaDB)'
+        Description = 'CompuLab''s own MariaDB database. Listens on 127.0.0.1 only; CompuLab Web and CompuLab Worker start after it.'
+        BinaryPathName = "`"$exe`" `"--defaults-file=$($script:BundledDbConfig)`" $($script:BundledDbService)"
+        Account = "NT SERVICE\$($script:BundledDbService)"
+    }
+}
+
+function Register-BundledDbService {
+    # Creates the CompuLabMariaDB service once; a repair keeps it. A service
+    # of that name that runs anything else is never changed.
+    $spec = Get-BundledDbServiceSpec
+    $existing = Get-CimInstance Win32_Service -Filter "Name = '$($spec.Name)'" -ErrorAction SilentlyContinue
+    if ($existing) {
+        if ("$($existing.PathName)".IndexOf($script:BundledDbBin, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            throw "A Windows service named $($spec.Name) already exists and runs '$($existing.PathName)', not CompuLab's database. It was not changed. Remove or rename it, then run the installer again."
+        }
+        return $false
+    }
+    # Manual until it has started and answered once (Set-BundledDbAutoStart):
+    # a failed installation must not leave a service Windows restarts every
+    # minute.
+    New-Service -Name $spec.Name -BinaryPathName $spec.BinaryPathName -DisplayName $spec.DisplayName -Description $spec.Description -StartupType Manual | Out-Null
+    if (-not (Get-Service -Name $spec.Name -ErrorAction SilentlyContinue)) { throw "Registering the $($spec.Name) service failed." }
+    Invoke-Quiet 'sc.exe' @('config', $spec.Name, 'obj=', $spec.Account) | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not set the account of the $($spec.Name) service (sc.exe exit code $LASTEXITCODE)." }
+    Invoke-Quiet 'sc.exe' (Get-ServiceRecoveryArgs $spec.Name) | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not set the restart-on-failure actions of the $($spec.Name) service (sc.exe exit code $LASTEXITCODE)." }
+    return $true
+}
+
+function Set-BundledDbAutoStart {
+    # After the database service started and answered: start at every boot.
+    $svc = Get-CimInstance Win32_Service -Filter "Name = '$($script:BundledDbService)'" -ErrorAction SilentlyContinue
+    if ($svc -and $svc.StartMode -ne 'Auto') {
+        Set-Service -Name $script:BundledDbService -StartupType Automatic
+        Write-Ok "Service $($script:BundledDbService) set to start automatically at boot"
+    }
+}
+
+function Get-BundledDbAclArgs {
+    # icacls calls for the database files: Administrators, SYSTEM and the
+    # database service's own account; not ordinary users.
+    #  1. The data folder itself: inherited permissions removed, these
+    #     granted as inheritable. Never with /T: icacls /inheritance:r ... /T
+    #     leaves every FILE inside with no permission entry at all (nobody,
+    #     not even the database, can open my.ini - found on a real install).
+    #  2. Everything inside: back to plain inheritance from the folder (also
+    #     repairs files an earlier installer left without permissions).
+    #  3. The program files: readable for the service account (inherited by
+    #     the files inside without /T).
+    $svc = "NT SERVICE\$($script:BundledDbService)"
+    return @(
+        @($script:BundledDbData, '/inheritance:r', '/grant:r', '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-18:(OI)(CI)F', "${svc}:(OI)(CI)M", '/Q'),
+        @((Join-Path $script:BundledDbData '*'), '/reset', '/T', '/Q'),
+        @($script:BundledDbDir, '/grant', "${svc}:(OI)(CI)RX", '/Q')
+    )
+}
+
+function Protect-BundledDbData {
+    foreach ($a in Get-BundledDbAclArgs) {
+        $out = @(& icacls @a 2>&1 | ForEach-Object { "$_" })
+        if ($LASTEXITCODE -ne 0) { throw "Could not set the permissions of $($a[0]) (icacls exit code $LASTEXITCODE): $(($out | Select-Object -Last 2) -join ' ')" }
+    }
+    # Proof, not trust: the database settings must be readable afterwards.
+    try { $null = [IO.File]::ReadAllText($script:BundledDbConfig) }
+    catch { throw "After setting its permissions, $($script:BundledDbConfig) cannot be read: $($_.Exception.Message)" }
+}
+
+function Repair-BundledDbFiles {
+    # A data folder an earlier installer left with unreadable files (icacls
+    # /inheritance:r ... /T: no permission entry at all, so not even an
+    # Administrator can open my.ini): everything inside goes back to
+    # inheriting the folder's permissions, before any file in it is read or
+    # written. Only when my.ini cannot be read; nothing is moved or deleted.
+    if (-not (Test-Path -LiteralPath $script:BundledDbConfig)) { return }
+    try { $null = [IO.File]::ReadAllText($script:BundledDbConfig); return } catch { }
+    $out = @(& icacls (Join-Path $script:BundledDbData '*') /reset /T /Q 2>&1 | ForEach-Object { "$_" })
+    if ($LASTEXITCODE -ne 0) {
+        throw ("$($script:BundledDbConfig) cannot be read and its permissions could not be repaired (icacls exit code $LASTEXITCODE): " +
+               "$(($out | Select-Object -Last 2) -join ' '). Run the setup as Administrator. The database files were not changed.")
+    }
+    try { $null = [IO.File]::ReadAllText($script:BundledDbConfig) }
+    catch { throw "After repairing its permissions, $($script:BundledDbConfig) still cannot be read: $($_.Exception.Message). The database files were not changed." }
+    Write-Ok "Permissions of the files in $($script:BundledDbData) repaired (an earlier installation left them unreadable); data unchanged"
+}
+
+function Initialize-BundledDbService {
+    # Registers the service (once) and gives its account the data folder.
+    # Returns $true when the service was created now.
+    $created = Register-BundledDbService
+    if ($created) { Write-Ok "Service $($script:BundledDbService) registered (its own account NT SERVICE\$($script:BundledDbService))" }
+    Protect-BundledDbData
+    return $created
+}
+
+function Wait-BundledDbListening([int]$Port, [int]$Seconds = 90, $Process = $null) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        $l = Get-ListenerInfo $Port
+        if ($l) { return $l }
+        if ($Process -and $Process.HasExited) { return $null }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    return $null
+}
+
+function Get-BundledDbErrorTail([int]$Lines = 6) {
+    $err = Join-Path $script:BundledDbData 'compulab-mariadb.err'
+    if (-not (Test-Path -LiteralPath $err)) { return '(no database log yet)' }
+    return ((Get-Content -LiteralPath $err -Tail $Lines -ErrorAction SilentlyContinue | ForEach-Object { "$_".Trim() }) -join ' | ')
+}
+
+function Get-ListenerDescription($Listener) {
+    if ($Listener.ServiceName) { return "the service '$($Listener.ServiceName)'$(if ($Listener.ProcessPath) { " ($($Listener.ProcessPath))" })" }
+    if ($Listener.ProcessPath) { return "'$($Listener.ProcessPath)'" }
+    return "process $($Listener.ProcessId)"
+}
+
+function Start-BundledDb([int]$Port, [switch]$AsService) {
+    # Starts CompuLab's database (its Windows service, or without services a
+    # background process) and waits until it listens on 127.0.0.1:$Port.
+    $listener = Get-ListenerInfo $Port
+    if ($listener) {
+        if (Test-ListenerIsBundledDb $listener) { return $listener }
+        throw ("Port $Port, CompuLab's database port, is used by $(Get-ListenerDescription $listener). That program was not stopped or changed. " +
+               'Stop it, or move CompuLab''s database to a free port: run the installer again with -DbPort <port>.')
+    }
+    $proc = $null
+    if ($AsService) {
+        if (-not (Get-OwnService $script:BundledDbService)) {
+            throw "The service $($script:BundledDbService) does not belong to $($script:AppDir) ($(Get-ForeignServicePath $script:BundledDbService)). It was not started or changed."
+        }
+        try { Start-Service -Name $script:BundledDbService -ErrorAction Stop }
+        catch { throw "The $($script:BundledDbService) service did not start: $($_.Exception.Message) Its log says: $(Get-BundledDbErrorTail)" }
+    } else {
+        $proc = Start-Process -FilePath (Join-Path $script:BundledDbBin 'mariadbd.exe') -ArgumentList "--defaults-file=`"$($script:BundledDbConfig)`"" -WindowStyle Hidden -PassThru
+    }
+    $listener = Wait-BundledDbListening $Port 90 $proc
+    if (-not $listener) { throw "CompuLab's database did not start on port $Port. Its log says: $(Get-BundledDbErrorTail)" }
+    if (-not (Test-ListenerIsBundledDb $listener)) {
+        throw "Port $Port answered, but by $(Get-ListenerDescription $listener), not CompuLab's database. Nothing was changed."
+    }
+    return $listener
+}
+
+function Stop-BundledDb {
+    # Stops CompuLab's own database cleanly (its service, or its background
+    # process); never any other database, and never the database service of
+    # another CompuLab folder.
+    $svc = Get-OwnService $script:BundledDbService
+    if ($svc -and $svc.Status -ne 'Stopped') {
+        Stop-Service -Name $script:BundledDbService -Force
+        $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(120))
+    }
+    $procs = @(Get-BundledDbProcess)
+    if (-not $procs.Count) { return }
+    # A clean shutdown needs the administrator sign-in; without it (lost
+    # db-admin.cnf) the process is ended after a short wait: InnoDB recovers
+    # on the next start. Only CompuLab's own process is ever ended.
+    $wait = 5
+    if (Read-DbAdminCnf) {
+        Invoke-Quiet (Join-Path $script:BundledDbBin 'mariadb-admin.exe') @("--defaults-extra-file=$($script:DbAdminCnf)", 'shutdown') | Out-Null
+        $wait = 60
+    }
+    foreach ($p in $procs) {
+        try { Wait-Process -Id $p.ProcessId -Timeout $wait -ErrorAction Stop } catch { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function Initialize-BundledDb([int]$Port, [switch]$AsService) {
+    # Creates (first run) or repairs CompuLab's own database server; returns
+    # @{ Port; Created; Listener }. Idempotent and never destructive:
+    #   - an existing data folder is never initialized again or emptied;
+    #   - a half-created one (interrupted install: no system database) is
+    #     moved aside, kept, and made again;
+    #   - root's password is saved to db-admin.cnf BEFORE it is set, and a
+    #     lost or rejected root sign-in is reset offline (--bootstrap), data
+    #     unchanged.
+    $bin = $script:BundledDbBin
+    $created = $false
+    New-Item -ItemType Directory -Force -Path $script:DataDir | Out-Null
+    Repair-BundledDbFiles
+    $running = @(Get-BundledDbProcess).Count -gt 0
+    if ($running -and (Get-BundledDbPort) -ne $Port) { Stop-BundledDb; $running = $false }   # moving to another port
+    if (-not (Test-Path -LiteralPath (Join-Path $script:BundledDbData 'mysql'))) {
+        if ($running) { Stop-BundledDb }
+        if (Test-Path -LiteralPath $script:BundledDbData) {
+            $aside = "$($script:BundledDbData).incomplete-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+            Move-Item -LiteralPath $script:BundledDbData -Destination $aside
+            Write-Note "An unfinished database folder from an interrupted installation was moved to $aside (kept; delete it once CompuLab works)."
+        }
+        $out = @(Invoke-Captured (Join-Path $bin 'mariadb-install-db.exe') @("--datadir=$($script:BundledDbData)", "--port=$Port", '--silent'))
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $script:BundledDbData 'mysql'))) {
+            throw "Creating CompuLab's database folder failed (mariadb-install-db exit code $LASTEXITCODE): $((@($out) | Select-Object -Last 3) -join ' | ')"
+        }
+        $created = $true
+        Write-Ok "Database folder created: $($script:BundledDbData)"
+    }
+    # Order: the database is secured (bootstrap, as the installer) BEFORE its
+    # service exists and before the folder is closed to everyone else. A
+    # service that already exists (repair, update) first gets its folder
+    # permissions repaired, before any file in it is written or read.
+    if ($AsService -and (Get-OwnService $script:BundledDbService)) { Initialize-BundledDbService | Out-Null }
+    [IO.File]::WriteAllText($script:BundledDbConfig, (New-BundledDbConfig $script:BundledDbData $Port $script:BundledDbDir), (New-Object Text.UTF8Encoding $false))
+
+    $admin = Read-DbAdminCnf
+    $setRoot = $created -or -not $admin -or -not (Test-Path -LiteralPath $script:BundledDbMarker)
+    if (-not $setRoot) {
+        Write-DbAdminCnf $admin.Password $Port
+        Start-BundledDb $Port -AsService:$AsService | Out-Null
+        $signIn = Get-DbSignIn (Join-Path $bin 'mariadb.exe') $script:DbAdminCnf
+        if (-not $signIn.Version) {
+            Write-Note "The saved database administrator sign-in was refused ($(ConvertTo-DbErrorText $signIn.Lines '127.0.0.1' "$Port" $admin.Password)). It is set again offline; the data is not changed."
+            $setRoot = $true
+        }
+    }
+    if ($setRoot) {
+        # No second server on the same files while the bootstrap runs: an
+        # existing service (e.g. one Windows keeps restarting after a failed
+        # install) is disabled first, and set back to Manual afterwards.
+        $hasService = $AsService -and (Get-OwnService $script:BundledDbService)
+        if ($hasService) { Set-Service -Name $script:BundledDbService -StartupType Disabled }
+        Stop-BundledDb
+        $password = if ($admin) { $admin.Password } else { New-RandomSecret 32 }
+        Write-DbAdminCnf $password $Port
+        $r = Invoke-WithStdin (Join-Path $bin 'mariadbd.exe') @("--defaults-file=$($script:BundledDbConfig)", '--bootstrap', '--console') (Get-BundledDbRootSql $password) @($password)
+        if ($r.ExitCode -ne 0) {
+            throw "Securing CompuLab's database failed (bootstrap exit code $($r.ExitCode)): $((@($r.Lines) | Select-Object -Last 4) -join ' | ')"
+        }
+        [IO.File]::WriteAllText($script:BundledDbMarker, "CompuLab database administrator set $(Get-Date -Format s)`r`n", (New-Object Text.UTF8Encoding $false))
+        $password = $null
+        Write-Ok 'Database administrator password set (saved for Administrators only in data\db-admin.cnf)'
+        if ($hasService) { Set-Service -Name $script:BundledDbService -StartupType Manual }
+    }
+    if ($AsService) { Initialize-BundledDbService | Out-Null }
+    $listener = Start-BundledDb $Port -AsService:$AsService
+    $addresses = Get-ListenerAddresses $Port
+    if (-not (Test-LocalOnlyAddresses $addresses)) {
+        throw "CompuLab's database listens on $($addresses -join ', '), not only on 127.0.0.1. Stopped here so it is not reachable from the network; check $($script:BundledDbConfig)."
+    }
+    return @{ Port = $Port; Created = $created; Listener = $listener }
+}
+
+function Test-DbHasCompuLabData([string]$MySqlExe, [hashtable]$EnvValues) {
+    # Whether the database in .env already holds CompuLab tables: $true,
+    # $false, or $null when it cannot be checked (not reachable, refused).
+    $cnf = New-MySqlDefaultsFile $EnvValues['DB_USER'] $EnvValues['DB_PASSWORD'] $EnvValues['DB_HOST'] $EnvValues['DB_PORT']
+    try {
+        $name = "$($EnvValues['DB_NAME'])"
+        if ($name -notmatch '^[A-Za-z0-9_]{1,64}$') { return $null }
+        $out = @(Invoke-Captured $MySqlExe @("--defaults-extra-file=$cnf", '--batch', '--skip-column-names', '-e',
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$name' AND table_name = 'django_migrations'"))
+        if ($LASTEXITCODE -ne 0) { return $null }
+        $n = @($out | Where-Object { "$_" -match '^\s*\d+\s*$' })
+        if (-not $n.Count) { return $null }
+        return ([int]"$($n[0])".Trim() -gt 0)
+    } finally { Remove-Item $cnf -Force -ErrorAction SilentlyContinue }
+}
+
+function Get-AppFolderAclArgs {
+    # icacls arguments for the program folder when CompuLab runs as Windows
+    # services (SYSTEM runs its Python from here): only Administrators and
+    # SYSTEM may change it; users may read and run it. Files with their own
+    # stricter permissions (.env, data\) keep them.
+    return @($script:AppDir, '/inheritance:r', '/grant:r', '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-545:(OI)(CI)RX', '/Q')
 }

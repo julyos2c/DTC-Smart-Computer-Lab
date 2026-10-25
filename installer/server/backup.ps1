@@ -49,8 +49,9 @@ try {
     $rootProblem = Test-BackupRoot $BackupRoot
     if ($rootProblem) { throw $rootProblem }
     $envValues = Read-DotEnv
-    $dump = Find-MySqlTool 'mysqldump.exe'
-    if (-not $dump) { $dump = Find-MySqlTool 'mariadb-dump.exe' }
+    # The dump program of the server on DB_PORT (MySQL's mysqldump can fail
+    # against MariaDB; MariaDB 11 may only have mariadb-dump.exe).
+    $dump = Find-DbClient 'dump' $envValues['DB_PORT'] $envValues['DB_HOST']
     if (-not $dump) { throw 'mysqldump.exe / mariadb-dump.exe not found (is MariaDB/MySQL still installed?).' }
 
     $stamp = if ($Stamp -match '^\d{8}-\d{6}$') { $Stamp } else { Get-Date -Format 'yyyyMMdd-HHmmss' }

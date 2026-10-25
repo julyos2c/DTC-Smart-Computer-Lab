@@ -23,11 +23,11 @@ param(
 )
 
 . "$PSScriptRoot\common.ps1"
-if (Get-Service -Name $script:WebService, $script:WorkerService -ErrorAction SilentlyContinue) { Assert-Admin }
+if ((Get-OwnService $script:WebService) -or (Get-OwnService $script:WorkerService)) { Assert-Admin }
 $sqlFile = Join-Path $BackupFolder 'database.sql'
 if (-not (Test-Path $sqlFile)) { throw "No database.sql in $BackupFolder" }
-$mysql = Find-MySqlTool 'mysql.exe'
-if (-not $mysql) { $mysql = Find-MySqlTool 'mariadb.exe' }
+$dbSettings = Read-DotEnv
+$mysql = Find-DbClient 'client' $dbSettings['DB_PORT'] $dbSettings['DB_HOST']
 if (-not $mysql) { throw 'mysql.exe / mariadb.exe not found.' }
 
 Write-Host "This replaces the current CompuLab data with the backup from $BackupFolder." -ForegroundColor Yellow
@@ -63,7 +63,7 @@ if (Test-Path $mediaZip) {
 
 Write-Step 'Applying any newer database changes'
 Invoke-Manage @('migrate', '--noinput')
-if (Get-Service -Name $script:WebService -ErrorAction SilentlyContinue) {
+if (Get-OwnService $script:WebService) {
     Start-CompuLabServices
     if (Wait-Healthy "http://127.0.0.1:$(Get-SitePort)/healthz" 90) { Write-Ok 'CompuLab is running again' }
     else { Write-Note 'CompuLab did not answer yet; check Services and the logs folder.' }

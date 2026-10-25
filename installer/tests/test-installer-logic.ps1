@@ -32,6 +32,7 @@ function Assert-Equal($Expected, $Actual, [string]$Message = '') {
     if ("$Expected" -ne "$Actual") { throw "expected '$Expected', got '$Actual'. $Message" }
 }
 function Assert-True($Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
+function Test-Readable([string]$Path) { try { $null = [IO.File]::ReadAllBytes($Path); return $true } catch { return $false } }
 function Assert-Throws([scriptblock]$Body, [string]$Pattern) {
     try { & $Body } catch { if ($Pattern -and $_.Exception.Message -notmatch $Pattern) { throw "threw '$($_.Exception.Message)', expected /$Pattern/" }; return }
     throw 'expected an error, none was thrown'
@@ -328,6 +329,61 @@ Test-Case 'database port check: no server, XAMPP or another program on the port 
     }
     Assert-True ($null -eq (Test-DbListener $null '10.0.0.5' 3306)) 'a database on another computer is not checked here'
 }
+Test-Case 'database port check: another program''s bundled MariaDB service is refused untouched (regression: InventoryDatabase on 3307)' {
+    # As found on a real server PC: an inventory program's own MariaDB service.
+    $inv = @{ ProcessId = 5312; ProcessPath = 'C:\Program Files\Inventory Management System\runtime\mariadb\bin\mariadbd.exe'; ServiceName = 'InventoryDatabase' }
+    $msg = Test-DbListener $inv '127.0.0.1' 3307
+    Assert-True ($msg -match "service 'InventoryDatabase'" -and $msg -match 'does not use, stop or change' -and $msg -match '-DbPort 3308') "unclear: $msg"
+    Assert-True ($msg -notmatch '-DbServiceName') 'still suggests using the other program''s service'
+    Assert-True ($null -eq (Test-DbListener $inv '127.0.0.1' 3307 'InventoryDatabase')) 'refused although named explicitly with -DbServiceName'
+    # A database started by hand (no service, e.g. the end-to-end test) and real MariaDB/MySQL services are accepted.
+    Assert-True ($null -eq (Test-DbListener @{ ProcessId = 9; ProcessPath = 'C:\Program Files\MySQL\MySQL Server 8.4\bin\mysqld.exe'; ServiceName = '' } '127.0.0.1' 50000)) 'hand-started server refused'
+    foreach ($svc in 'MariaDB', 'MySQL84', 'MySQL80', 'MariaDB_11.4') {
+        Assert-True ($null -eq (Test-DbListener @{ ProcessId = 3; ProcessPath = 'C:\Program Files\MariaDB 11.4\bin\mariadbd.exe'; ServiceName = $svc } '127.0.0.1' 3308)) "refused service $svc"
+    }
+    $t = Get-Content (Join-Path $Repo 'installer\server\install-server.ps1') -Raw
+    Assert-True ($t.IndexOf('Test-DbListener $listener') -lt $t.IndexOf('Start-Service $dbService')) 'port owner not checked before a database service is started'
+    Assert-True ($t.IndexOf('Test-DbListener $listener') -lt $t.IndexOf('Set-Service $dbService')) 'port owner not checked before a database service is changed'
+}
+Test-Case 'database tools come from the folder of the server on the port (MariaDB 11: mariadb*.exe only)' {
+    Assert-True ($null -eq (Get-DbServerBinDir $null)) 'no listener'
+    Assert-True ($null -eq (Get-DbServerBinDir @{ ProcessPath = '' })) 'no path'
+    Assert-True ($null -eq (Get-DbServerBinDir @{ ProcessPath = 'C:\no\such\folder\mariadbd.exe' })) 'missing folder'
+    $bin = Join-Path $Tmp 'MariaDB 11.4\bin'
+    New-Item -ItemType Directory -Force $bin | Out-Null
+    Assert-Equal $bin (Get-DbServerBinDir @{ ProcessPath = "$bin\mariadbd.exe" }) 'program path'
+    $svcLine = "`"$bin\mariadbd.exe`" `"--defaults-file=C:\ProgramData\x\my.ini`" `"MariaDB`""
+    Assert-Equal $bin (Get-DbServerBinDir @{ ProcessPath = $svcLine }) 'quoted service command line'
+    Assert-Equal $bin (Get-DbServerBinDir @{ ProcessPath = "$bin\mariadbd.exe --defaults-file=x MariaDB" }) 'unquoted service command line'
+    foreach ($n in 'mariadb.exe', 'mariadb-dump.exe', 'mariadbd.exe') { Set-Content (Join-Path $bin $n) 'x' }
+    Assert-Equal (Join-Path $bin 'mariadb.exe') (Select-DbClientInDir $bin 'client')
+    Assert-Equal (Join-Path $bin 'mariadb-dump.exe') (Select-DbClientInDir $bin 'dump')
+    $my = Join-Path $Tmp 'MySQL Server 8.4\bin'
+    New-Item -ItemType Directory -Force $my | Out-Null
+    foreach ($n in 'mysql.exe', 'mysqldump.exe') { Set-Content (Join-Path $my $n) 'x' }
+    Assert-Equal (Join-Path $my 'mysql.exe') (Select-DbClientInDir $my 'client')
+    Assert-Equal (Join-Path $my 'mysqldump.exe') (Select-DbClientInDir $my 'dump')
+    Assert-True ($null -eq (Select-DbClientInDir (Join-Path $Tmp 'nothing-here') 'client')) 'empty folder'
+    # No server on the port: the first installed client, as before.
+    $l = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $l.Start(); $free = $l.LocalEndpoint.Port; $l.Stop()
+    Assert-Equal "$(Find-MySqlTool 'mysql.exe')" "$(Find-DbClient 'client' "$free" '127.0.0.1')" 'fallback changed'
+    foreach ($f in 'backup.ps1', 'restore.ps1', 'install-server.ps1') {
+        $s = Get-Content (Join-Path $Repo "installer\server\$f") -Raw
+        Assert-True ($s -match 'Find-DbClient' -and $s -notmatch "Find-MySqlTool '(mysql|mysqldump|mariadb|mariadb-dump)\.exe'") "$f does not take the tools of the server on the port"
+    }
+}
+Test-Case 'the database servers on this PC are identified by the service that owns the port (read-only)' {
+    $l3306 = Get-ListenerInfo 3306
+    if ($l3306 -and "$($l3306.ProcessPath)" -match 'MySQL Server 8') {
+        # MySQL 8.4: the port belongs to a child mysqld; the service is its parent's.
+        Assert-True ($l3306.ServiceName -match '^MySQL') "3306 service: '$($l3306.ServiceName)'"
+        Assert-True ((Find-DbClient 'dump' '3306' '127.0.0.1') -like '*\MySQL Server 8*\bin\mysqldump.exe') 'MySQL 8.4 dump tool not taken from its own folder'
+    } else { Write-Host '         (no MySQL 8 service on 3306 here: not exercised)' -ForegroundColor DarkYellow }
+    $l3307 = Get-ListenerInfo 3307
+    if ($l3307 -and $l3307.ServiceName -and $l3307.ServiceName -notmatch '^(MariaDB|MySQL)') {
+        Assert-True ((Test-DbListener $l3307 '127.0.0.1' 3307) -match 'database of another program') "another program's database on 3307 accepted ($($l3307.ServiceName))"
+    } else { Write-Host '         (no other program''s database on 3307 here: not exercised)' -ForegroundColor DarkYellow }
+}
 Test-Case 'repair cannot switch to another database name or user (installer check, before any change)' {
     $text = Get-Content (Join-Path $Repo 'installer\server\install-server.ps1') -Raw
     Assert-True ($text -match 'cannot be changed on an existing installation') 'guard missing'
@@ -384,6 +440,313 @@ Test-Case 'installer never reports success without a working Administrator (code
     Assert-True ($text -notmatch 'createsuperuser') 'the unchecked createsuperuser call is back'
     Assert-True ($text -match "Invoke-EnsureAdmin @\('--check'\)") 'no final check'
     Assert-True ($text -match 'The first Administrator account was not created') 'no failure message'
+}
+
+Write-Host "`nBundled runtime (CompuLab's own Python and MariaDB)" -ForegroundColor Cyan
+Test-Case 'database port: 3308 if free; busy ports skipped in order (whatever uses them is never touched); none free: clear error' {
+    $taken = @{}
+    $isFree = { param($p) -not $taken.ContainsKey($p) }
+    Assert-Equal 3308 (Select-DbPort 3308 $isFree)
+    $taken[3308] = 'MySQL84'; Assert-Equal 3309 (Select-DbPort 3308 $isFree) 'one busy port'
+    $taken[3309] = 'InventoryDatabase'; $taken[3310] = 'XAMPP'
+    Assert-Equal 3311 (Select-DbPort 3308 $isFree) 'several busy ports'
+    Assert-Throws { Select-DbPort 3308 { param($p) $false } 5 } 'No free port .* between 3308 and 3312'
+}
+Test-Case 'database port on this PC (read-only): the ports of other database servers are skipped' {
+    $busy = @(3306, 3307 | Where-Object { Get-NetTCPConnection -LocalPort $_ -State Listen -ErrorAction SilentlyContinue })
+    $chosen = Select-DbPort 3306
+    foreach ($b in $busy) { Assert-True ($chosen -ne $b) "chose $b, which is in use" }
+    Assert-True ($chosen -ge 3306) "chose $chosen"
+    if ($busy.Count -eq 2) { Assert-True ($chosen -ge 3308) "chose $chosen although 3306 and 3307 are in use" }
+}
+Test-Case "CompuLab's my.ini: 127.0.0.1 only and the port in the [mysqld] section (regression: settings appended into [client])" {
+    $ini = New-BundledDbConfig 'C:\CompuLab\data\mariadb' 3309 'C:\CompuLab\runtime\mariadb'
+    $section = ''; $mysqld = @{}
+    foreach ($line in $ini -split "`r?`n") {
+        if ($line -match '^\[(.+)\]$') { $section = $Matches[1]; continue }
+        if ($section -eq 'mysqld' -and $line -match '^([a-z_-]+)=(.*)$') { $mysqld[$Matches[1]] = $Matches[2] }
+    }
+    Assert-Equal '127.0.0.1' $mysqld['bind-address']
+    Assert-Equal '3309' $mysqld['port']
+    Assert-Equal 'C:/CompuLab/data/mariadb' $mysqld['datadir']
+    Assert-Equal 'utf8mb4' $mysqld['character-set-server']
+    Assert-True ($ini -notmatch '(?i)password|skip-grant') 'password or skip-grant-tables in my.ini'
+    $saved = $script:BundledDbConfig
+    try {
+        $script:BundledDbConfig = Join-Path $Tmp 'my.ini'
+        [IO.File]::WriteAllText($script:BundledDbConfig, $ini)
+        Assert-Equal 3309 (Get-BundledDbPort)
+        Remove-Item $script:BundledDbConfig; Assert-Equal 0 (Get-BundledDbPort)
+    } finally { $script:BundledDbConfig = $saved }
+}
+Test-Case 'root is secured before the server ever listens (bootstrap SQL): password set, local only, no anonymous accounts' {
+    $sql = Get-BundledDbRootSql "pa'ss\word"
+    Assert-True ($sql.TrimStart().StartsWith('FLUSH PRIVILEGES;')) 'account tables not loaded first (bootstrap runs with --skip-grant-tables: error 1290)'
+    Assert-True ($sql -match "ALTER USER 'root'@'localhost' IDENTIFIED BY 'pa''ss\\\\word'") 'password not escaped'
+    Assert-True ($sql -match "DROP USER IF EXISTS ''@'localhost'" -and $sql -match "DROP USER IF EXISTS ''@'%'") 'anonymous accounts kept'
+    Assert-True ($sql -notmatch "'root'@'%'" -and $sql -notmatch 'GRANT') 'root opened to the network'
+    Assert-True ($sql -match "DELETE FROM mysql\.global_priv WHERE User = 'root' AND Host NOT IN \('localhost', '127\.0\.0\.1', '::1'\)") 'root@<computer name> (no password) kept'
+}
+Test-Case 'passwords reach programs only on stdin, UTF-8 without BOM (regression: bootstrap rejected the BOM), masked in output' {
+    $secret = 'Secret-' + [guid]::NewGuid().ToString('N')
+    # A console set to UTF-8 (code page 65001) made .NET write a BOM first.
+    $saved = $null
+    try { $saved = [Console]::InputEncoding; [Console]::InputEncoding = [Text.Encoding]::UTF8 } catch { }
+    try { $r = Invoke-WithStdin "$env:SystemRoot\System32\findstr.exe" @('/R', '^') "first line $secret`nsecond line" @($secret) }
+    finally { if ($saved) { try { [Console]::InputEncoding = $saved } catch { } } }
+    Assert-Equal 0 $r.ExitCode
+    Assert-True ($r.Lines[0].StartsWith('first line')) "first characters: $([int][char]$r.Lines[0][0]) (a BOM?)"
+    Assert-True (($r.Lines -join ' ') -notmatch [regex]::Escape($secret) -and ($r.Lines -join ' ') -match '\*{8}') 'secret not masked'
+    Assert-Equal 'abc ******** def' (Hide-Secret "abc $secret def" @($secret))
+    Assert-Equal 'short ab' (Hide-Secret 'short ab' @('ab')) 'very short values must not be masked everywhere'
+}
+Test-Case 'runtime check: complete -> usable; a damaged or missing file or no manifest -> refused' {
+    $rt = Join-Path $Tmp 'runtime-check'
+    New-Item -ItemType Directory -Force (Join-Path $rt 'bin') | Out-Null
+    Set-Content (Join-Path $rt 'bin\a.exe') 'program'; Set-Content (Join-Path $rt 'COPYING') 'GPL'
+    Assert-True ((@(Test-RuntimeFiles $rt @('bin\a.exe'))) -match 'missing COMPULAB-MANIFEST') 'no manifest accepted'
+    $lines = Get-ChildItem $rt -Recurse -File | ForEach-Object { "$((Get-FileHash $_.FullName).Hash.ToLower())  $($_.FullName.Substring($rt.Length + 1))" }
+    [IO.File]::WriteAllLines((Join-Path $rt 'COMPULAB-MANIFEST.txt'), [string[]]$lines)
+    Assert-Equal 0 @(Test-RuntimeFiles $rt @('bin\a.exe', 'COPYING')).Count 'complete runtime refused'
+    Add-Content (Join-Path $rt 'bin\a.exe') 'tampered'
+    Assert-True ((@(Test-RuntimeFiles $rt @())) -match 'damaged bin\\a\.exe') 'damaged file accepted'
+    Remove-Item (Join-Path $rt 'COPYING')
+    $p = @(Test-RuntimeFiles $rt @('COPYING'))
+    Assert-True (($p -match 'missing COPYING').Count -ge 1) "missing file accepted: $($p -join '; ')"
+}
+Test-Case 'the bundled MariaDB has everything the installer, backup and restore use (required-file list)' {
+    foreach ($f in 'bin\mariadbd.exe', 'bin\server.dll', 'bin\mariadb.exe', 'bin\mariadb-dump.exe', 'bin\mariadb-install-db.exe', 'bin\mariadb-upgrade.exe', 'bin\mariadb-admin.exe', 'COPYING') {
+        Assert-True ($script:BundledDbRequiredFiles -contains $f) "$f not required"
+    }
+    $build = Get-Content (Join-Path $Repo 'installer\build\build-installers.ps1') -Raw
+    foreach ($f in $script:BundledDbRequiredFiles | Where-Object { $_ -like 'bin\*' }) {
+        Assert-True ($build -match [regex]::Escape("'$($f.Substring(4))'")) "the build does not package $f"
+    }
+}
+Test-Case "the database service: its own virtual account (not LocalSystem), mariadbd's service form, data folder closed to users" {
+    $spec = Get-BundledDbServiceSpec
+    Assert-Equal 'CompuLabMariaDB' $spec.Name
+    Assert-Equal 'NT SERVICE\CompuLabMariaDB' $spec.Account
+    $exe = Join-Path $script:BundledDbBin 'mariadbd.exe'
+    Assert-Equal "`"$exe`" `"--defaults-file=$($script:BundledDbConfig)`" CompuLabMariaDB" $spec.BinaryPathName
+    $acl = Get-BundledDbAclArgs
+    Assert-True ($acl[0] -contains '/inheritance:r' -and $acl[0] -contains 'NT SERVICE\CompuLabMariaDB:(OI)(CI)M') "data ACL: $($acl[0] -join ' ')"
+    $grants = @($acl[0] | Where-Object { $_ -match ':\(' })   # the permission entries, not the folder path
+    Assert-True (-not ($grants -match 'S-1-5-32-545|S-1-5-11|S-1-1-0|Users|Everyone')) "users can read the database files: $($grants -join ' ')"
+    Assert-True ($acl[1] -contains '/reset' -and $acl[1][0] -like '*\*') 'the files inside are not set back to inheriting from the folder'
+    Assert-True ($acl[2] -contains 'NT SERVICE\CompuLabMariaDB:(OI)(CI)RX') 'the service cannot read its program files'
+    foreach ($a in (Get-SecretFileAclArgs 'C:\x\.env'), (Get-AppFolderAclArgs)) { Assert-True ($a -contains '/inheritance:r') "inherited permissions kept: $($a -join ' ')" }
+    # Regression (real install, 23 Oct 2026): icacls /inheritance:r ... /T left every file with no permission at all.
+    foreach ($a in @($acl) + @(, (Get-AppFolderAclArgs))) { Assert-True (-not ($a -contains '/inheritance:r' -and $a -contains '/T')) "/inheritance:r combined with /T: $($a -join ' ')" }
+    foreach ($f in Get-ChildItem (Join-Path $Repo 'installer\server'), (Join-Path $Repo 'installer\agent'), (Join-Path $Repo 'installer\build') -Filter *.ps1) {
+        $n = 0
+        foreach ($line in Get-Content $f.FullName) { $n++; if ($line -match "icacls.*inheritance:r.*['""]?/T['""]?(\s|,|\))") { throw "$($f.Name):$n combines /inheritance:r with /T" } }
+    }
+    Assert-True (-not ((Get-SecretFileAclArgs 'C:\x\.env') -match 'S-1-5-32-545|Users|Everyone')) 'users can read .env'
+    Assert-True ((Get-AppFolderAclArgs) -contains '*S-1-5-32-545:(OI)(CI)RX' -and -not ((Get-AppFolderAclArgs) -match 'S-1-5-32-545:\(OI\)\(CI\)(F|M)')) 'users may change the program folder'
+}
+Test-Case 'database folder permissions on real files: files stay readable, and files an earlier installer left unreadable are repaired' {
+    # The installer's own icacls calls, on a temporary folder, with this
+    # account in place of the database service (which does not exist here).
+    $me = Get-CurrentUserSid
+    $saved = @{ Data = $script:BundledDbData; Dir = $script:BundledDbDir; Config = $script:BundledDbConfig }
+    $root = Join-Path $Tmp 'acl-real'
+    try {
+        $script:BundledDbData = Join-Path $root 'data\mariadb'; $script:BundledDbDir = Join-Path $root 'runtime\mariadb'
+        $script:BundledDbConfig = Join-Path $script:BundledDbData 'my.ini'
+        New-Item -ItemType Directory -Force (Join-Path $script:BundledDbData 'mysql'), (Join-Path $script:BundledDbDir 'bin') | Out-Null
+        Set-Content $script:BundledDbConfig '[mysqld]'; Set-Content (Join-Path $script:BundledDbData 'mysql\db.frm') 'x'; Set-Content (Join-Path $script:BundledDbDir 'bin\mariadbd.exe') 'x'
+        # First the state the old call left on a real install: files without any permission.
+        & icacls $script:BundledDbData /inheritance:r /grant:r "*${me}:(OI)(CI)F" /T /Q | Out-Null
+        Assert-True (-not (Test-Readable $script:BundledDbConfig)) 'could not reproduce the broken state'
+        foreach ($a in Get-BundledDbAclArgs) {
+            $a = @($a | ForEach-Object { $_ -replace '^NT SERVICE\\CompuLabMariaDB:', "*${me}:" })
+            & icacls @a | Out-Null
+            Assert-Equal 0 $LASTEXITCODE "icacls $($a -join ' ')"
+        }
+        foreach ($f in $script:BundledDbConfig, (Join-Path $script:BundledDbData 'mysql\db.frm')) {
+            Assert-True (Test-Readable $f) "$f not readable after the installer's permissions"
+            Assert-True (@((Get-Acl $f).Access | Where-Object { -not $_.IsInherited }).Count -eq 0) "$f has its own entries instead of inheriting from the folder"
+        }
+        Assert-True ((Get-Acl $script:BundledDbData).AreAccessRulesProtected) 'the data folder still inherits from above'
+        $users = @((Get-Acl $script:BundledDbData).Access | Where-Object { $_.IdentityReference -match 'Users|Everyone|Authenticated' })
+        Assert-True ($users.Count -eq 0) 'ordinary users can read the database folder'
+        Set-Content (Join-Path $script:BundledDbData 'new.ibd') 'n'
+        Assert-True (Test-Readable (Join-Path $script:BundledDbData 'new.ibd')) 'a file the database creates later is not readable'
+    } finally {
+        & icacls $root /reset /T /Q 2>$null | Out-Null
+        $script:BundledDbData = $saved.Data; $script:BundledDbDir = $saved.Dir; $script:BundledDbConfig = $saved.Config
+    }
+}
+Test-Case 'an unreadable my.ini (left by an earlier installer) does not stop the settings check and is repaired before use (regression: "Access to the path my.ini is denied")' {
+    $me = Get-CurrentUserSid
+    $saved = @{ Data = $script:BundledDbData; Config = $script:BundledDbConfig }
+    $root = Join-Path $Tmp 'acl-unreadable'
+    try {
+        $script:BundledDbData = Join-Path $root 'data\mariadb'; $script:BundledDbConfig = Join-Path $script:BundledDbData 'my.ini'
+        New-Item -ItemType Directory -Force (Join-Path $script:BundledDbData 'mysql') | Out-Null
+        Set-Content $script:BundledDbConfig "[mysqld]`r`nport=3308"; Set-Content (Join-Path $script:BundledDbData 'mysql\db.frm') 'x'
+        & icacls $script:BundledDbData /inheritance:r /grant:r "*${me}:(OI)(CI)F" /T /Q | Out-Null
+        Assert-True (-not (Test-Readable $script:BundledDbConfig)) 'could not reproduce the broken state'
+        Assert-Equal 0 (Get-BundledDbPort)
+        Repair-BundledDbFiles 6>$null | Out-Null
+        foreach ($f in $script:BundledDbConfig, (Join-Path $script:BundledDbData 'mysql\db.frm')) { Assert-True (Test-Readable $f) "$f not repaired" }
+        Assert-Equal 3308 (Get-BundledDbPort)
+        Assert-True (Test-Path (Join-Path $script:BundledDbData 'mysql\db.frm')) 'a database file was moved or deleted'
+        Repair-BundledDbFiles 6>$null | Out-Null   # readable: nothing to do
+    } finally {
+        & icacls $root /reset /T /Q 2>$null | Out-Null
+        $script:BundledDbData = $saved.Data; $script:BundledDbConfig = $saved.Config
+    }
+    $c = Get-Content (Join-Path $Repo 'installer\server\common.ps1') -Raw
+    $init = $c.Substring($c.IndexOf('function Initialize-BundledDb('))
+    $init = $init.Substring(0, $init.IndexOf('function Test-DbHasCompuLabData'))
+    $fix = $init.IndexOf('Repair-BundledDbFiles')
+    foreach ($use in 'Get-BundledDbPort', 'WriteAllText($script:BundledDbConfig', 'Initialize-BundledDbService', "'--bootstrap'") {
+        Assert-True ($fix -ge 0 -and $fix -lt $init.IndexOf($use)) "my.ini is used ($use) before its permissions are repaired"
+    }
+    $i = Get-Content (Join-Path $Repo 'installer\server\install-server.ps1') -Raw
+    Assert-True ($i -match "recordedMode -eq 'bundled' -and [^\r\n]*existingEnv\['DB_PORT'\]") 'an unreadable my.ini would move an installed database to another port'
+}
+Test-Case "MariaDB's test databases: rights of every account (PUBLIC) removed on each install; the empty test database dropped only when just created" {
+    $keep = Get-BundledDbHardeningSql
+    Assert-True ($keep -match "DELETE FROM mysql\.db WHERE User = 'PUBLIC' AND Db IN \('test', 'test\\\\_%'\);\s*FLUSH PRIVILEGES;") $keep
+    Assert-True ($keep -notmatch 'DROP DATABASE') 'a repair would drop a database'
+    Assert-True ((Get-BundledDbHardeningSql -DropTestDatabase) -match '^DROP DATABASE IF EXISTS `test`;') 'a new data folder keeps the test database'
+    $i = Get-Content (Join-Path $Repo 'installer\server\install-server.ps1') -Raw
+    $bundledStep = $i.Substring($i.IndexOf("Setting up CompuLab's own database"), $i.IndexOf("Write-Step 'Preparing the database'") - $i.IndexOf("Setting up CompuLab's own database"))
+    Assert-True ($bundledStep -match 'Get-BundledDbHardeningSql -DropTestDatabase:\(\[bool\]\$db\.Created\)') 'not run for CompuLab''s own database, or drops on a repair'
+    Assert-True ($bundledStep.IndexOf('Get-DbSetupSql') -lt $bundledStep.IndexOf('Get-BundledDbHardeningSql') -and $bundledStep.IndexOf('Get-BundledDbHardeningSql') -lt $bundledStep.IndexOf('Set-BundledDbAutoStart')) 'wrong order'
+    Assert-True ($i.LastIndexOf('Get-BundledDbHardeningSql') -lt $i.IndexOf("Write-Step 'Preparing the database'")) 'also run against an external server'
+}
+Test-Case 'setup exits with code 10 (not 0) when setting up CompuLab failed (regression: a failed silent install reported 0)' {
+    $iss = Get-Content (Join-Path $Repo 'installer\build\CompuLab-Server.iss') -Raw
+    Assert-True ($iss -match 'install-server\.ps1 failed with exit code[^\r\n]*\r?\n\s*ServerSetupFailed := True;') 'the failure is not recorded'
+    Assert-True ($iss -match 'function GetCustomSetupExitCode: Integer;\s*begin[\s\S]{0,200}if ServerSetupFailed then Result := 10 else Result := 0;') 'the setup still exits 0 after a failure'
+}
+Test-Case 'database service: secured before it is registered; Manual until it worked; no restart loop during the bootstrap' {
+    $c = Get-Content (Join-Path $Repo 'installer\server\common.ps1') -Raw
+    Assert-True ($c -match 'New-Service [^\r\n]*-StartupType Manual') 'the service is created Automatic before it ever worked'
+    $init = $c.Substring($c.IndexOf('function Initialize-BundledDb('))
+    $init = $init.Substring(0, $init.IndexOf('function Test-DbHasCompuLabData'))
+    $repair = $init.IndexOf('Initialize-BundledDbService'); $ini = $init.IndexOf('WriteAllText($script:BundledDbConfig')
+    $boot = $init.IndexOf("'--bootstrap'"); $register = $init.LastIndexOf('Initialize-BundledDbService'); $start = $init.LastIndexOf('Start-BundledDb $Port')
+    Assert-True ($repair -ge 0 -and $repair -lt $ini) 'an existing service''s folder is not repaired before my.ini is written'
+    Assert-True ($boot -ge 0 -and $boot -lt $register -and $register -lt $start) 'not: bootstrap -> service + permissions -> start'
+    Assert-True ($init -match "StartupType Disabled[\s\S]*'--bootstrap'[\s\S]*StartupType Manual") 'Windows could restart the service during the bootstrap'
+    $i = Get-Content (Join-Path $Repo 'installer\server\install-server.ps1') -Raw
+    Assert-True ($i.IndexOf('Set-BundledDbAutoStart') -gt $i.IndexOf("are ready")) 'set to Automatic before the database worked'
+    Assert-True ($c -match 'function Protect-BundledDbData[\s\S]{0,700}ReadAllText\(\$script:BundledDbConfig\)') 'permissions are not proven by reading my.ini'
+}
+Test-Case "only CompuLab's own database counts as ours; local-only listening detected" {
+    Assert-True (Test-ListenerIsBundledDb @{ ServiceName = 'CompuLabMariaDB'; ProcessPath = '' }) 'own service not recognised'
+    Assert-True (-not (Test-ListenerIsBundledDb @{ ServiceName = 'InventoryDatabase'; ProcessPath = 'C:\Program Files\Inventory Management System\runtime\mariadb\bin\mariadbd.exe' })) 'another program''s MariaDB taken as ours'
+    Assert-True (-not (Test-ListenerIsBundledDb @{ ServiceName = 'MySQL84'; ProcessPath = 'C:\Program Files\MySQL\MySQL Server 8.4\bin\mysqld.exe' })) 'MySQL taken as ours'
+    Assert-True (-not (Test-ListenerIsBundledDb $null)) 'nothing taken as ours'
+    Assert-True (Test-LocalOnlyAddresses @('127.0.0.1')) '127.0.0.1 not local'
+    foreach ($bad in @(@('0.0.0.0'), @('::'), @('127.0.0.1', '192.168.1.36'), @())) { Assert-True (-not (Test-LocalOnlyAddresses $bad)) "accepted $($bad -join ',')" }
+}
+Test-Case 'services run the bundled Python when present (python -m waitress), after CompuLab''s database' {
+    $defs = Get-ServiceDefinitions 8000
+    Assert-Equal (Get-AppPython) $defs[0].Exe
+    Assert-True ($defs[0].Args -match '^-m waitress --listen=0\.0\.0\.0:8000') "web args: $($defs[0].Args)"
+    Assert-Equal (Get-AppPython) $defs[1].Exe
+    [xml]$x = New-WinSWXml $defs[0] 'CompuLabMariaDB' 'C:\CompuLab\logs'
+    Assert-Equal 'CompuLabMariaDB' $x.service.depend
+}
+Test-Case 'install-server.ps1: own database by default for a new setup install; Repair keeps the recorded mode; checks before changes' {
+    $t = Get-Content (Join-Path $Repo 'installer\server\install-server.ps1') -Raw
+    Assert-True ($t -match "elseif \(Test-BundledDbAvailable\) \{ 'bundled' \}") 'bundled is not the default with a runtime'
+    Assert-True ($t -match "\`$recordedMode = \`$\(if \(\`$firstRun\) \{ '' \} else \{ 'external' \}\)") 'old installations do not keep their database'
+    $order = 'Test-RuntimeFiles $script:BundledDbDir', 'Select-DbPort', 'Initialize-DotEnv', 'Initialize-BundledDb', 'mariadb-upgrade'
+    $at = @($order | ForEach-Object { $t.IndexOf($_) })
+    for ($i = 0; $i -lt $order.Count; $i++) { Assert-True ($at[$i] -ge 0) "$($order[$i]) not used" }
+    for ($i = 1; $i -lt $order.Count; $i++) { Assert-True ($at[$i - 1] -lt $at[$i]) "$($order[$i - 1]) must come before $($order[$i])" }
+    Assert-True ($t -match 'LeaveOldDatabase' -and $t -match 'Test-DbHasCompuLabData') 'a switch of database could leave data behind silently'
+}
+Test-Case 'a CompuLab service of another folder (names are global) is never ours: not stopped, started, replaced or removed' {
+    # Read-only, with this PC's real services. Here $script:AppDir is the
+    # repository folder: a service installed from C:\CompuLab is foreign.
+    Assert-True ($null -eq (Get-OwnService 'NoSuchService-CompuLabTest')) 'a missing service counted as ours'
+    $mysql = Get-CimInstance Win32_Service | Where-Object { $_.PathName -match '(?i)mysqld' } | Select-Object -First 1
+    if ($mysql) { Assert-True ($null -eq (Get-OwnService $mysql.Name)) "$($mysql.Name) counted as CompuLab's" }
+    $real = Get-CimInstance Win32_Service -Filter "Name = 'CompuLabMariaDB'"
+    if ($real -and "$($real.PathName)".IndexOf($script:AppDir, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        Assert-True ($null -eq (Get-OwnService 'CompuLabMariaDB')) 'another folder''s CompuLabMariaDB counted as ours'
+        Assert-True ((Get-ForeignServicePath 'CompuLabMariaDB') -match 'mariadbd') 'another folder''s service not reported'
+    } else { Write-Host '         (no CompuLabMariaDB of another folder on this PC: foreign case checked with MySQL only)' -ForegroundColor DarkYellow }
+    $i = Get-Content (Join-Path $Repo 'installer\server\install-server.ps1') -Raw
+    Assert-True ($i -match 'Get-ForeignServicePath \$name' -and $i.IndexOf('Get-ForeignServicePath') -lt $i.IndexOf('Installing the Windows services')) 'a same-named service of another folder is not refused before changes'
+    foreach ($f in Get-ChildItem (Join-Path $Repo 'installer\server') -Filter *.ps1 | Where-Object { $_.Name -ne 'server-status.ps1' }) {
+        $n = 0
+        foreach ($line in Get-Content $f.FullName) {
+            $n++
+            if ($line -match '^\s*#') { continue }
+            if ($line -match 'Get-Service\s+(-Name\s+)?\$(script:)?(WebService|WorkerService|BundledDbService|id|name|_)\b' -and $line -notmatch 'function Get-OwnService|return Get-Service') {
+                throw "$($f.Name):$n decides about a CompuLab service by its name only (use Get-OwnService): $($line.Trim())"
+            }
+        }
+    }
+}
+Test-Case 'scripts stop or end only CompuLab''s own services and processes' {
+    foreach ($f in Get-ChildItem (Join-Path $Repo 'installer\server') -Filter *.ps1) {
+        $n = 0
+        foreach ($line in Get-Content $f.FullName) {
+            $n++
+            if ($line -match '^\s*#') { continue }
+            if ($line -match 'Stop-Service\s') { Assert-True ($line -match 'WebService|WorkerService|BundledDbService|\$name|\$id') "$($f.Name):$n stops another service: $($line.Trim())" }
+            if ($line -match 'Stop-Process\s') { Assert-True ($line -match '\$p\.ProcessId') "$($f.Name):$n ends another process: $($line.Trim())" }
+            if ($line -match "sc\.exe'?\s.*delete|'delete'") { Assert-True ($line -match 'BundledDbService|\$id') "$($f.Name):$n deletes another service" }
+        }
+    }
+    $common = Get-Content (Join-Path $Repo 'installer\server\common.ps1') -Raw
+    Assert-True ($common -match "function Get-BundledDbProcess[\s\S]{0,400}StartsWith\(\`$prefix") 'database processes are not limited to CompuLab''s runtime folder'
+}
+Test-Case 'setup: CompuLab (with its database) stopped before files are replaced; runtime replaced on update; data never deleted' {
+    $iss = Get-Content (Join-Path $Repo 'installer\build\CompuLab-Server.iss') -Raw
+    Assert-True ($iss -match 'stop-compulab\.ps1') 'PrepareToInstall does not stop CompuLab''s database'
+    Assert-True ($iss -match 'Name: "\{app\}\\runtime\\python"' -and $iss -match 'Name: "\{app\}\\runtime\\mariadb"') 'old runtime files would linger'
+    foreach ($keep in 'data', '.env', 'media', 'backups', 'logs') {
+        Assert-True ($iss -notmatch "Type: filesandordirs; Name: `"\{app\}\\$([regex]::Escape($keep))`"") "the setup deletes {app}\$keep"
+    }
+    Assert-True ($iss -match "\{param:DBPORT\|3308\}") 'database port default is not 3308'
+}
+Test-Case 'build: pinned SHA-256 for MariaDB and Python; a download with another hash is refused and not kept (invalid checksum)' {
+    $buildPath = Join-Path $Repo 'installer\build\build-installers.ps1'
+    $text = Get-Content $buildPath -Raw
+    Assert-True ($text -match "\`$MariaDbSha256 = '[0-9a-f]{64}'" -and $text -match "\`$PythonSha256 = '[0-9a-f]{64}'") 'hashes not pinned'
+    $ast = [Management.Automation.Language.Parser]::ParseFile($buildPath, [ref]$null, [ref]$null)
+    $fn = $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-VerifiedDownload' }, $true)
+    $Downloads = Join-Path $Tmp 'downloads'
+    function Invoke-WebRequest { param($Uri, $OutFile, [switch]$UseBasicParsing) Set-Content -Path $OutFile -Value 'payload from the network' -NoNewline }
+    . ([scriptblock]::Create($fn.Extent.Text))
+    $good = (New-Object Security.Cryptography.SHA256Managed).ComputeHash([Text.Encoding]::ASCII.GetBytes('payload from the network'))
+    $goodHex = -join ($good | ForEach-Object { $_.ToString('X2') })
+    Assert-Throws { Get-VerifiedDownload 'https://example.invalid/x.zip' 'x.zip' ('0' * 64) } 'unexpected SHA-256'
+    Assert-True (-not (Test-Path (Join-Path $Downloads 'x.zip')) -and -not (Test-Path (Join-Path $Downloads 'x.zip.part'))) 'a bad download was kept'
+    $path = Get-VerifiedDownload 'https://example.invalid/x.zip' 'x.zip' $goodHex
+    Assert-True (Test-Path $path) 'a good download was not kept'
+    Set-Content $path 'corrupted later' -NoNewline
+    Get-VerifiedDownload 'https://example.invalid/x.zip' 'x.zip' $goodHex | Out-Null
+    Assert-Equal 'payload from the network' (Get-Content $path -Raw) 'a damaged cached file was used'
+}
+Test-Case 'build: payload rules accept the bundled runtime and still refuse data, settings and secrets in it' {
+    $buildPath = Join-Path $Repo 'installer\build\build-installers.ps1'
+    $ast = [Management.Automation.Language.Parser]::ParseFile($buildPath, [ref]$null, [ref]$null)
+    $fn = $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Find-PayloadProblems' }, $true)
+    . ([scriptblock]::Create($fn.Extent.Text))
+    $root = Join-Path $Tmp 'payload-rules'
+    foreach ($d in 'runtime\mariadb\share', 'runtime\python\Lib\site-packages\pkg\__pycache__', 'runtime\python\Lib\site-packages\pkg\tests') { New-Item -ItemType Directory -Force (Join-Path $root $d) | Out-Null }
+    Set-Content (Join-Path $root 'runtime\mariadb\share\mariadb_system_tables.sql') 'CREATE TABLE x (a int);'
+    Set-Content (Join-Path $root 'runtime\python\Lib\site-packages\pkg\tests\test_a.py') 'pass'
+    $none = Find-PayloadProblems $root @()   # returns ,$problems: not wrapped in @() (Count would be 1)
+    Assert-Equal 0 $none.Count "the runtime itself was refused: $($none -join '; ')"
+    New-Item -ItemType Directory -Force (Join-Path $root 'data\mariadb') | Out-Null
+    Set-Content (Join-Path $root 'runtime\mariadb\db-admin.cnf') 'password=x'
+    Set-Content (Join-Path $root 'runtime\mariadb\dump.sql') 'INSERT ...'
+    Set-Content (Join-Path $root 'runtime\python\notes.txt') 'the secret value Secret-4711-xyz'
+    $p = Find-PayloadProblems $root @('Secret-4711-xyz')
+    foreach ($want in 'folder data', 'db-admin\.cnf', 'dump\.sql', 'secret from this PC') { Assert-True (($p -match $want).Count -ge 1) "not refused: $want ($($p -join '; '))" }
 }
 
 Write-Host "`nAdministrator-only configuration, checked WITHOUT installing it" -ForegroundColor Cyan

@@ -24,14 +24,19 @@ Read the full list in the guide ("First-install warning checklist") and tick it.
 - [ ] Staff open a locked student session with **PC power status** → **Manual Unlock (Guest)**; IT can
       also sign in with an administrator account.
 - [ ] The emergency unlock page is **untested** and works **only from the Server PC**.
-- [ ] Database port **3306** unless you enter another. A Server PC with XAMPP on 3306: CompuLab never
-      touches XAMPP — install MariaDB on another port (e.g. 3307) and enter it in **Database port**.
+- [ ] **Setups with a bundled runtime** (manifest: "Bundled runtime: MariaDB 11.4.13 and Python
+      3.13.16") bring their own Python and **their own database** (service `CompuLabMariaDB`, port
+      **3308** or the next free one, 127.0.0.1 only): skip steps 5–6, no root password. Any MySQL,
+      MariaDB or XAMPP already on the PC is never touched. *Older setups:* database port 3306 unless
+      you enter another; with XAMPP on 3306 install MariaDB on another port (e.g. 3307).
 - [ ] The first Administrator must be **@gmail.com**; if it cannot be created the setup **stops**
       (never a false "installed") — run **Repair CompuLab Server**.
 - [ ] Backups go to one remembered folder: nightly, **Back Up CompuLab Now**, Repair, Update, restore.
 - [ ] Each lab PC's `agent_config.local.json` holds **that PC's own secret**: keep it private.
 - [ ] Students use **standard** Windows accounts. **No** router port forwarding, ever.
-- [ ] Tailscale is **not configured**; cloud sync is **off** (no receiver exists). Leave both alone.
+- [ ] Tailscale is **not configured**; cloud sync is **off** (a receiver exists in the code but is not
+      deployed; the internet CompuLab site is a separate installation, nothing syncs with it). Leave
+      both alone.
 - [ ] Hash check first, then SmartScreen *Run anyway* for that file only; never turn SmartScreen off.
 
 ## Before the day
@@ -54,10 +59,12 @@ Read the full list in the guide ("First-install warning checklist") and tick it.
 2. - [ ] Reserve that IP for this MAC in the router (DHCP reservation); restart; `ipconfig` shows it. [J2]
 3. - [ ] Settings → Network → Ethernet → **Private network**. [J3]
 4. - [ ] Settings → Time & language → time zone (UTC+08:00) Kuala Lumpur, Singapore; set time automatically. [J4]
-5. - [ ] Install **Python 3.13 64-bit** from python.org: *Customize installation* → **Install for all
+   - [ ] Note the database services already on the PC (compare after step 10): [L7]
+         `Get-CimInstance Win32_Service | Where-Object { $_.PathName -match 'mysqld|mariadbd' } | Format-Table Name, State, ProcessId`
+5. - [ ] *Older setups only:* install **Python 3.13 64-bit** from python.org: *Customize installation* → **Install for all
          users** + **Add Python to environment variables**. Check: `py -0p` shows
          `C:\Program Files\Python313\python.exe`. [G]
-6. - [ ] Check for an existing database (`Get-Service ... MariaDB|MySQL`, port 3306). Install **MariaDB
+6. - [ ] *Older setups only:* check for an existing database (`Get-Service ... MariaDB|MySQL`, port 3306). Install **MariaDB
          11.4 LTS** (MSI): set and **write down the root password**, keep *Install as service* (name
          `MariaDB`) and *Enable networking* (port 3306 — or 3307 if XAMPP uses 3306). Check:
          `Get-Service MariaDB` → Running. [H]
@@ -65,11 +72,13 @@ Read the full list in the guide ("First-install warning checklist") and tick it.
          hash check → **OK**. [E]
 8. - [ ] Run the setup (SmartScreen: *More info* → *Run anyway* only after the hash matched;
          administrator prompt: *Yes*). [F]
-9. - [ ] Folder `C:\CompuLab`; campus address `192.168.1.10`; port `8000`; database port `3306` (or
-         yours); Install. [I]
-10. - [ ] Console: type the **MariaDB root password**; create the Administrator (**@gmail.com** email +
-          password, typed twice). Expect `OK: Administrator account: ...` and **"CompuLab is
-          installed."** → Enter → Finish. [I]
+9. - [ ] Folder `C:\CompuLab`; campus address `192.168.1.10`; port `8000`; database port `3308`
+         (older setups: `3306` or yours); Install. [I]
+10. - [ ] Console: (older setups: type the **MariaDB root password**); create the Administrator
+          (**@gmail.com** email + password, typed twice). Expect `OK: CompuLab's own database: ...
+          port 3308 on 127.0.0.1 only`, `OK: Administrator account: ...` and **"CompuLab is
+          installed."** → Enter → Finish. Then repeat the database-services check: unchanged, plus
+          `CompuLabMariaDB`. [I, L7]
 11. - [ ] From another PC: `http://192.168.1.10:8000` → sign in. **System status**: Database OK,
           Background worker Running. [L1, L2]
 12. - [ ] Start → CompuLab → **CompuLab Server Status** → **F** (full report) → no `[FAIL]`. [L4]
@@ -90,7 +99,8 @@ Read the full list in the guide ("First-install warning checklist") and tick it.
 19. - [ ] Run `CompuLab-Agent-Setup-<version>.exe` → config file is filled in → **Student Windows
           accounts**: `student` → Install → **"The CompuLab agent is installed."**, self-test "server:
           answers". Delete loose copies of the config file. [O1]
-20. - [ ] From a campus PC: `Test-NetConnection 192.168.1.10 -Port 8000` → True, `-Port 3306` → False. [K3]
+20. - [ ] From a campus PC: `Test-NetConnection 192.168.1.10 -Port 8000` → True, `-Port 3308` (older
+          setups: 3306) → False. [K3]
 21. - [ ] Sign in as the student → lock screen, NETWORK **Connected**. Sign in as administrator → **no**
           lock screen. [O2]
 22. - [ ] **PC power status** → **Check now** → PC-01 **Available**; **System status** → agent 2.2.0,
@@ -100,7 +110,8 @@ Read the full list in the guide ("First-install warning checklist") and tick it.
 ## Tests before real use
 
 24. - [ ] Restart the server without signing in → site back within ~3 minutes. [Q1]
-25. - [ ] End `waitress-serve.exe` on the server → site back within ~1 minute. [Q2]
+25. - [ ] End the CompuLab Web process on the server (`python.exe` running `-m waitress`; older setups
+          `waitress-serve.exe`) → site back within ~1 minute. [Q2]
 26. - [ ] Restart the lab PC → lock screen at student sign-in, none for the administrator. [Q3]
 27. - [ ] In the unlocked student session, end `CompuLabAgent.exe` → lock screen back within ~2 minutes. [Q4]
 28. - [ ] Unplug PC-01's cable, **Lock Now** → "Server offline · 1 queued"; plug in → delivered once. [Q6]

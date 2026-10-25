@@ -33,12 +33,17 @@ Step-by-step instructions for the installation itself, including every check bel
 
 ### Since 2026.10.23.0716 (server installer; found on a real test install)
 
-Release 2026.10.23.0716 (commit `2b689ea`) has the fixes above but not these; use a later build.
+Release 2026.10.23.0716 (commit `2b689ea`) has the fixes above but not these. Release 2026.10.23.1050
+(commit `7e93677`) has the `.env`, sign-in error and venv fixes, but not the two database-server rows
+(another program's database, database tools); use a later build, above all on a PC with more than one
+database server.
 
 | Problem | Fix (where) | Tests |
 |---|---|---|
 | Started in a folder whose `.env` lacks the database settings (a developer copy), the installer went on as a repair and tried to sign in to MariaDB/MySQL with an empty port, then blamed the password | Repair/Update first check that the existing `.env` has `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` and stop otherwise, before any question, package install or `.env` change; credentials are never invented, a missing host/port only taken from an explicit `-DbHost`/`-DbPort` (`common.ps1` `Test-ExistingDbSettings`; `install-server.ps1`). The sign-in file refuses an empty host/port | logic tests; end-to-end "existing .env without database settings" |
 | Every sign-in failure was reported as "wrong password, or the database service is not running", including an empty password that never reached the installer | `Get-DbSignIn` keeps mysql's own message; `ConvertTo-DbErrorText` says what it means (empty password, wrong password, no server on host:port, unknown host, empty port, sign-in method, host not allowed) followed by `Database server said: ...` (password and temporary file path removed). A typed root password that is refused is asked again (3 tries), with a hint to click into the window first | logic tests (each message, plus a real `mysql.exe` against a port with no server); end-to-end "wrong root password" (message shown, password not in output or log) |
+| A database that another program installed as its own service (an inventory system's MariaDB on 3307) was accepted, and the installer suggested `-DbServiceName` for it; with XAMPP or such a database on the port, a MariaDB/MySQL service could be started or set to Automatic before the port was refused | `Test-DbListener` refuses a server whose service is not a MariaDB/MySQL installation unless named with `-DbServiceName`; the port owner is checked before any database service is started or changed; the service of MySQL 8.4's child `mysqld` is found through its parent (`common.ps1`, `install-server.ps1`) | logic tests, including a read-only check of the real servers on the PC |
+| Database tools were found by name (`mysql.exe` / `mysqldump.exe` first, MariaDB folders before MySQL's): MariaDB 11 may ship only `mariadb.exe` / `mariadb-dump.exe`, and MySQL's `mysqldump` could then run against MariaDB (backups before every Repair) | `Find-DbClient` takes the client / dump program from the folder of the server on `DB_PORT`, preferring the `mariadb*` names, else the first installed (`install-server.ps1`, `backup.ps1`, `restore.ps1`) | logic tests; end-to-end (install, backup, restore) |
 | An existing `venv\` was reused whatever Python made it (a 3.11 venv with the 3.13 packages) | `pyvenv.cfg` must show the Python the setup chose (same version and installation); otherwise the CompuLab services are stopped, the old `venv\` is renamed `venv.old-<date>` (kept) and a new one is made (`common.ps1` `Test-VenvMatchesPython`, `Move-VenvAside`) | logic tests; end-to-end repair over a real Python 3.11 venv |
 
 **Upgrade notes (existing installations):**

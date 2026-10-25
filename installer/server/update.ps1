@@ -10,7 +10,7 @@
   1. Replace the application files with the new version first:
        - with Git:  git pull   (in the CompuLab folder), or
        - by copying the new release folder over this one, keeping .env,
-         media\, logs\, backups\, venv\ and service\.
+         media\, logs\, backups\, data\, venv\ and service\.
   2. Then run, as Administrator:
        powershell -ExecutionPolicy Bypass -File installer\server\update.ps1
 
@@ -30,9 +30,12 @@ Write-Step 'Backup before updating'
 $backupFolder = & "$PSScriptRoot\backup.ps1" -BackupRoot $BackupRoot | Select-Object -Last 1
 
 Stop-CompuLabServices
-Write-Step 'Installing packages'
-try { Write-Ok "Packages installed ($(Install-PythonPackages (Join-Path $PSScriptRoot 'requirements-server.txt')))" }
-catch { throw "Package installation failed; services left stopped. Fix the error or restore the backup. ($($_.Exception.Message))" }
+if (Test-BundledPython) { Write-Ok 'Python packages are part of the bundled Python (runtime\python): nothing to install' }
+else {
+    Write-Step 'Installing packages'
+    try { Write-Ok "Packages installed ($(Install-PythonPackages (Join-Path $PSScriptRoot 'requirements-server.txt')))" }
+    catch { throw "Package installation failed; services left stopped. Fix the error or restore the backup. ($($_.Exception.Message))" }
+}
 
 Write-Step 'Database changes in this update'
 Invoke-Manage @('migrate', '--plan')

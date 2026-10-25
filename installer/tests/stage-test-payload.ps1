@@ -15,11 +15,17 @@
   (a real build is needed then). Prints the folder; delete it afterwards.
 #>
 [CmdletBinding()]
-param([string]$Out = '')
+param([string]$Out = '',
+      # The work folder of the build to take WinSW, packages, the packaged
+      # agent and (with -WithRuntime) runtime\ from (build-installers.ps1 -WorkDir).
+      [string]$Built = '',
+      # Also copy the bundled runtime (runtime\python, runtime\mariadb): a
+      # payload for CompuLab's own database (test-server-bundled.ps1).
+      [switch]$WithRuntime)
 
 $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$Built = Join-Path $Repo 'installer\build\work'
+if (-not $Built) { $Built = Join-Path $Repo 'installer\build\work' }
 if (-not (Test-Path (Join-Path $Built 'server-payload\installer\server\bin\WinSW-x64.exe'))) { throw 'No previous build in installer\build\work: run installer\build\build-installers.ps1 once.' }
 if (-not $Out) { $Out = Join-Path $env:TEMP ('compulab-test-payload-' + (Get-Date -Format 'HHmmss')) }
 function Invoke-Git([string[]]$Arguments) {
@@ -53,6 +59,11 @@ foreach ($rel in 'installer\server\bin', 'installer\server\wheels') {
     New-Item -ItemType Directory -Force (Join-Path $server $rel) | Out-Null
     Copy-Item (Join-Path $Built "server-payload\$rel\*") (Join-Path $server $rel) -Recurse -Force
 }
+if ($WithRuntime) {
+    $rt = Join-Path $Built 'server-payload\runtime'
+    if (-not (Test-Path (Join-Path $rt 'mariadb\bin\mariadbd.exe'))) { throw "No bundled runtime in ${rt}: build once with the current build-installers.ps1 (it bundles runtime\)." }
+    Copy-Item $rt (Join-Path $server 'runtime') -Recurse
+}
 $head = [string](Invoke-Git @('rev-parse', 'HEAD'))
 $info = [ordered]@{ product = 'CompuLab'; version = 'test-payload'; commit = $head; clean_tree = $false
                     note = 'TEST payload staged from the working tree by installer\tests\stage-test-payload.ps1 - not a release' }
@@ -67,5 +78,5 @@ New-Item -ItemType Directory -Force $scripts | Out-Null
 Get-ChildItem (Join-Path $Repo 'installer\agent\*') -Include '*.ps1', '*.cmd', '*.json', '*.md' | Copy-Item -Destination $scripts
 Copy-Item (Join-Path $Repo 'Install CompuLab Agent.cmd') $agent
 
-Write-Host "Staged $count working-tree files (+ WinSW, packages, packaged agent from build $($builtInfo.commit.Substring(0, 7)))"
+Write-Host "Staged $count working-tree files (+ WinSW, packages, packaged agent$(if ($WithRuntime) { ', bundled runtime' }) from build $($builtInfo.commit.Substring(0, 7)))"
 $Out

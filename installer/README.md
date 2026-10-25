@@ -90,7 +90,11 @@ Backups run every night (see the server guide). Test a restore at least once a t
 
 ```powershell
 # Build both setup programs into installer\dist (needs Python 3.13 + internet; no admin rights).
-# Refuses uncommitted changes (-AllowDirty for a local experiment, marked "dirty").
+# Refuses uncommitted changes (-AllowDirty for a local experiment, marked "dirty" and reported by
+# verify-dist as an UNAPPROVED CANDIDATE). The server setup bundles MariaDB 11.4.13 and Python
+# 3.13.16 (runtime\), each download checked against its pinned SHA-256; the build stops otherwise.
+# -WorkDir / -OutDir / -DownloadDir put the staging, the setups and the download cache elsewhere
+# (another -OutDir never touches installer\dist).
 powershell -ExecutionPolicy Bypass -File installer\build\build-installers.ps1 -InstallInnoSetup
 
 # Check a build (hashes, signature state, zip contents, build record); also works on a USB copy
@@ -98,12 +102,14 @@ powershell -ExecutionPolicy Bypass -File installer\build\verify-dist.ps1
 
 # Tests (no admin rights; nothing outside temporary folders is changed)
 powershell -ExecutionPolicy Bypass -File installer\tests\test-installer-logic.ps1      # script logic + admin-only definitions (not installed)
-powershell -ExecutionPolicy Bypass -File installer\tests\test-server-install.ps1       # server setup end to end (needs a build + MySQL/MariaDB server files)
+powershell -ExecutionPolicy Bypass -File installer\tests\test-server-install.ps1       # server setup end to end, external database (needs a build + MySQL/MariaDB server files)
+powershell -ExecutionPolicy Bypass -File installer\tests\test-server-bundled.ps1 -Payload <payload with runtime\>   # server setup with its OWN Python + MariaDB: no prerequisites
 powershell -ExecutionPolicy Bypass -File installer\tests\test-agent-install.ps1        # agent setup end to end, no Python on PATH (needs a build)
 # The end-to-end tests use the last build's staged payload. To test uncommitted changes without a
 # release build: stage a TEST payload from the working tree (reuses WinSW, packages and the packaged
 # agent of the last build; refuses if lab_pc_agent\agent.py changed since) and pass it with -Payload:
 powershell -ExecutionPolicy Bypass -File installer\tests\stage-test-payload.ps1          # prints the folder
+# ... -WithRuntime [-Built <build -WorkDir>] also copies runtime\ (for test-server-bundled.ps1)
 venv\Scripts\python -m unittest discover -s lab_pc_agent\tests                          # agent queue + agent-to-server
 venv\Scripts\python manage.py test                                                      # Django (includes system/tests.py)
 ```
@@ -114,8 +120,11 @@ hashes, supported Windows, install steps) - hand out all of them together.
 
 The end-to-end tests compile **test builds** of each setup (`/DTestBuild`: per-user, skips the
 Windows services, firewall rules and start-up task, which need administrator rights; two versions,
-to test an update) and run them silently into a temporary folder. The server test starts a
-throwaway MySQL/MariaDB server on a free port from the installed server files. The logic test checks
+to test an update) and run them silently into a temporary folder. The external-database server test
+starts a throwaway MySQL/MariaDB server on a free port from the installed server files; the bundled
+test needs nothing installed (without administrator rights CompuLab's own database runs as a
+background process of the test instead of a service, in the test folder, and is removed afterwards;
+it also checks that every other database server on the PC is unchanged). The logic test checks
 the services, firewall rules and scheduled tasks as definitions without installing them. What none
 of this covers - the administrator-level behaviour on real machines - is the checklist in
 `docs/RELEASE_READINESS.md`, followed by `docs/MANUAL_VERIFICATION.md`.

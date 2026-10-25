@@ -7,11 +7,18 @@
 ; .env, database, migrations, services, firewall, backups) and can be re-run
 ; at any time. Running a newer setup over an installed server updates it.
 ;
-; Silent install (Python and MariaDB already installed; the MariaDB root
-; password in the environment variable COMPULAB_DB_ROOT_PASSWORD):
-;   CompuLab-Server-Setup.exe /VERYSILENT /SERVERADDRESS=192.168.1.10 /PORT=8000 /DBPORT=3306
+; The payload includes runtime\python (Python 3.13, CompuLab's packages
+; installed) and runtime\mariadb (MariaDB 11.4): a new installation needs no
+; Python, no database server, no root password and no internet. It gets its
+; own database (service CompuLabMariaDB, 127.0.0.1, port 3308 or the next
+; free one). Data lives in {app}\data and is never removed by the setup.
+;
+; Silent install:
+;   CompuLab-Server-Setup.exe /VERYSILENT /SERVERADDRESS=192.168.1.10 /PORT=8000
 ; (plus DJANGO_SUPERUSER_EMAIL / DJANGO_SUPERUSER_PASSWORD for the first
-; Administrator on a new installation)
+; Administrator on a new installation). An existing MariaDB/MySQL instead:
+; /DBMODE=external /DBPORT=3306 with its root password in the environment
+; variable COMPULAB_DB_ROOT_PASSWORD.
 
 #ifndef Payload
   #error Payload is not defined: build with installer\build\build-installers.ps1
@@ -57,7 +64,11 @@ RedirectionGuard=no
 
 [InstallDelete]
 ; Old program code only (so files removed in a newer version don't linger).
-; Never listed here: .env, media, backups, logs, venv, service, staticfiles.
+; Never listed here: .env, data (CompuLab's database), media, backups, logs,
+; venv, service, staticfiles. runtime\ holds only program files (Python,
+; MariaDB); CompuLab is stopped before this runs (PrepareToInstall).
+Type: filesandordirs; Name: "{app}\runtime\python"
+Type: filesandordirs; Name: "{app}\runtime\mariadb"
 Type: filesandordirs; Name: "{app}\accounts"
 Type: filesandordirs; Name: "{app}\cloud_sync"
 Type: filesandordirs; Name: "{app}\compulab"
@@ -85,12 +96,15 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile
 
 [Messages]
 FinishedLabelNoIcons=The CompuLab Server files are installed and the setup window showed the result.%n%nIf it reported a problem, fix it and run this setup (or "Repair CompuLab Server" in the Start menu) again: it continues safely.
-UninstalledAll=The CompuLab services, firewall rules and backup task were removed.%n%nThe database, settings (.env), uploads, backups and logs were KEPT in the program folder and in MariaDB.
+UninstalledAll=The CompuLab services, firewall rules and backup task were removed.%n%nThe database (data folder), settings (.env), uploads, backups and logs were KEPT in the program folder. Reinstalling brings everything back.
 
 [Code]
 var
   AddressPage: TInputQueryWizardPage;
   WasInstalled: Boolean;
+  // Set when install-server.ps1 failed: the setup then exits with code 10
+  // instead of 0, so a silent install is never taken for a success.
+  ServerSetupFailed: Boolean;
 
 function GetFileAttributes(lpFileName: String): Cardinal;
   external 'GetFileAttributesW@kernel32.dll stdcall';
@@ -115,14 +129,17 @@ begin
     'How lab PCs and staff will reach this server',
     'Enter this server''s fixed campus IP address (reserve it in the router first), for example 192.168.1.10. ' +
     'Leave it empty to pick from this computer''s addresses during the installation. The port is normally 8000. ' +
-    'Database port: where MariaDB/MySQL listens on this computer, normally 3306 (another port only if you installed MariaDB on one, ' +
-    'e.g. because XAMPP uses 3306; CompuLab never uses or changes XAMPP).');
+    'Database port: CompuLab installs its own database, for this computer only; it uses this port, or the next free one if ' +
+    'another program uses it (that program is never changed). Keep 3308 unless you have a reason to choose another.');
   AddressPage.Add('Campus IP address or computer name:', False);
   AddressPage.Add('Port:', False);
   AddressPage.Add('Database port:', False);
   AddressPage.Values[0] := ExpandConstant('{param:SERVERADDRESS|}');
   AddressPage.Values[1] := ExpandConstant('{param:PORT|8000}');
-  AddressPage.Values[2] := ExpandConstant('{param:DBPORT|3306}');
+  if ExpandConstant('{param:DBMODE|}') = 'external' then
+    AddressPage.Values[2] := ExpandConstant('{param:DBPORT|3306}')
+  else
+    AddressPage.Values[2] := ExpandConstant('{param:DBPORT|3308}');
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -167,12 +184,20 @@ begin
       'Choose a normal folder, for example C:\CompuLab.';
     Exit;
   end;
-  // Stop a running CompuLab before its files are replaced (update). net stop
-  // waits until the service has stopped (an error when it is not installed
-  // is fine).
+  // Stop a running CompuLab before its files are replaced (update): the
+  // services and CompuLab's own database (service or background process),
+  // so runtime\ can be replaced. Installations from before stop-compulab.ps1
+  // existed: net stop (an error when a service is not installed is fine).
   WasInstalled := IsInstalled();
-  Exec(ExpandConstant('{sys}\net.exe'), 'stop CompuLabWorker /y', '', SW_HIDE, ewWaitUntilTerminated, Code);
-  Exec(ExpandConstant('{sys}\net.exe'), 'stop CompuLabWeb /y', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  if FileExists(ExpandConstant('{app}\installer\server\stop-compulab.ps1')) then
+    Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+      '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\installer\server\stop-compulab.ps1') + '" -Quiet',
+      '', SW_HIDE, ewWaitUntilTerminated, Code)
+  else
+  begin
+    Exec(ExpandConstant('{sys}\net.exe'), 'stop CompuLabWorker /y', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    Exec(ExpandConstant('{sys}\net.exe'), 'stop CompuLabWeb /y', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  end;
   Result := '';
 end;
 
@@ -190,8 +215,13 @@ begin
   begin
     Params := Params + ' -Port ' + IntToStr(StrToIntDef(Trim(AddressPage.Values[1]), 8000));
     // An installed server keeps the DB_PORT in its .env (Repair/Update).
-    Params := Params + ' -DbPort ' + IntToStr(StrToIntDef(Trim(AddressPage.Values[2]), 3306));
+    Params := Params + ' -DbPort ' + IntToStr(StrToIntDef(Trim(AddressPage.Values[2]), 3308));
   end;
+  // /DBMODE=bundled|external chooses the database explicitly (also on a
+  // Repair, e.g. to move to CompuLab's own one); otherwise a new install
+  // uses its own and an installed server keeps what it has.
+  if (ExpandConstant('{param:DBMODE|}') = 'bundled') or (ExpandConstant('{param:DBMODE|}') = 'external') then
+    Params := Params + ' -DbMode ' + ExpandConstant('{param:DBMODE|}');
 #ifdef TestBuild
   Params := Params + ' ' + ExpandConstant('{param:PSARGS|}');
 #endif
@@ -209,8 +239,16 @@ begin
   if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params, ExpandConstant('{app}'), Show, ewWaitUntilTerminated, Code) or (Code <> 0) then
   begin
     Log('install-server.ps1 failed with exit code ' + IntToStr(Code));
+    ServerSetupFailed := True;
     SuppressibleMsgBox('CompuLab setup did not finish (exit code ' + IntToStr(Code) + ').' + #13#10#13#10 +
       'The reason is shown in the console window and in ' + ExpandConstant('{app}\logs') + ' (install-*.log).' + #13#10 +
       'Fix it and run this setup again; it continues safely.', mbError, MB_OK, IDOK);
   end;
+end;
+
+function GetCustomSetupExitCode: Integer;
+begin
+  // 10: the files were installed but setting up CompuLab (install-server.ps1)
+  // failed; see {app}\logs\install-*.log.
+  if ServerSetupFailed then Result := 10 else Result := 0;
 end;
