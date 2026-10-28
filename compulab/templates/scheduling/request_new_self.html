@@ -39,7 +39,7 @@
       <div class="form-group">
         <label class="form-label" for="{{ form.student_count.id_for_label }}">Number of students</label>
         {{ form.student_count }}
-        <span class="helptext">If your class is bigger than the lab's PC count, students are auto-assigned however many PCs are actually available.</span>
+        <span class="helptext">If fewer PCs are available than requested, the system grants the remaining PCs upon approval. If zero are available, the request is rejected with "No available PCs" (not pending).</span>
         {% if form.student_count.errors %}<div class="form-errors">{{ form.student_count.errors|join:", " }}</div>{% endif %}
       </div>
     </div>

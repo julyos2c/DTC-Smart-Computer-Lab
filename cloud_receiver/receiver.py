@@ -29,6 +29,11 @@ SUPPORTED_SCHEMAS = {
     'issue': {1},
     'activity_log': {1},
     'notification': {1},
+    'lab': {1},
+    'pc': {1},
+    'inventory': {1},
+    'maintenance_log': {1},
+    'equipment_issue': {1},
 }
 OPERATIONS = ('upsert', 'delete')
 

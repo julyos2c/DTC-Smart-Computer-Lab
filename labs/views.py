@@ -366,8 +366,8 @@ def verify_reservation_and_check_in(remote_addr, id_number, code):
                 'Please try again later or ask your Lab In-Charge.'
             )}
 
-    if is_shared_code_booking:
-        cap = (session.pcs_requested if is_capacity_booking else session.student_count) or 0
+    if is_shared_code_booking or session.pcs_allocated:
+        cap = (session.pcs_allocated or (session.pcs_requested if is_capacity_booking else session.student_count)) or 0
         unit = 'PC' if is_capacity_booking else 'student'
         # Compare against everyone ELSE already checked in (not the raw
         # total), and do this on every attempt — not just a person's first
@@ -438,8 +438,8 @@ def verify_reservation_and_check_in(remote_addr, id_number, code):
     from django.db import transaction
     with transaction.atomic():
         Session.objects.select_for_update().filter(pk=session.pk).first()
-        if is_shared_code_booking:
-            cap = (session.pcs_requested if is_capacity_booking else session.student_count) or 0
+        if is_shared_code_booking or session.pcs_allocated:
+            cap = (session.pcs_allocated or (session.pcs_requested if is_capacity_booking else session.student_count)) or 0
             unit = 'PC' if is_capacity_booking else 'student'
             if cap > 0 and session.check_ins.exclude(id_number__iexact=id_number).count() >= cap:
                 return {'ok': False, 'error': (

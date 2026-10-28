@@ -27,6 +27,7 @@ User = get_user_model()
 # Which AlertSettings toggle gates each auto notification_type.
 SETTING_FIELD_BY_TYPE = {
     'reservation_submitted': 'reservation_notifications',
+    'reservation_allocation': 'reservation_notifications',
     'reservation_approved': 'reservation_notifications',
     'reservation_declined': 'reservation_notifications',
     'reservation_conflict': 'reservation_notifications',
@@ -145,6 +146,32 @@ def notify_reservation_submitted(session_request):
     )
 
 
+def notify_reservation_allocation(req, allocated, *, provisional=False):
+    """Tell requester/staff about partial capacity or a declined zero-PC slot."""
+    from scheduling.utils import requested_pc_count
+    requested = requested_pc_count(req)
+    if allocated >= requested and allocated > 0:
+        return []
+    if allocated == 0:
+        title = 'Reservation declined — No available PCs'
+        description = ('No available PCs for the selected date and time. '
+                       'Your reservation was declined, not queued or kept pending. '
+                       'Please select another schedule.')
+    else:
+        title = 'Reservation partially allocated'
+        description = (f'Only {allocated} of your {requested} requested PCs '
+                       f'{"are currently available (subject to approval)" if provisional else "have been approved"}.')
+    message = (f'{req.subject} in {req.lab.name} on {req.date} '
+               f'({req.start_time:%H:%M}–{req.end_time:%H:%M}): '
+               f'{requested} requested, {allocated} allocated, '
+               f'{max(0, requested - allocated)} unavailable. {description}')
+    recipients = [req.instructor] if req.instructor_id else []
+    # Staff must also see declined requests entered on behalf of students
+    # without dashboard accounts.
+    recipients += _lab_recipients(req.lab)
+    return notify(recipients, title, message, 'reservation_allocation', lab=req.lab)
+
+
 def notify_reservation_approved(session_request, code):
     req = session_request
     recipients = []
@@ -153,7 +180,8 @@ def notify_reservation_approved(session_request, code):
     notify(
         recipients,
         'Lab request approved',
-        f'Your request for {req.subject} on {req.date} has been approved. Reservation code: {code}',
+        f'Your request for {req.subject} on {req.date} has been approved. '
+        f'Allocated PCs: {req.pcs_allocated}. Reservation code: {code}',
         'reservation_approved', lab=req.lab, send_plain_email=False,
     )
     if _event_enabled('reservation_approved'):

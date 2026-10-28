@@ -16,6 +16,7 @@ class Notification(models.Model):
         ('general', 'General'),
         # ---- auto-generated: reservations ----
         ('reservation_submitted', 'New Reservation Request'),
+        ('reservation_allocation', 'Reservation PC Allocation'),
         ('reservation_approved', 'Reservation Approved'),
         ('reservation_declined', 'Reservation Rejected'),
         ('reservation_conflict', 'Reservation Conflict'),
@@ -58,6 +59,7 @@ class Notification(models.Model):
         'system_announcement': INFO,
         'general': INFO,
         'reservation_submitted': INFO,
+        'reservation_allocation': WARNING,
         'reservation_approved': INFO,
         'reservation_declined': INFO,
         'reservation_conflict': CRITICAL,

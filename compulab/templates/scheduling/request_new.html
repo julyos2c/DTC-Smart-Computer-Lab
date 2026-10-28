@@ -76,8 +76,8 @@
         <label class="form-label" for="{{ form.pcs_requested.id_for_label }}">Number of PCs needed</label>
         {{ form.pcs_requested }}
         <span class="helptext">
-          <strong>Walk-in:</strong> only approved if this many PCs are actually free in that time slot.
-          <strong>Override:</strong> can be approved even if the lab is fully booked, but can't exceed the lab's total PC count.
+          If fewer PCs are available than requested, the system approves the available quantity only.
+          If no PCs are available, the system displays "No available PCs" and rejects the request (not pending).
         </span>
         {% if form.pcs_requested.errors %}<div class="form-errors">{{ form.pcs_requested.errors|join:", " }}</div>{% endif %}
       </div>

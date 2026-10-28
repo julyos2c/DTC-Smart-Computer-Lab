@@ -157,12 +157,9 @@ class RequiresRegisteredAccountMixin:
 
 
 class PcsRequestedRequiredMixin:
-    """Walk-in and Override requests need to say how many PCs they want
-    (validated for real against lab capacity in the view — see
-    scheduling.utils.capacity_error); Instructor/Student/Group requests
-    still reserve the whole lab, so `pcs_requested` doesn't apply to them
-    and is reset to 0 to avoid a stale value lingering from a previous
-    edit."""
+    """Walk-in/Override use pcs_requested; other booking types use
+    student_count (one PC minimum for an individual student).
+    Allocation happens when a pending request is approved."""
 
     def clean(self):
         cleaned_data = super().clean()

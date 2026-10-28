@@ -7,6 +7,8 @@ kind of file, so the row-reading logic lives here once.
 """
 import csv
 import io
+import re
+from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
@@ -79,12 +81,20 @@ def read_rows(uploaded_file):
 
 
 def parse_year_level(raw):
-    """'1', '1st Year', 'Year 1', 1.0 -> 1. Returns None if it can't be
-    confidently parsed as a whole number."""
-    if raw in (None, ''):
+    """Parse an integer year or a year label; reject fractions and junk."""
+    if raw in (None, '') or isinstance(raw, bool):
         return None
-    digits = ''.join(ch for ch in str(raw) if ch.isdigit())
-    return int(digits) if digits else None
+    text = str(raw).strip()
+    match = re.fullmatch(r'(?:year\s*)?(\d+)(?:st|nd|rd|th)?(?:\s*year)?', text, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    try:
+        number = Decimal(text)
+        if number.is_finite() and number == number.to_integral_value():
+            return int(number)
+    except (InvalidOperation, ValueError, OverflowError):
+        pass
+    return None
 
 
 def validate_row(row, department):
@@ -97,11 +107,11 @@ def validate_row(row, department):
         errors.append('Missing First/Last Name.')
 
     year_level_raw = row.get('year_level')
-    if year_level_raw:
+    if year_level_raw not in (None, ''):
         year_level = parse_year_level(year_level_raw)
         valid_values = {v for v, _ in year_level_choices_for(department)}
         if year_level not in valid_values:
-            errors.append(f'Year Level "{year_level_raw}" isn\'t offered by the selected department.')
+            errors.append('Year Level must be a whole number from 1 to 4.')
 
     email = row.get('email')
     if not email:

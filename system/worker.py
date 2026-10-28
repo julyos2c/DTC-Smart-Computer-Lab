@@ -38,7 +38,7 @@ def run_forever(stop_event=None, mode='service'):
     from django.db import connections
     from system import connectivity, jobs
     from notifications import outbox
-    from cloud_sync import sync
+    from cloud_sync import sync, remote_control, reservations, live_status, inventory_commands
     from labs.agent_events import prune_receipts
 
     stop_event = stop_event or threading.Event()
@@ -60,7 +60,11 @@ def run_forever(stop_event=None, mode='service'):
                     _step('resume cloud sync', sync.resume)
             _step('email outbox', outbox.dispatch_due)
             _step('scheduled jobs', jobs.run_due_jobs)
+            _step('cloud PC status refresh', live_status.run_once)
             _step('cloud sync', sync.run_once)
+            _step('remote PC commands', remote_control.run_once)
+            _step('cloud reservation changes', reservations.run_once)
+            _step('cloud inventory changes', inventory_commands.run_once)
             if started - last_housekeeping >= HOUSEKEEPING_EVERY_SECONDS:
                 last_housekeeping = started
                 _step('outbox housekeeping', outbox.housekeeping)
@@ -87,7 +91,7 @@ def run_once(mode='cron'):
     from system import connectivity, jobs
     from notifications import outbox
     from notifications.reminders import check_roster_code_reminders, check_upcoming_sessions
-    from cloud_sync import sync
+    from cloud_sync import sync, remote_control, reservations, live_status, inventory_commands
     from labs.agent_events import prune_receipts
 
     started = time.monotonic()
@@ -102,7 +106,11 @@ def run_once(mode='cron'):
             if not _step('email outbox', outbox.dispatch_due):
                 break
         _step('scheduled jobs', jobs.run_due_jobs)
+        _step('cloud PC status refresh', live_status.run_once)
         _step('cloud sync', sync.run_once)
+        _step('remote PC commands', remote_control.run_once)
+        _step('cloud reservation changes', reservations.run_once)
+        _step('cloud inventory changes', inventory_commands.run_once)
         if timezone.localtime().minute == 0:
             _step('outbox housekeeping', outbox.housekeeping)
             _step('job pruning', jobs.prune_finished)

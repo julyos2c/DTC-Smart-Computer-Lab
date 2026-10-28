@@ -1,16 +1,4 @@
-"""
-Central registry of Departments and the year levels each one offers.
-
-Programs aren't all the same length (a 2-year certificate program only has
-Year 1/2, a 5-year Engineering program goes up to Year 5), so year level
-choices are defined *per department* here instead of as one fixed list —
-this is what lets the User form / Import Students flow only offer the year
-levels that are actually valid for the department picked.
-
-To add/rename a department or change its year levels, edit DEPARTMENTS
-below — everything else (choices, forms, JS for the import/user forms)
-reads from this single source of truth.
-"""
+"""Departments and supported student year levels (1 through 4)."""
 
 DEPARTMENTS = {
     'BSIS': {
@@ -19,7 +7,7 @@ DEPARTMENTS = {
     },
     'BSCJ': {
         'name': 'Bachelor of Science in Criminal Justice (BSCJ)',
-        'year_levels': [1, 2, 3, 4, 5],
+        'year_levels': [1, 2, 3, 4],
     },
     'BSTM': {
         'name': 'Bachelor of Science in Tourism Management (BSTM)',
@@ -36,7 +24,6 @@ DEPARTMENT_CHOICES = [(code, info['name']) for code, info in DEPARTMENTS.items()
 
 YEAR_LEVEL_LABELS = {
     1: '1st Year', 2: '2nd Year', 3: '3rd Year', 4: '4th Year',
-    5: '5th Year', 6: '6th Year',
 }
 
 

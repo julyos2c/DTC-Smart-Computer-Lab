@@ -134,6 +134,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'scheduling.write_lock.ScheduleWriteMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -413,6 +414,7 @@ PC_ACTIVITY_LOG_WIPE_WEEKDAY = None
 CLOUD_SERVER_URL = os.environ.get('CLOUD_SERVER_URL', '').strip().rstrip('/')  # e.g. 'https://compulab-cloud.example.com' -- blank = sync disabled, edge-only
 CLOUD_SYNC_API_KEY = os.environ.get('CLOUD_SYNC_API_KEY', '')  # shared secret with the cloud server's /api/sync/ endpoint
 CLOUD_SYNC_INTERVAL_SECONDS = 60
+CLOUD_PC_REFRESH_SECONDS = max(10, int(os.environ.get('CLOUD_PC_REFRESH_SECONDS', '30')))
 CLOUD_SYNC_TIMEOUT_SECONDS = int(os.environ.get('CLOUD_SYNC_TIMEOUT_SECONDS', '5'))
 # Identifies this campus server to the receiver; part of every record's
 # stable identity there (site_id, object_type, local_id). Never change it
@@ -420,7 +422,7 @@ CLOUD_SYNC_TIMEOUT_SECONDS = int(os.environ.get('CLOUD_SYNC_TIMEOUT_SECONDS', '5
 CLOUD_SYNC_SITE_ID = os.environ.get('CLOUD_SYNC_SITE_ID', 'dtc-main').strip()
 # Which records are published (cloud_sync/sync_payloads.py). Activity logs
 # and notifications are high-volume / personal and are off by default.
-CLOUD_SYNC_OBJECT_TYPES = tuple(env_list('CLOUD_SYNC_OBJECT_TYPES', 'reservation,session,issue'))
+CLOUD_SYNC_OBJECT_TYPES = tuple(env_list('CLOUD_SYNC_OBJECT_TYPES', 'reservation,session,issue,lab,pc,inventory,maintenance_log,equipment_issue'))
 # One-way publishing to a cloud copy is optional and off unless a cloud
 # server is configured; this on-premises server stays the only writable
 # copy of the data (docs/HYBRID_ARCHITECTURE.md §7, cloud_sync/PROTOCOL.md).
@@ -482,3 +484,20 @@ LOGGING = {
         'notifications.outbox': {'level': 'INFO'},
     },
 }
+# Opt in separately on cloud and edge. No router port forwarding required.
+CLOUD_REMOTE_CONTROL_ENABLED = env_bool('CLOUD_REMOTE_CONTROL_ENABLED', False)
+EDGE_REMOTE_CONTROL_ENABLED = env_bool('EDGE_REMOTE_CONTROL_ENABLED', False)
+
+# Local development only; HTTP stays restricted to loopback hostnames.
+EDGE_REMOTE_CONTROL_ALLOW_LOCAL_HTTP = env_bool('EDGE_REMOTE_CONTROL_ALLOW_LOCAL_HTTP', False)
+
+# Cloud admins may queue reservation intents; edge validates them locally.
+CLOUD_RESERVATIONS_ENABLED = env_bool('CLOUD_RESERVATIONS_ENABLED', False)
+EDGE_CLOUD_RESERVATIONS_ENABLED = env_bool('EDGE_CLOUD_RESERVATIONS_ENABLED', False)
+# Active local admin account used for audit/authorization; never a cloud-supplied ID.
+CLOUD_RESERVATION_EDGE_ACTOR_EMAIL = os.environ.get('CLOUD_RESERVATION_EDGE_ACTOR_EMAIL', '').strip()
+
+# Cloud inventory management, separate opt-in switches on both servers.
+CLOUD_INVENTORY_ENABLED = env_bool('CLOUD_INVENTORY_ENABLED', False)
+EDGE_CLOUD_INVENTORY_ENABLED = env_bool('EDGE_CLOUD_INVENTORY_ENABLED', False)
+CLOUD_INVENTORY_EDGE_ACTOR_EMAIL = os.environ.get('CLOUD_INVENTORY_EDGE_ACTOR_EMAIL', '').strip()

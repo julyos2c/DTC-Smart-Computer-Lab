@@ -318,11 +318,15 @@ class EndToEndSyncTests(TestCase):
 
 class PayloadPrivacyTests(TestCase):
     def test_reservation_snapshot_never_contains_codes_or_secrets(self):
-        obj = types.SimpleNamespace(
-            lab=None, instructor=None, requester_type='instructor', requester_name='T', roster_id=None, subject='Math',
-            date=datetime.date(2026, 10, 23), start_time=datetime.time(8), end_time=datetime.time(9), student_count=30,
-            pcs_requested=30, status='approved', created_at=timezone.now(), reservation_code='SECRET-CODE', code='SECRET-CODE',
+        from labs.models import Lab
+        from scheduling.models import SessionRequest
+        obj = SessionRequest.objects.create(
+            lab=Lab.objects.create(name='Privacy test'), requester_type='instructor', requester_name='T',
+            subject='Math', date=datetime.date(2026, 10, 23), start_time=datetime.time(8),
+            end_time=datetime.time(9), student_count=30, pcs_requested=30,
+            status='approved', reservation_code='SECRET-CODE',
         )
+        obj.code = 'SECRET-CODE'
         data = sync_payloads.snapshot('reservation', obj)
         self.assertNotIn('SECRET-CODE', json.dumps(data))
         self.assertFalse({k for k in data if 'code' in k or 'password' in k or 'secret' in k})

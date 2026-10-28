@@ -16,10 +16,47 @@ def json_for_script(value):
 
 CODE_CHARS = string.ascii_uppercase.replace('O', '').replace('I', '') + string.digits.replace('0', '').replace('1', '')
 
-# Requester types that reserve a specific NUMBER of PCs against the lab's
-# remaining capacity, instead of exclusively blocking the whole lab for
-# their time slot the way Instructor/Student/Group requests do.
-CAPACITY_BASED_TYPES = ('walk_in', 'override')
+# All regular reservations now consume only the number of PCs granted.
+# The requested quantity is retained on SessionRequest (student_count for
+# ordinary bookings; pcs_requested for walk-in/override), while pcs_allocated
+# records the approved quantity. Pending requests are not capacity holds.
+CAPACITY_BASED_TYPES = ('instructor', 'student', 'group', 'walk_in', 'override')
+
+
+def requested_pc_count(obj):
+    """The quantity asked for, never silently replaced by an allocated count."""
+    if obj.requester_type in ('walk_in', 'override'):
+        return max(obj.pcs_requested or 0, 0)
+    return max(obj.student_count or 0, 1)
+
+
+def allocated_pc_count(obj):
+    """Existing rows created before migration count their original booking."""
+    count = getattr(obj, 'pcs_allocated', 0)
+    if count:
+        return count
+    # An approved Session with zero PCs is not valid under the new flow.
+    # Old Session rows had pcs_allocated=0, so fall back to legacy fields.
+    return requested_pc_count(obj)
+
+
+def allocate_pcs(lab, date, start_time, end_time, requested, exclude_pk=None):
+    """Return (grant, message, available) using approved overlapping sessions.
+
+    Call this within schedule_write_lock when allocating an official Session.
+    Never reserve more than the remaining capacity. A zero-PC request
+    must be rejected, not placed on a pending/waiting list.
+    """
+    total, used, available = lab_pc_capacity(lab, date, start_time, end_time, exclude_pk=exclude_pk)
+    granted = min(max(0, int(requested)), available)
+    if granted < requested:
+        msg = (f'Partial allocation: requested {requested} PC(s), but only {granted} '
+               f'PC(s) available in {lab.name} for this schedule.'
+               if granted else
+               f'No available PCs in {lab.name} for the selected date and time. Please choose another schedule.')
+    else:
+        msg = None
+    return granted, msg, available
 
 
 def generate_reservation_code(length=6):
@@ -38,61 +75,36 @@ def generate_reservation_code(length=6):
 
 
 def lab_pc_capacity(lab, date, start_time, end_time, exclude_pk=None):
-    """Returns (total_pcs, pcs_used, pcs_available) for this lab/date/time
-    slot, based on already-APPROVED sessions on the official schedule
-    (scheduling.models.Session).
+    """(total usable PCs, used PCs, free PCs) for an entire time interval.
 
-    Instructor/Student/Group sessions still reserve the ENTIRE lab
-    exclusively — unchanged legacy behavior, see _official_schedule_conflict
-    in views.py — so any one of them overlapping this slot counts as the
-    whole lab being used. Walk-in/Override sessions instead only reserve
-    the specific number of PCs (`pcs_requested`) they were approved for, so
-    several of them can be evaluated against how many PCs are actually free.
+    PCs under maintenance or with a reported issue are not schedulable.
+    Offline PCs are still counted for advance booking: they may be powered
+    on before the future reservation. Actual PC unlock remains gated by
+    agent availability. Overlapping approved sessions each consume only
+    their actual granted quantity (not an exclusive lab hold).
     """
     from scheduling.models import Session
 
-    total_pcs = lab.pcs.count()
+    total_pcs = lab.pcs.exclude(status__in=('maintenance', 'issue')).count()
     qs = Session.objects.filter(
         lab=lab, date=date, start_time__lt=end_time, end_time__gt=start_time,
     )
     if exclude_pk:
         qs = qs.exclude(pk=exclude_pk)
-
-    used = 0
-    for s in qs:
-        if s.requester_type in CAPACITY_BASED_TYPES:
-            used += s.pcs_requested
-        else:
-            used = total_pcs  # exclusive booking fills the whole lab
-            break
+    used = sum(allocated_pc_count(s) for s in qs)
     used = min(used, total_pcs)
     return total_pcs, used, max(total_pcs - used, 0)
 
 
 def cap_student_count(lab, student_count):
-    """Validates an Instructor/Student/Group (whole-lab, exclusive-booking)
-    request's `student_count` against the lab's total physical PC count.
+    """Legacy convenience for old callers; uses physical lab capacity only.
 
-    These requester types block the entire lab for their time slot rather
-    than reserving a specific number of PCs (see lab_pc_capacity above).
-    Rather than rejecting the whole reservation when more students are
-    requested than the lab has PCs for, the request is auto-capped at
-    however many PCs are actually available so the reservation still goes
-    through — the requester is simply told only that many were assigned.
-
-    Returns (assigned_count, note) where `note` is a human-readable message
-    if the count had to be capped, or None if the requested count already
-    fit within the lab's capacity.
+    New reservation paths MUST use allocate_pcs() with the requested slot.
     """
-    total_pcs = lab.pcs.count()
-    if student_count > total_pcs:
-        note = (
-            f'Only {total_pcs} out of {student_count} student(s) have been assigned because only '
-            f'{total_pcs} PC{"s" if total_pcs != 1 else ""} '
-            f'{"are" if total_pcs != 1 else "is"} currently available in {lab.name}.'
-        )
-        return total_pcs, note
-    return student_count, None
+    total_pcs = lab.pcs.exclude(status__in=('maintenance', 'issue')).count()
+    assigned = min(max(0, student_count), total_pcs)
+    return assigned, (f'Only {assigned} of {student_count} students can fit in {lab.name}.'
+                      if assigned < student_count else None)
 
 
 def roster_schedule_conflicts(lab, instructor, section, schedule_days, start_time, end_time,
@@ -153,28 +165,12 @@ def roster_schedule_conflicts(lab, instructor, section, schedule_days, start_tim
 
 
 def capacity_error(requester_type, lab, date, start_time, end_time, pcs_requested, exclude_pk=None):
-    """Validates a Walk-in or Override request's `pcs_requested` against the
-    lab's capacity for that date/time. Returns an error message string if
-    the request can't be granted, or None if it's fine.
+    """Block new requests if every schedulable PC is already booked.
 
-    - Walk-in: only allowed if enough PCs are actually free in that slot
-      (not already reserved/in-use by other approved sessions).
-    - Override: bypasses the availability check entirely (can be approved
-      even if the lab is fully booked/in-use) but still can't ask for more
-      PCs than the laboratory physically has.
+    If at least one PC remains, submission proceeds even if fewer PCs
+    are available than requested; allocation is finalized at approval.
     """
-    total_pcs, used, available = lab_pc_capacity(lab, date, start_time, end_time, exclude_pk=exclude_pk)
-
-    if requester_type == 'walk_in':
-        if pcs_requested > available:
-            return (
-                f'Not enough available computers for this time slot in {lab.name} — '
-                f'{available} of {total_pcs} PC(s) available, but {pcs_requested} requested.'
-            )
-    elif requester_type == 'override':
-        if pcs_requested > total_pcs:
-            return (
-                f'{lab.name} only has {total_pcs} PC(s) in total — an Override reservation '
-                f'cannot request more than that ({pcs_requested} requested).'
-            )
+    _, _, available = lab_pc_capacity(lab, date, start_time, end_time, exclude_pk=exclude_pk)
+    if available == 0:
+        return f'No available PCs in {lab.name} for the selected date and time. Please choose another schedule.'
     return None

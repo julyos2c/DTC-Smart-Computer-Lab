@@ -28,6 +28,11 @@ class SyncQueue(models.Model):
         ('issue', 'Issue'),
         ('activity_log', 'PC Activity Log'),
         ('notification', 'Notification'),
+        ('lab', 'Laboratory'),
+        ('pc', 'PC Live Status'),
+        ('inventory', 'Inventory Item'),
+        ('maintenance_log', 'Maintenance Log'),
+        ('equipment_issue', 'Equipment Issue'),
     ]
     OPERATIONS = [
         ('upsert', 'Created or changed'),
@@ -117,6 +122,7 @@ class SyncState(models.Model):
     lease_until = models.DateTimeField(null=True, blank=True)
     last_attempt_at = models.DateTimeField(null=True, blank=True)
     last_success_at = models.DateTimeField(null=True, blank=True)
+    last_pc_snapshot_at = models.DateTimeField(null=True, blank=True)
     last_error = models.CharField(max_length=255, blank=True, default='')
     last_error_at = models.DateTimeField(null=True, blank=True)
     consecutive_failures = models.PositiveIntegerField(default=0)

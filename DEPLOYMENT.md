@@ -129,3 +129,8 @@ import it there, compare row counts, drop the test DB.
 `python manage.py test` — authorization sweep over every URL (anonymous and
 per role), PC-agent secret checks, calendar XSS escaping, media exposure, and
 production-settings guards.
+
+
+## No available PCs update
+
+The latest reservation changes block new submissions when a slot has zero free schedulable PCs, show **No available PCs** in the local forms/Cloud result, and decline existing requests that reach approval with zero capacity. For details and installation steps see `NO_AVAILABLE_PC_UPDATE.md`.

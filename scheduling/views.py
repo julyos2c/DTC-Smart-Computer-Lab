@@ -13,7 +13,8 @@ from django.core.exceptions import PermissionDenied
 from django.http import JsonResponse
 from scheduling.models import Session, SessionRequest
 from scheduling.forms import SessionForm, SessionRequestForm, InstructorSessionRequestForm
-from scheduling.utils import generate_reservation_code, capacity_error, cap_student_count, json_for_script
+from scheduling.utils import (generate_reservation_code, allocate_pcs, requested_pc_count,
+                              lab_pc_capacity, capacity_error, json_for_script)
 from labs.models import Lab
 from notifications import services as notify_service
 
@@ -34,32 +35,36 @@ def _official_schedule_conflict(lab, date, start_time, end_time, exclude_pk=None
     return qs.exists()
 
 
-def _slot_error(requester_type, lab, date, start_time, end_time, pcs_requested, student_count=0, exclude_pk=None):
-    """The single gate used everywhere a request/session's lab+time slot
-    needs checking: Instructor/Student/Group (including Class Roster
-    reservations, which are just an Instructor request with a roster
-    attached) keep the original all-or-nothing exclusive rule (any
-    overlapping approved session blocks it). A class with more students
-    than the lab has PCs for is no longer rejected here — see
-    scheduling.utils.cap_student_count, which the callers use to
-    auto-assign however many PCs are actually available instead. Walk-in/
-    Override instead go through the PC-count capacity check (see
-    scheduling.utils.capacity_error) so they can share a slot based on how
-    many PCs are actually free. Reservations (everything except Walk-in/
-    Override) are also rejected outright if the time falls outside the
-    lab's opening_time–closing_time (see Lab, set on Manage Labs) — Walk-in
-    and Override skip this too, since they exist specifically to handle
-    situations outside the normal schedule. Returns an error message, or
-    None if the slot/request is fine."""
-    if requester_type in ('walk_in', 'override'):
-        return capacity_error(requester_type, lab, date, start_time, end_time, pcs_requested, exclude_pk=exclude_pk)
-    if start_time < lab.opening_time or end_time > lab.closing_time:
-        open_lbl = lab.opening_time.strftime('%I:%M %p').lstrip('0')
-        close_lbl = lab.closing_time.strftime('%I:%M %p').lstrip('0')
-        return f'{lab.name} is only open {open_lbl}–{close_lbl}. Choose a time within operating hours.'
-    if _official_schedule_conflict(lab, date, start_time, end_time, exclude_pk=exclude_pk):
-        return 'Time slot conflict — this laboratory is already booked for an overlapping time on that date. Choose a different laboratory or schedule.'
+def _slot_error(requester_type, lab, date, start_time, end_time, pcs_requested, student_count=0,
+                exclude_pk=None, check_capacity=True):
+    """Validate times and reject fully booked slots; allow partial capacity.
+
+    A pending request does not hold PCs, so the final count is recalculated
+    under the Edge lock at approval. Approval handles zero-PC capacity
+    separately to decline any previously submitted request.
+    """
+    if start_time >= end_time:
+        return 'End time must be later than start time.'
+    if requester_type not in ('walk_in', 'override'):
+        if start_time < lab.opening_time or end_time > lab.closing_time:
+            open_lbl = lab.opening_time.strftime('%I:%M %p').lstrip('0')
+            close_lbl = lab.closing_time.strftime('%I:%M %p').lstrip('0')
+            return f'{lab.name} is only open {open_lbl}–{close_lbl}. Choose a time within operating hours.'
+    if check_capacity:
+        return capacity_error(requester_type, lab, date, start_time, end_time,
+                              pcs_requested, exclude_pk=exclude_pk)
     return None
+
+
+def _notify_provisional_allocation(req, request=None):
+    """Report the current estimate, explicitly not a confirmed PC hold."""
+    granted, note, _ = allocate_pcs(
+        req.lab, req.date, req.start_time, req.end_time, requested_pc_count(req))
+    if note:
+        notify_service.notify_reservation_allocation(req, granted, provisional=True)
+        if request is not None:
+            messages.warning(request, note + ' Allocation is provisional until approval.')
+
 
 
 # Roles that manage reservation requests and the official schedule — the
@@ -224,6 +229,12 @@ class SessionUpdateView(RoleRequiredMixin, ModalFormMixin, UpdateView):
     def get_form(self, form_class=None):
         form = super().get_form(form_class)
         _limit_lab_choice(form, self.request.user)
+        if self.object.reservation_code and not form.is_bound:
+            source = SessionRequest.objects.filter(
+                reservation_code=self.object.reservation_code, status='approved').first()
+            if source:
+                form.initial['student_count'] = source.student_count
+                form.initial['pcs_requested'] = source.pcs_requested
         return form
 
     def _blocked_if_past(self, request):
@@ -261,14 +272,34 @@ class SessionUpdateView(RoleRequiredMixin, ModalFormMixin, UpdateView):
             form.add_error(None, error)
             return self.form_invalid(form)
 
-        cap_note = None
-        if form.instance.requester_type not in ('walk_in', 'override'):
-            form.instance.student_count, cap_note = cap_student_count(form.instance.lab, form.instance.student_count)
+        original_student_count = form.instance.student_count
+        original_pcs_requested = form.instance.pcs_requested
+        granted, cap_note, _ = allocate_pcs(
+            form.instance.lab, form.instance.date, form.instance.start_time,
+            form.instance.end_time, requested_pc_count(form.instance), exclude_pk=self.object.pk)
+        if not granted:
+            form.add_error(None, 'No PCs are available for this slot. The current approved reservation was not changed.')
+            return self.form_invalid(form)
+        form.instance.pcs_allocated = granted
+        if form.instance.requester_type in ('walk_in', 'override'):
+            form.instance.pcs_requested = granted  # used by PC-agent check-in
+        else:
+            form.instance.student_count = granted  # limits simultaneous check-ins
 
         # Form validation (RequiresRegisteredAccountMixin) guarantees this
         # matches an active, admin-registered account before we ever get here.
         form.instance.instructor = form.cleaned_data['_matched_account']
         response = super().form_valid(form)
+        if self.object.reservation_code:
+            linked = SessionRequest.objects.filter(
+                reservation_code=self.object.reservation_code, status='approved').first()
+            if linked:
+                linked.student_count = original_student_count
+                linked.pcs_requested = original_pcs_requested
+                linked.pcs_allocated = granted
+                linked.save(update_fields=['student_count', 'pcs_requested', 'pcs_allocated'])
+                if cap_note:
+                    notify_service.notify_reservation_allocation(linked, granted)
         if cap_note:
             messages.warning(self.request, cap_note)
         messages.success(self.request, 'Schedule updated.')
@@ -314,7 +345,12 @@ def _cancel_session(session, actor):
     lab, subject, date = session.lab, session.subject, session.date
     start_time, end_time, code, instructor = session.start_time, session.end_time, session.reservation_code, session.instructor
     if code:
-        SessionRequest.objects.filter(reservation_code=code, status='approved').update(status='cancelled')
+        for req in SessionRequest.objects.filter(reservation_code=code, status='approved'):
+            for name in ('lab', 'subject', 'date', 'start_time', 'end_time', 'requester_type',
+                         'requester_name', 'requester_id_number', 'student_count', 'pcs_requested'):
+                setattr(req, name, getattr(session, name))
+            req.status = 'cancelled'
+            req.save()
     session.delete()
     _log_cancellation(actor, subject, lab, date, start_time, end_time, code or '')
     notify_service.notify_reservation_cancelled(lab, subject, date, start_time, end_time, actor, instructor=instructor)
@@ -531,16 +567,14 @@ class RequestUpdateView(RoleRequiredMixin, ModalFormMixin, UpdateView):
             form.add_error(None, error)
             return self.form_invalid(form)
 
-        cap_note = None
-        if form.instance.requester_type not in ('walk_in', 'override'):
-            form.instance.student_count, cap_note = cap_student_count(form.instance.lab, form.instance.student_count)
+        # Keep original student_count/pcs_requested; pending is not a hold.
+        form.instance.pcs_allocated = 0
 
         # Form validation (RequiresRegisteredAccountMixin) guarantees this
         # matches an active, admin-registered account before we ever get here.
         form.instance.instructor = form.cleaned_data['_matched_account']
         response = super().form_valid(form)
-        if cap_note:
-            messages.warning(self.request, cap_note)
+        _notify_provisional_allocation(self.object, self.request)
         messages.success(self.request, 'Request updated.')
         return response
 
@@ -563,7 +597,7 @@ def approve_request(request, pk):
     if request.method == 'POST':
         error = _slot_error(
             req.requester_type, req.lab, req.date, req.start_time, req.end_time, req.pcs_requested,
-            student_count=req.student_count,
+            student_count=req.student_count, check_capacity=False,
         )
         if error:
             if 'conflict' in error.lower():
@@ -577,37 +611,36 @@ def approve_request(request, pk):
                 return JsonResponse({'success': True, 'redirect': reverse('request_detail', kwargs={'pk': pk})})
             return redirect('request_detail', pk=pk)
 
+        requested = requested_pc_count(req)
+        granted, cap_note, _ = allocate_pcs(
+            req.lab, req.date, req.start_time, req.end_time, requested)
+        if not granted:
+            # Capacity changed after submission: decline instead of leaving
+            # a zero-PC request pending. Never issue a code or Session.
+            req.status = 'declined'
+            req.pcs_allocated = 0
+            req.reservation_code = None
+            req.save(update_fields=['status', 'pcs_allocated', 'reservation_code'])
+            notify_service.notify_reservation_allocation(req, 0)
+            messages.error(request, cap_note)
+            if is_modal_request(request):
+                return JsonResponse({'success': True, 'redirect': reverse('request_detail', kwargs={'pk': pk})})
+            return redirect('request_detail', pk=pk)
+
         code = generate_reservation_code()
         req.reservation_code = code
         req.status = 'approved'
-
-        # Re-check the assignable count against current lab capacity at
-        # approval time (it may have changed since the request was logged —
-        # e.g. PCs taken offline) rather than trusting the value stored on
-        # the request.
-        cap_note = None
-        session_student_count = req.student_count
-        if req.requester_type not in ('walk_in', 'override'):
-            session_student_count, cap_note = cap_student_count(req.lab, req.student_count)
-            req.student_count = session_student_count
+        req.pcs_allocated = granted
         req.save()
 
-        # create the actual session — adds it to the official schedule,
-        # carrying the reservation code the requester will use at the lab PC
         Session.objects.create(
-            lab=req.lab,
-            instructor=req.instructor,
-            requester_type=req.requester_type,
-            requester_name=req.requester_name,
-            requester_id_number=req.requester_id_number,
-            roster=req.roster,
-            reservation_code=code,
-            subject=req.subject,
-            date=req.date,
-            start_time=req.start_time,
-            end_time=req.end_time,
-            student_count=session_student_count,
-            pcs_requested=req.pcs_requested,
+            lab=req.lab, instructor=req.instructor, requester_type=req.requester_type,
+            requester_name=req.requester_name, requester_id_number=req.requester_id_number,
+            roster=req.roster, reservation_code=code, subject=req.subject,
+            date=req.date, start_time=req.start_time, end_time=req.end_time,
+            student_count=(granted if req.requester_type not in ('walk_in', 'override') else req.student_count),
+            pcs_requested=(granted if req.requester_type in ('walk_in', 'override') else req.pcs_requested),
+            pcs_allocated=granted,
         )
 
         # notify the linked account, if there is one, plus the relevant
@@ -617,6 +650,7 @@ def approve_request(request, pk):
         if req.requester_type in ('walk_in', 'override'):
             notify_service.notify_walkin_override_approved(req, code)
         if cap_note:
+            notify_service.notify_reservation_allocation(req, granted)
             messages.warning(request, cap_note)
         messages.success(
             request,
@@ -917,7 +951,7 @@ class InstructorRequestCreateView(RoleRequiredMixin, ModalFormMixin, CreateView)
             form.add_error(None, error)
             return self.form_invalid(form)
 
-        form.instance.student_count, cap_note = cap_student_count(form.instance.lab, form.instance.student_count)
+        form.instance.pcs_allocated = 0
         form.instance.requester_type = 'instructor'
         form.instance.requester_name = self.request.user.display_name
         form.instance.requester_id_number = self.request.user.id_number
@@ -925,8 +959,7 @@ class InstructorRequestCreateView(RoleRequiredMixin, ModalFormMixin, CreateView)
         form.instance.status = 'pending'
         response = super().form_valid(form)
         notify_service.notify_reservation_submitted(self.object)
-        if cap_note:
-            messages.warning(self.request, cap_note)
+        _notify_provisional_allocation(self.object, self.request)
         messages.success(self.request, 'Your reservation request has been submitted for approval.')
         return response
 
@@ -979,9 +1012,8 @@ class RequestCreateView(RoleRequiredMixin, ModalFormMixin, CreateView):
             form.add_error(None, error)
             return self.form_invalid(form)
 
-        cap_note = None
-        if form.instance.requester_type not in ('walk_in', 'override'):
-            form.instance.student_count, cap_note = cap_student_count(form.instance.lab, form.instance.student_count)
+        # Keep original student_count/pcs_requested; pending is not a hold.
+        form.instance.pcs_allocated = 0
 
         form.instance.status = 'pending'
         # Only accounts registered by an Admin/Lab In-Charge (under Users)
@@ -991,8 +1023,7 @@ class RequestCreateView(RoleRequiredMixin, ModalFormMixin, CreateView):
         form.instance.instructor = form.cleaned_data['_matched_account']
         response = super().form_valid(form)
         notify_service.notify_reservation_submitted(self.object)
-        if cap_note:
-            messages.warning(self.request, cap_note)
+        _notify_provisional_allocation(self.object, self.request)
         messages.success(self.request, 'Reservation logged. Review the details and approve or reject it.')
         return response
 

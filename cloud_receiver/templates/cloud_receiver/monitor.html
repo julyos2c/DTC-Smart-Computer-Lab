@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CompuLab Cloud | Live PC & Inventory</title>
+<style>
+body{margin:0;background:#f4f7fb;color:#17243b;font:15px system-ui,-apple-system,'Segoe UI',sans-serif}main{max-width:1250px;margin:2rem auto;padding:0 1rem}
+header{display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap}.card{background:white;border:1px solid #dce4ee;border-radius:12px;padding:1.2rem;margin:1rem 0;box-shadow:0 2px 8px #1a305111}
+nav a{color:#1747a0;margin-left:1rem}h1{margin-bottom:.2rem;font-size:1.7rem}h2{font-size:1.15rem}.muted{color:#5b677c}.stats{display:flex;gap:1rem;flex-wrap:wrap}.stat{background:#eaf1fa;border-radius:8px;padding:.65rem 1rem;min-width:95px} .stat strong{display:block;font-size:1.3rem}
+.controls{display:flex;flex-wrap:wrap;gap:.6rem;margin:.8rem 0}input,select,button{padding:.55rem .7rem;border:1px solid #b6c5d8;border-radius:6px;background:white}button{cursor:pointer;background:#194782;color:white} .table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:650px}th,td{text-align:left;border-bottom:1px solid #dce4ee;padding:.65rem .5rem;font-size:.9rem}th{color:#394865;background:#f5f8fe}.chip{display:inline-block;padding:.2rem .55rem;border-radius:100px;background:#e7edf3;color:#34455c;font-weight:650}.online,.operational{background:#d8f6e2;color:#14542b}.in_use{background:#dbeaff;color:#1a4884}.offline,.retired,.faulty{background:#ffdfdf;color:#9a1c1c}.stale{background:#fff1cb;color:#765200} .empty{padding:1rem;color:#64748b}a:focus,button:focus,input:focus,select:focus{outline:2px solid #2269d1}
+</style></head>
+<body><main><header><div><h1>CompuLab Cloud Monitor</h1><p class="muted">Status is synced from the Edge. Stale means the reading is not current.</p></div>
+<nav><a href="/admin/">Cloud Admin</a>{% if inventory_enabled %}<a href="/admin/cloud_receiver/inventorychange/add/">New Inventory Change</a>{% endif %}</nav></header>
+<div class="card"><div class="controls"><label>Campus site <select id="site"><option value="">All sites</option></select></label>
+<label>Find PC / item <input id="filter" type="search" placeholder="Lab, PC ID, item name"></label><button id="refresh">Refresh</button></div>
+<p class="muted" id="updated" role="status" aria-live="polite">Loading…</p><div class="stats" id="stats"></div></div>
+<section class="card"><h2>PC status</h2><div class="table-wrap"><table><thead><tr><th>Campus</th><th>Lab</th><th>PC</th><th>Actual status</th><th>Last seen (Edge)</th><th>Synced (Cloud)</th><th>Agent version</th></tr></thead><tbody id="pcs"></tbody></table></div></section>
+<section class="card"><h2>PC & equipment inventory</h2><p class="muted">Use the Cloud Admin → Inventory changes to request create, update or delete. Edge validates every edit.</p>
+<div class="table-wrap"><table><thead><tr><th>Campus</th><th>Lab</th><th>Asset name</th><th>Category</th><th>Quantity</th><th>Condition</th><th>Status</th><th>Last checked</th></tr></thead><tbody id="inventory"></tbody></table></div></section>
+<section class="card"><h2>Maintenance and equipment issues</h2><div id="maintenance" class="muted"></div></section>
+</main><script>
+(()=>{'use strict';const $=id=>document.getElementById(id);let data=null;
+const escape=s=>String(s??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const date=s=>s?new Date(s).toLocaleString(): 'Never';const lab=p=>p.lab?.name||'Unknown';
+function render(){if(!data)return;const term=$('filter').value.toLowerCase();
+const pcs=data.pcs.filter(p=>[p.pc_id,lab(p),p.site_id].join(' ').toLowerCase().includes(term));
+const inv=data.inventory.filter(p=>[p.name,p.category,lab(p),p.site_id].join(' ').toLowerCase().includes(term));
+$('stats').innerHTML=[['PCs',pcs.length],['Available',pcs.filter(p=>p.effective_status==='online').length],['In use',pcs.filter(p=>p.effective_status==='in_use').length],['Offline',pcs.filter(p=>p.effective_status==='offline').length],['Stale',pcs.filter(p=>p.stale).length],['Inventory assets',inv.length]].map(([n,v])=>`<div class="stat">${escape(n)}<strong>${v}</strong></div>`).join('');
+$('pcs').innerHTML=pcs.map(p=>`<tr><td>${escape(p.site_id)}</td><td>${escape(lab(p))}</td><td>${escape(p.pc_id)}</td><td><span class="chip ${escape(p.effective_status)}">${escape(p.effective_status)}</span></td><td>${escape(date(p.last_seen_at))}</td><td>${escape(date(p.synced_at))}</td><td>${escape(p.agent_version)}</td></tr>`).join('')||'<tr><td colspan="7" class="empty">No synced PCs found</td></tr>';
+$('inventory').innerHTML=inv.map(p=>`<tr><td>${escape(p.site_id)}</td><td>${escape(lab(p))}</td><td>${escape(p.name)}</td><td>${escape(p.category)}</td><td>${escape(p.quantity)}</td><td>${escape(p.condition)}</td><td><span class="chip ${escape(p.status)}">${escape(p.status)}</span></td><td>${escape(p.last_checked)}</td></tr>`).join('')||'<tr><td colspan="8" class="empty">No synced inventory yet</td></tr>';
+$('maintenance').textContent=`${data.maintenance_logs.length} maintenance logs and ${data.equipment_issues.length} equipment issue records synchronized.`;
+}
+async function refresh(){try{const r=await fetch('/cloud/api/pc-status/?site='+encodeURIComponent($('site').value),{credentials:'same-origin',cache:'no-store'});if(!r.ok)throw Error('Server returned '+r.status);data=await r.json();
+const chosen=$('site').value;$('site').innerHTML='<option value="">All sites</option>'+data.sites.map(s=>`<option value="${escape(s)}">${escape(s)}</option>`).join('');$('site').value=chosen;
+$('updated').textContent='Last checked '+new Date().toLocaleTimeString()+' · Cloud snapshots refresh automatically every {{ poll_seconds }} seconds. Yellow stale means no reliable recent observation.';render();}
+catch(e){$('updated').textContent='Unable to load cloud status: '+e.message;}}
+$('site').addEventListener('change',refresh);$('filter').addEventListener('input',render);$('refresh').addEventListener('click',refresh);refresh();setInterval(refresh,{{ poll_seconds }}*1000);
+})();
+</script></body></html>

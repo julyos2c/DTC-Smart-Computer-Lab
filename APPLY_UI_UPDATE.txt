@@ -1,0 +1,1 @@
+Replace the two templates in the actual project folder containing manage.py. Restart the Django web server, then Ctrl+F5. No migration or database change is needed.

@@ -25,13 +25,13 @@
       <p style="font-size:13px; color:#666; margin-top:8px;">
         This is a <strong>Group of students</strong> request — any ID number will work with this code
         at the lab PC, so the whole group can check in without needing a roster or name list.
-        Capped at <strong>{{ req.student_count }}</strong> distinct ID{{ req.student_count|pluralize }}
+        Capped at <strong>{{ req.pcs_allocated }}</strong> distinct ID{{ req.pcs_allocated|pluralize }}
         checking in, based on the number of students on this request.
       </p>
     {% elif req.requester_type == 'walk_in' or req.requester_type == 'override' %}
       <p style="font-size:13px; color:#666; margin-top:8px;">
         This is a <strong>{{ req.get_requester_type_display }}</strong> reservation for
-        <strong>{{ req.pcs_requested }}</strong> PC{{ req.pcs_requested|pluralize }}.
+        <strong>{{ req.pcs_allocated }}</strong> approved PC{{ req.pcs_allocated|pluralize }} ({{ req.pcs_requested }} requested).
         No roster is linked, so only {{ req.requester_name }}'s
         {{ req.get_requester_type_display }} ID (<strong>{{ req.requester_id_number }}</strong>) will work with this code at the lab PC.
       </p>
@@ -56,6 +56,12 @@
     <tr><td>Date</td><td>{{ req.date|date:"M d, Y" }}</td></tr>
     <tr><td>Time</td><td>{{ req.start_time|time:"H:i" }}–{{ req.end_time|time:"H:i" }}</td></tr>
     <tr><td>{% if req.requester_type == 'walk_in' or req.requester_type == 'override' %}PCs requested{% else %}Students{% endif %}</td><td>{% if req.requester_type == 'walk_in' or req.requester_type == 'override' %}{{ req.pcs_requested }}{% else %}{{ req.student_count }}{% endif %}</td></tr>
+    <tr><td>PCs allocated</td><td>
+      <strong>{{ req.pcs_allocated }}</strong>
+      {% if req.status == 'pending' %} — Pending approval; no PCs allocated yet
+      {% elif req.status == 'approved' %} — Confirmed allocation
+      {% else %} — No active allocation{% endif %}
+    </td></tr>
     <tr><td>Status</td><td><span class="status-pill pill-{{ req.status }}">{{ req.get_status_display }}</span></td></tr>
   </table>
 

@@ -8,7 +8,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from labs.models import Lab
+from labs.models import Lab, PC
 from scheduling.models import ClassRoster, RosterStudent, Session, SessionRequest
 
 User = get_user_model()
@@ -26,6 +26,7 @@ class Fixture(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.lab = Lab.objects.create(name='Lab A', opening_time=datetime.time(7), closing_time=datetime.time(21))
+        PC.objects.create(lab=cls.lab, pc_id='PC1')
         cls.admin = make_user('admin', 'admin.sched@gmail.com')
         cls.incharge = make_user('incharge', 'incharge.sched@gmail.com', assigned_lab=cls.lab)
         cls.instructor_a = make_user('instructor', 'instructor.a@gmail.com', id_number='INS-A')
@@ -311,3 +312,100 @@ class RosterOwnershipTests(Fixture):
         self.roster_b.refresh_from_db()
         self.assertEqual(self.roster_b.status, 'active')
         self.assertEqual(self.roster_b.approval_status, 'pending')
+
+class PartialPCAllocationTests(Fixture):
+    """Local scheduling grants free PCs, never an exclusive lab hold."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        for n in range(2, 11):
+            PC.objects.create(lab=cls.lab, pc_id=f'PC{n}')
+
+    def make_request(self, idx, count):
+        return SessionRequest.objects.create(
+            lab=self.lab, instructor=self.instructor_a,
+            requester_type='instructor', requester_name=f'Student {idx}',
+            requester_id_number='INS-A', subject=f'Reservation {idx}',
+            date=self.day, start_time=datetime.time(9), end_time=datetime.time(10),
+            student_count=count,
+        )
+
+    def approve(self, req):
+        response = self.client.post(reverse('approve_request', args=[req.pk]))
+        self.assertEqual(response.status_code, 302)
+        req.refresh_from_db()
+        return req
+
+    def test_three_single_pcs_then_eight_requested_gets_seven(self):
+        from notifications.models import Notification
+        self.client.force_login(self.admin)
+        first_three = [self.approve(self.make_request(i, 1)) for i in ('A', 'B', 'C')]
+        self.assertTrue(all(req.pcs_allocated == 1 for req in first_three))
+        partial = self.approve(self.make_request('D', 8))
+        self.assertEqual(partial.status, 'approved')
+        self.assertEqual(partial.student_count, 8)  # original request preserved
+        self.assertEqual(partial.pcs_allocated, 7)
+        self.assertEqual(Session.objects.get(reservation_code=partial.reservation_code).student_count, 7)
+        self.assertTrue(Notification.objects.filter(
+            notification_type='reservation_allocation',
+            message__contains='8 requested, 7 allocated').exists())
+        self.assertEqual(sum(s.pcs_allocated for s in Session.objects.all()), 10)
+
+    def test_zero_free_declines_existing_pending_request_without_code(self):
+        from notifications.models import Notification
+        self.client.force_login(self.admin)
+        self.approve(self.make_request('A', 10))
+        declined = self.approve(self.make_request('B', 2))
+        self.assertEqual(declined.status, 'declined')
+        self.assertEqual(declined.pcs_allocated, 0)
+        self.assertIsNone(declined.reservation_code)
+        self.assertEqual(Session.objects.count(), 1)
+        self.assertTrue(Notification.objects.filter(
+            notification_type='reservation_allocation',
+            title__contains='No available PCs').exists())
+
+    def test_cancel_frees_capacity_for_new_request(self):
+        self.client.force_login(self.admin)
+        first = self.approve(self.make_request('A', 10))
+        second = self.approve(self.make_request('B', 8))
+        self.assertEqual(second.status, 'declined')
+        self.client.post(reverse('session_delete', args=[Session.objects.get(reservation_code=first.reservation_code).pk]))
+        replacement = self.approve(self.make_request('C', 8))
+        self.assertEqual(replacement.status, 'approved')
+        self.assertEqual(replacement.pcs_allocated, 8)
+
+    def test_full_lab_blocks_new_instructor_request_with_clear_message(self):
+        self.client.force_login(self.instructor_a)
+        self.client.force_login(self.admin)
+        self.approve(self.make_request('A', 10))
+        self.client.force_login(self.instructor_a)
+        response = self.client.post(reverse('instructor_request_new'), {
+            'lab': self.lab.pk, 'subject': 'No capacity', 'date': self.day.isoformat(),
+            'start_time': '09:00', 'end_time': '10:00', 'student_count': 1,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'No available PCs')
+        self.assertFalse(SessionRequest.objects.filter(subject='No capacity').exists())
+
+    def test_full_lab_blocks_new_staff_request_without_pending_row(self):
+        self.client.force_login(self.admin)
+        self.approve(self.make_request('A', 10))
+        response = self.client.post(reverse('request_new'), {
+            'requester_type': 'student', 'requester_name': 'Student',
+            'requester_id_number': 'STU-1', 'lab': self.lab.pk,
+            'subject': 'Fully booked', 'date': self.day.isoformat(),
+            'start_time': '09:00', 'end_time': '10:00', 'student_count': 1,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'No available PCs')
+        self.assertFalse(SessionRequest.objects.filter(subject='Fully booked').exists())
+
+    def test_maintenance_pcs_excluded_from_available_capacity(self):
+        PC.objects.filter(lab=self.lab).order_by('pk').last().delete()
+        pc = PC.objects.filter(lab=self.lab).order_by('pk').last()
+        pc.status = 'maintenance'
+        pc.save(update_fields=['status'])
+        self.client.force_login(self.admin)
+        partial = self.approve(self.make_request('A', 10))
+        self.assertEqual(partial.pcs_allocated, 8)

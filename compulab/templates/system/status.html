@@ -3,191 +3,124 @@
 
 {% block content %}
 <style>
-  .sys-small{font-size:12px;color:var(--text-dim);} .sys-muted{color:var(--text-dim);}
-  .sys-note{font-size:12px;color:var(--text-dim);line-height:1.6;}
-  .sys-ok{color:var(--green);font-weight:600;} .sys-bad{color:var(--red);font-weight:600;} .sys-warn{color:var(--amber);font-weight:600;}
-  .sys-banner{border-left:3px solid var(--green);} .sys-banner.warn,.sys-banner.info{border-left-color:var(--amber);} .sys-banner.bad{border-left-color:var(--red);}
-  .sys-actions{display:flex;gap:8px;flex-wrap:wrap;} .sys-actions form{display:inline;}
-  .sys-table-wrap{overflow-x:auto;}
+  .ss-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.ss-actions form{margin:0}
+  .ss-overview{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:18px}
+  .ss-metric{margin:0;padding:18px 20px}.ss-label{font-size:12px;color:var(--text-dim);margin-bottom:10px}
+  .ss-value{font-size:24px;font-weight:650;line-height:1.2}.ss-caption{font-size:12px;color:var(--text-dim);margin-top:6px}
+  .ss-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600;background:var(--bg,#f4f6f8);white-space:nowrap}
+  .ss-ok{color:var(--green)}.ss-warn{color:var(--amber)}.ss-bad{color:var(--red)}.ss-muted{color:var(--text-dim)}
+  .ss-section{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}
+  .ss-section h2{font-size:15px;font-weight:650;margin:0}.ss-small{font-size:12px;color:var(--text-dim)}
+  .ss-table{overflow-x:auto}.ss-table .table{margin-bottom:0}.ss-detail{font-size:12px;max-width:450px;color:var(--text-dim)}
+  .ss-detail summary,.ss-fold>summary{cursor:pointer}.ss-detail>div{margin-top:8px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5}
+  .ss-fold>summary{font-size:14px;font-weight:600;list-style-position:inside}.ss-fold[open]>summary{margin-bottom:16px}
+  .ss-address{overflow-wrap:anywhere}.ss-status{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  @media(max-width:800px){.ss-overview{grid-template-columns:repeat(2,minmax(0,1fr))}.ss-actions{gap:6px}}
+  @media(max-width:460px){.ss-overview{grid-template-columns:1fr}}
 </style>
+
 <div class="page-header">
-  <div>
-    <h1>System status</h1>
-    <div class="sub">What the CompuLab server can reach right now, and what is waiting to be sent</div>
-  </div>
-  <div class="sys-actions">
+  <h1>System status</h1>
+  <div class="ss-actions">
     <form method="post" action="{% url 'system_recheck' %}">{% csrf_token %}
-      <button type="submit" class="action-btn" title="Run the connectivity checks now (normally every minute)"><svg class="btn-icon"><use href="#icon-refresh"/></svg> Check again</button>
+      <button type="submit" class="action-btn"><svg class="btn-icon"><use href="#icon-refresh"/></svg> Refresh checks</button>
     </form>
-    <a href="{% url 'email_outbox' %}" class="action-btn"><svg class="btn-icon"><use href="#icon-send"/></svg> Email outbox{% if summary.emails_waiting %}<span class="count">{{ summary.emails_waiting }}</span>{% endif %}</a>
-    <a href="{% url 'cloud_sync_queue' %}" class="action-btn">Cloud sync{% if summary.sync.pending %}<span class="count">{{ summary.sync.pending }}</span>{% endif %}</a>
+    <a href="{% url 'email_outbox' %}" class="action-btn">Email outbox</a>
+    <a href="{% url 'cloud_sync_queue' %}" class="action-btn">Cloud sync</a>
   </div>
 </div>
 
-<div class="card sys-banner {{ summary.headline_level }}">
-  <b>{{ summary.headline }}</b>
+<div class="ss-overview">
+  <div class="card ss-metric"><div class="ss-label">Database</div><div class="ss-value {% if summary.database.ok %}ss-ok{% elif summary.database.ok is False %}ss-bad{% else %}ss-muted{% endif %}">{% if summary.database.ok %}Online{% elif summary.database.ok is False %}Offline{% else %}Not checked{% endif %}</div></div>
+  <div class="card ss-metric"><div class="ss-label">Background worker</div><div class="ss-value {% if not summary.worker_alive %}ss-bad{% elif summary.worker_problems %}ss-warn{% else %}ss-ok{% endif %}">{% if not summary.worker_alive %}Stopped{% elif summary.worker_problems %}Attention{% else %}Running{% endif %}</div><div class="ss-caption">Last cycle {{ summary.worker.checked_at|date:"M d, H:i:s"|default:"—" }}</div></div>
+  <div class="card ss-metric"><div class="ss-label">Emails waiting</div><div class="ss-value">{{ summary.emails_waiting|default:0 }}</div><div class="ss-caption">{{ summary.emails_dead|default:0 }} rejected</div></div>
+  <div class="card ss-metric"><div class="ss-label">Cloud queue</div><div class="ss-value">{% if summary.sync.enabled %}{{ summary.sync.pending|default:0 }}{% else %}—{% endif %}</div><div class="ss-caption">{% if summary.sync.enabled %}{{ summary.sync.processing|default:0 }} sending{% else %}Not configured{% endif %}</div></div>
 </div>
-
-{% if summary.worker_attention %}
-<div class="card" style="border-left:3px solid var(--amber);">
-  <b>Background worker requires attention.</b>
-  <p class="sys-small" style="margin:6px 0 0; line-height:1.6;">
-    {% if not summary.worker_alive %}
-      It has not completed a cycle for more than two minutes{% if summary.worker.checked_at %} (last: {{ summary.worker.checked_at|date:"M d, H:i:s" }}){% endif %}.
-      While it is stopped, emails and cloud changes stay queued, PC status stops refreshing and Override switches only happen while a web page process is up.
-      On the server, open <i>Services</i> and start (or restart) <b>CompuLab Worker</b>, or run <code>installer\server\server-status.ps1</code>.
-      For a single-process install set <code>COMPULAB_BACKGROUND_TASKS=True</code> in <code>.env</code> instead.
-    {% else %}
-      It is running but not keeping up: {{ summary.worker_problems|join:"; " }}.
-      Restart <b>CompuLab Worker</b> in <i>Services</i> and check <code>logs\worker.log</code> for errors.
-    {% endif %}
-  </p>
-</div>
-{% endif %}
 
 <div class="card">
-  <div class="section-title">Connectivity</div>
-  <div class="sys-table-wrap">
-  <table class="table">
-    <thead><tr><th>Check</th><th>State</th><th>Since</th><th>Last OK</th><th>Detail</th></tr></thead>
+  <div class="ss-section"><h2>Connectivity</h2><span class="ss-small">{% if summary.worker_attention %}Attention required{% else %}Service checks{% endif %}</span></div>
+  <div class="ss-table"><table class="table">
+    <thead><tr><th>Service</th><th>Status</th><th>Last online</th><th>Details</th></tr></thead>
     <tbody>
+      <tr><td>Web server</td><td><span class="ss-pill ss-ok">Running</span></td><td>Now</td><td class="ss-small">—</td></tr>
+      {% for label, probe, help in probes %}
       <tr>
-        <td>Local server (this website)</td>
-        <td><span class="sys-ok">● Running</span></td>
-        <td>—</td><td>now</td>
-        <td class="sys-small">You are seeing this page, so the web service answers. Each page also re-checks it from your computer every 30 seconds (see the footer).</td>
-      </tr>
-    {% for label, probe, help in probes %}
-      <tr>
-        <td>{{ label }}</td>
-        <td>
-          {% if probe.ok is None %}<span class="sys-muted">Not configured / not checked yet</span>
-          {% elif probe.ok %}<span class="sys-ok">● OK</span>
-          {% else %}<span class="sys-bad">● Unavailable</span>{% endif %}
-        </td>
-        <td>{{ probe.since|date:"M d, H:i"|default:"—" }}</td>
+        <td>{% if forloop.counter == 3 %}Email server{% elif forloop.counter == 4 %}Cloud receiver{% else %}{{ label }}{% endif %}</td>
+        <td>{% if probe.ok is None %}<span class="ss-pill ss-muted">Not checked</span>{% elif probe.ok %}<span class="ss-pill ss-ok">Online</span>{% else %}<span class="ss-pill ss-bad">Unavailable</span>{% endif %}</td>
         <td>{{ probe.last_ok_at|date:"M d, H:i"|default:"—" }}</td>
-        <td class="sys-small">{{ probe.detail|default:"—" }}<div>{{ help }}</div></td>
+        <td>{% if probe.detail %}<details class="ss-detail"><summary>Details</summary><div>{{ probe.detail }}</div></details>{% else %}<span class="ss-small">—</span>{% endif %}</td>
       </tr>
-    {% endfor %}
+      {% endfor %}
       <tr>
         <td>Background worker</td>
-        <td>{% if summary.worker_alive and not summary.worker_problems %}<span class="sys-ok">● Running</span>{% elif summary.worker_alive %}<span class="sys-warn">● Needs attention</span>{% else %}<span class="sys-bad">● Not running</span>{% endif %}</td>
-        <td>—</td>
+        <td>{% if not summary.worker_alive %}<span class="ss-pill ss-bad">Stopped</span>{% elif summary.worker_problems %}<span class="ss-pill ss-warn">Needs attention</span>{% else %}<span class="ss-pill ss-ok">Running</span>{% endif %}</td>
         <td>{{ summary.worker.checked_at|date:"M d, H:i:s"|default:"—" }}</td>
-        <td class="sys-small">Mode: {{ background_mode }}{% if summary.worker.detail %} ({{ summary.worker.detail }}){% endif %}</td>
+        <td><details class="ss-detail"><summary>Details</summary><div>{{ background_mode }}{% if summary.worker.detail %}
+{{ summary.worker.detail }}{% endif %}{% if summary.worker_problems %}
+{{ summary.worker_problems|join:"; " }}{% endif %}</div></details></td>
       </tr>
     </tbody>
-  </table>
-  </div>
-  <p class="sys-note" style="margin-top:10px;">
-    Everything on the campus network keeps working without the internet: sign-in, reservations, PC unlocking, rosters,
-    attendance and reports. Only email and the optional cloud sync need the internet. While it is down, both wait in their
-    own queues and resume automatically (separately from each other) when it returns; staff accounts can be activated in
-    person with a one-time code instead (Users &rarr; Approve in person).
-  </p>
+  </table></div>
 </div>
 
 <div class="card">
-  <div class="section-title">Queues</div>
-  <div class="sys-table-wrap">
-  <table class="table">
-    <thead><tr><th>Queue</th><th>Waiting</th><th>Needs attention</th><th>Last success</th><th>Detail</th></tr></thead>
+  <div class="ss-section"><h2>Queues</h2></div>
+  <div class="ss-table"><table class="table">
+    <thead><tr><th>Queue</th><th>Waiting</th><th>Attention</th><th>Status</th><th>Last success</th></tr></thead>
     <tbody>
       <tr>
-        <td><a href="{% url 'email_outbox' %}">Email outbox</a></td>
-        <td>{{ summary.emails_waiting }}</td>
-        <td>{% if summary.emails_dead %}<a class="sys-warn" href="{% url 'email_outbox' %}?show=problems">{{ summary.emails_dead }} rejected</a>{% else %}0{% endif %}</td>
-        <td>—</td>
-        <td class="sys-small">
-          {% if not summary.smtp_configured %}No email server configured: emails are written to the log only (installer\server\configure-email.ps1).
-          {% elif summary.last_email_error %}Last error: <code>{{ summary.last_email_error }}</code>{% if email_hint %}<div>{{ email_hint }}</div>{% endif %}
-          {% else %}Sending normally.{% endif %}
-        </td>
+        <td><a href="{% url 'email_outbox' %}">Email outbox</a></td><td>{{ summary.emails_waiting|default:0 }}</td>
+        <td>{% if summary.emails_dead %}<a class="ss-warn" href="{% url 'email_outbox' %}?show=problems">{{ summary.emails_dead }} rejected</a>{% else %}0{% endif %}</td>
+        <td>{% if not summary.smtp_configured %}<span class="ss-small">Not configured</span>{% elif summary.last_email_error %}<details class="ss-detail"><summary class="ss-warn">Delivery error</summary><div>{{ summary.last_email_error }}{% if email_hint %}
+{{ email_hint }}{% endif %}</div></details>{% else %}<span class="ss-small">No errors reported</span>{% endif %}</td><td>—</td>
       </tr>
       <tr>
         <td><a href="{% url 'cloud_sync_queue' %}">Cloud sync</a></td>
         {% if summary.sync.enabled %}
-        <td>{{ summary.sync.pending }}{% if summary.sync.processing %} (+{{ summary.sync.processing }} sending){% endif %}</td>
-        <td>{% if summary.sync.failed or summary.sync.conflict %}<a class="sys-warn" href="{% url 'cloud_sync_queue' %}?show=problems">{{ summary.sync.failed }} failed, {{ summary.sync.conflict }} conflict{{ summary.sync.conflict|pluralize }}</a>{% else %}0{% endif %}</td>
-        <td>{{ summary.sync.last_success_at|date:"M d, H:i"|default:"never" }}</td>
-        <td class="sys-small">
-          To <code>{{ summary.sync.endpoint }}</code>.
-          {% if summary.sync.paused_reason %}<span class="sys-bad">Paused:</span> {{ summary.sync.paused_detail }}
-          {% elif summary.sync.next_attempt_at %}Retrying at {{ summary.sync.next_attempt_at|date:"H:i:s" }} after: {{ summary.sync.last_error }}
-          {% elif summary.sync.pending %}Sending.{% else %}Up to date.{% endif %}
-        </td>
-        {% else %}
-        <td>—</td><td>—</td><td>—</td>
-        <td class="sys-small">Cloud synchronization not configured. This server is the only copy of the data (back it up nightly); nothing is queued.</td>
-        {% endif %}
+        <td>{{ summary.sync.pending|default:0 }}</td>
+        <td>{% if summary.sync.failed or summary.sync.conflict %}<a class="ss-warn" href="{% url 'cloud_sync_queue' %}?show=problems">{{ summary.sync.failed }} failed · {{ summary.sync.conflict }} conflicts</a>{% else %}0{% endif %}</td>
+        <td>{% if summary.sync.paused_reason %}<details class="ss-detail"><summary class="ss-warn">Paused</summary><div>{{ summary.sync.paused_detail }}</div></details>{% elif summary.sync.next_attempt_at %}<span class="ss-small">Retry {{ summary.sync.next_attempt_at|date:"H:i:s" }}</span>{% elif summary.sync.pending or summary.sync.processing %}<span class="ss-small">Pending</span>{% else %}<span class="ss-ok">Up to date</span>{% endif %}</td>
+        <td>{{ summary.sync.last_success_at|date:"M d, H:i"|default:"—" }}</td>
+        {% else %}<td>—</td><td>—</td><td class="ss-small">Not configured</td><td>—</td>{% endif %}
       </tr>
-      <tr>
-        <td>Lab PC agents</td>
-        <td>{% if summary.agents.pending_events %}{{ summary.agents.pending_events }} event{{ summary.agents.pending_events|pluralize }} on PCs{% else %}0{% endif %}</td>
-        <td>{% if summary.agents.offline %}<span class="sys-warn">{{ summary.agents.offline }} PC{{ summary.agents.offline|pluralize }} offline</span>{% else %}0{% endif %}</td>
-        <td>{{ summary.agents.last_agent_contact|date:"M d, H:i"|default:"never" }}</td>
-        <td class="sys-small">{{ summary.agents.agents_recent }} of {{ summary.agents.pcs }} PCs with an IP address called the server in the last 10 minutes. Session-end events wait on each PC until the server confirms them.</td>
-      </tr>
+      <tr><td>PC agent events</td><td>{{ summary.agents.pending_events|default:0 }}</td><td>{% if summary.agents.offline %}<span class="ss-warn">{{ summary.agents.offline }} offline</span>{% else %}0{% endif %}</td><td class="ss-small">{{ summary.agents.agents_recent|default:0 }} / {{ summary.agents.pcs|default:0 }} recently connected</td><td>{{ summary.agents.last_agent_contact|date:"M d, H:i"|default:"—" }}</td></tr>
     </tbody>
-  </table>
-  </div>
+  </table></div>
 </div>
 
 <div class="card">
-  <div class="section-title">How to reach this server</div>
-  <table class="table">
-    <tr><td>Campus (LAN) address — SITE_URL</td><td><code>{{ site_url }}</code> <span class="sys-small">used by lab PCs, staff browsers and links in emails</span></td></tr>
-    <tr><td>Remote address (Tailscale VPN)</td><td>{% if remote_url %}<code>{{ remote_url }}</code> <span class="sys-small">works only from devices signed in to the college's Tailscale network, while this server and its internet connection are up</span>{% else %}<span class="sys-muted">Not configured (optional — installer\REMOTE_ACCESS.md)</span>{% endif %}</td></tr>
-    <tr><td>Server computer name</td><td><code>{{ hostname }}</code></td></tr>
-    <tr><td>This server's LAN addresses</td><td>{% for a in lan_addresses %}<code>http://{{ a }}:{{ lan_port }}</code>{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}</td></tr>
-    <tr><td>Health check</td><td><code>{{ site_url }}/healthz</code> answers <code>ok</code> when the web service is running</td></tr>
-  </table>
+  <div class="ss-section"><h2>PC agents</h2><span class="ss-small">Agent secrets: {{ agent_secrets.own|default:0 }} of {{ agent_secrets.total|default:0 }} PCs use their own secret</span></div>
+  <div class="ss-table"><table class="table">
+    <thead><tr><th>PC</th><th>Lab</th><th>Status</th><th>Last contact</th><th>Version</th><th>Pending events</th><th>Authentication</th></tr></thead>
+    <tbody>{% for pc in agent_pcs %}<tr>
+      <td>{{ pc.pc_id }}</td><td>{{ pc.lab.name }}</td><td>{{ pc.get_status_display }}</td>
+      <td>{{ pc.agent_last_contact_at|date:"M d, H:i:s"|default:"—" }}</td><td>{{ pc.agent_version|default:"—" }}</td>
+      <td>{% if pc.agent_pending_events %}<span class="ss-warn">{{ pc.agent_pending_events }}</span>{% else %}0{% endif %}</td>
+      <td>{% if pc.agent_secret_in_use %}<span class="ss-pill ss-ok">Individual key</span>{% elif pc.agent_secret %}<span class="ss-pill ss-warn">Setup pending</span> <span class="ss-small">agent not yet reinstalled or authenticated with its individual key</span>{% else %}<span class="ss-pill ss-warn">Shared key</span>{% endif %}</td>
+    </tr>{% empty %}<tr><td colspan="7" class="ss-small">No PC agents.</td></tr>{% endfor %}</tbody>
+  </table></div>
 </div>
 
-<div class="card">
-  <div class="section-title">Lab PC agents</div>
-  <div class="sys-table-wrap">
-  <table class="table">
-    <thead><tr><th>PC</th><th>Lab</th><th>Status</th><th>Agent last called</th><th>Agent version</th><th>Queued on PC</th><th>Agent secret</th></tr></thead>
-    <tbody>
-    {% for pc in agent_pcs %}
-      <tr>
-        <td>{{ pc.pc_id }}</td>
-        <td>{{ pc.lab.name }}</td>
-        <td>{{ pc.get_status_display }}{% if pc.status == 'offline' and pc.status_changed_at %} <span class="sys-small">since {{ pc.status_changed_at|date:"M d, H:i" }}</span>{% endif %}</td>
-        <td>{{ pc.agent_last_contact_at|date:"M d, H:i:s"|default:"never" }}</td>
-        <td>{{ pc.agent_version|default:"—" }}</td>
-        <td>{% if pc.agent_pending_events %}<span class="sys-warn">{{ pc.agent_pending_events }}</span>{% else %}0{% endif %}</td>
-        <td>{% if pc.agent_secret_in_use %}own{% elif pc.agent_secret %}<span class="sys-warn">own secret downloaded, agent not yet reinstalled</span>{% else %}<span class="sys-warn">shared (download Agent config and reinstall)</span>{% endif %}</td>
-      </tr>
-    {% empty %}
-      <tr><td colspan="7" class="sys-muted">No PCs with an IP address yet (Manage labs &rarr; PC &rarr; Edit).</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  </div>
-  <p class="sys-small">Agent secrets: {{ agent_secrets.own }} of {{ agent_secrets.total }} PCs use their own secret{% if agent_secrets.pending %}, {{ agent_secrets.pending }} waiting for the agent setup to be re-run with the new Agent config{% endif %}{% if agent_secrets.shared %}, {{ agent_secrets.shared }} still on the shared secret{% endif %}.
-  {% if agent_secrets.shared_allowed %}The shared secret is still accepted for PCs that have not moved yet. When every PC uses its own secret, set PC_AGENT_REQUIRE_PER_PC_SECRET=True in .env and restart the services.{% else %}The shared secret is switched off.{% endif %}</p>
-</div>
+<details class="card ss-fold">
+  <summary>Server details</summary>
+  <div class="ss-table"><table class="table">
+    <tr><td>Campus URL</td><td class="ss-address"><code>{{ site_url }}</code></td></tr>
+    <tr><td>Remote URL</td><td class="ss-address">{% if remote_url %}<code>{{ remote_url }}</code>{% else %}<span class="ss-small">Not configured</span>{% endif %}</td></tr>
+    <tr><td>Hostname</td><td><code>{{ hostname }}</code></td></tr>
+    <tr><td>LAN addresses</td><td class="ss-address">{% for a in lan_addresses %}<code>http://{{ a }}:{{ lan_port }}</code>{% if not forloop.last %}<br>{% endif %}{% empty %}—{% endfor %}</td></tr>
+    <tr><td>Health endpoint</td><td class="ss-address"><code>{{ site_url }}/healthz</code></td></tr>
+    <tr><td>Shared agent key</td><td class="ss-small">{% if agent_secrets.shared_allowed %}Enabled{% else %}Disabled{% endif %}</td></tr>
+  </table></div>
+</details>
 
-<div class="card">
-  <div class="section-title">Recent background jobs</div>
-  <table class="table">
-    <thead><tr><th>Job</th><th>Scheduled for</th><th>Status</th><th>Attempts</th><th>Last error</th></tr></thead>
-    <tbody>
-    {% for job in recent_jobs %}
-      <tr>
-        <td>{{ job.get_kind_display }}</td>
-        <td>{{ job.run_at|date:"M d, H:i:s" }}</td>
-        <td>{{ job.get_status_display }}</td>
-        <td>{{ job.attempts }}</td>
-        <td class="sys-small">{{ job.last_error|default:"—" }}</td>
-      </tr>
-    {% empty %}
-      <tr><td colspan="5" class="sys-muted">No background jobs yet.</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-</div>
+<details class="card ss-fold">
+  <summary>Recent jobs</summary>
+  <div class="ss-table"><table class="table">
+    <thead><tr><th>Job</th><th>Scheduled</th><th>Status</th><th>Attempts</th><th>Error</th></tr></thead>
+    <tbody>{% for job in recent_jobs %}<tr>
+      <td>{{ job.get_kind_display }}</td><td>{{ job.run_at|date:"M d, H:i:s" }}</td><td>{{ job.get_status_display }}</td><td>{{ job.attempts }}</td>
+      <td>{% if job.last_error %}<details class="ss-detail"><summary class="ss-warn">Details</summary><div>{{ job.last_error }}</div></details>{% else %}—{% endif %}</td>
+    </tr>{% empty %}<tr><td colspan="5" class="ss-small">No recent jobs.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</details>
 {% endblock %}

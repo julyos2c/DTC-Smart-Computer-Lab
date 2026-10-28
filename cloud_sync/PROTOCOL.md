@@ -20,8 +20,7 @@ the `cloud_receiver` migration); the campus server gets `CLOUD_SERVER_URL` (HTTP
 
 ## 1. Direction and authority
 
-- **One-way: campus → cloud.** The campus server is the only place where records are created or
-  changed. The cloud copy is a replica and never writes back.
+- **Replicas are one-way: campus → cloud.** The campus server remains the only place where authoritative records are changed. Cloud admin actions for reservations, PC registration and inventory are separate authenticated **intents** that the Edge polls, validates and applies.
 - Consequently there is no "merge": see the conflict policy in §6.
 
 ## 2. Configuration (campus side, `.env`)
@@ -31,7 +30,7 @@ the `cloud_receiver` migration); the campus server gets `CLOUD_SERVER_URL` (HTTP
 | `CLOUD_SERVER_URL` | Base URL of the receiver, e.g. `https://compulab-cloud.example.edu`. Blank = off. |
 | `CLOUD_SYNC_API_KEY` | Shared secret, sent as `Authorization: Bearer <key>`. Blank = off. Never logged or shown. |
 | `CLOUD_SYNC_SITE_ID` | Stable name of this campus server (default `dtc-main`). Never change it after the first sync. |
-| `CLOUD_SYNC_OBJECT_TYPES` | Record types published: `reservation`, `session`, `issue`, `activity_log`, `notification` (default: the first three). |
+| `CLOUD_SYNC_OBJECT_TYPES` | Record types published: `reservation`, `session`, `issue`, `activity_log`, `notification`, `lab`, `pc`, `inventory`, `maintenance_log`, `equipment_issue` (default: reservation, session, issue and the five lab/inventory types). |
 | `CLOUD_SYNC_TIMEOUT_SECONDS` | Per-request timeout (default 5). |
 
 After enabling: restart both CompuLab services, then run `python manage.py cloud_sync_backfill --yes`
@@ -171,3 +170,12 @@ for tests or a TLS proxy that does not set X-Forwarded-Proto).
 3. In one transaction per record: duplicate check → schema_version check → conflict check (cloud
    copy edited since `last_applied_sequence`?) unless `force` → apply → store edge_id and sequence.
 4. Answer per record as in §3. Never answer 2xx for a record that was not stored.
+
+## Remote PC commands
+
+Optional cloud-to-edge control is now separate from record replication. See
+`docs/CLOUD_REMOTE_CONTROL.md` for migration, opt-in settings, the cloud Django
+admin command form, expiry, result states, and at-most-once dispatch limits.
+
+## Reservation changes in both directions
+Cloud admins may now queue reservation intents through /api/reservation-changes/. The edge applies them under local validation and publishes confirmed snapshots with revisions. See docs/BIDIRECTIONAL_RESERVATIONS.md. This is separate from PC commands and preserves single-writer record replication.

@@ -106,8 +106,15 @@ def _request(path, payload=None):
         data = json.dumps(payload).encode('utf-8')
         headers['Content-Type'] = 'application/json'
     req = urllib.request.Request(url, data=data, headers=headers, method='POST' if data is not None else 'GET')
+    # Keep explicitly enabled loopback demo traffic away from OS proxy settings.
+    from urllib.parse import urlsplit
+    from cloud_sync.transport import NoRedirect
+    parsed = urlsplit(url)
+    local_demo = (getattr(settings, 'EDGE_REMOTE_CONTROL_ALLOW_LOCAL_HTTP', False)
+                  and parsed.scheme == 'http' and parsed.hostname in ('localhost', '127.0.0.1', '::1'))
+    opener = urllib.request.build_opener(NoRedirect, urllib.request.ProxyHandler({})).open if local_demo else urllib.request.urlopen
     try:
-        with urllib.request.urlopen(req, timeout=_timeout()) as resp:
+        with opener(req, timeout=_timeout()) as resp:
             raw = resp.read(2 * 1024 * 1024)
             try:
                 body = json.loads(raw.decode('utf-8')) if raw else {}

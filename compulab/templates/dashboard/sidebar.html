@@ -402,7 +402,6 @@ html[data-theme="light"] .nav.role-instructor { --accent-tint: rgba(15,118,110,0
     <span class="nav-label">Email outbox</span>
     {% if system_status.emails_waiting %}<span class="nav-badge">{{ system_status.emails_waiting }}</span>{% endif %}
   </a>
-  {% if system_status.sync.enabled %}
   <a class="nav-item {% if request.resolver_match.url_name == 'cloud_sync_queue' %}active{% endif %}"
      href="{% url 'cloud_sync_queue' %}">
     <span class="nav-led"></span>
@@ -410,7 +409,6 @@ html[data-theme="light"] .nav.role-instructor { --accent-tint: rgba(15,118,110,0
     <span class="nav-label">Cloud sync</span>
     {% if system_status.sync.failed or system_status.sync.conflict %}<span class="nav-badge">!</span>{% elif system_status.sync.pending %}<span class="nav-badge">{{ system_status.sync.pending }}</span>{% endif %}
   </a>
-  {% endif %}
 
   <div class="nav-spacer"></div>
   <form method="post" action="{% url 'logout' %}" class="nav-logout-form" onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Log out?', text: 'You will need to log in again to access your dashboard.', icon: 'question', confirmButtonText: 'Yes, log out', confirmButtonColor: getComputedStyle(document.documentElement).getPropertyValue('--red').trim()}); return false;">

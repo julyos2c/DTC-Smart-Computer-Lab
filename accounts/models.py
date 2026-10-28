@@ -92,10 +92,8 @@ class User(AbstractUser):
                    'available below for students.'
     )
     year_level = models.PositiveSmallIntegerField(
-        null=True, blank=True,
-        help_text='Students only — year level within the selected Department. '
-                   'The available options depend on which Department is picked, since not every '
-                   'department/program has the same number of year levels.'
+        null=True, blank=True, choices=list(YEAR_LEVEL_LABELS.items()),
+        help_text='Student year level (1-4).'
     )
     assigned_lab = models.ForeignKey(
         'labs.Lab',
@@ -149,6 +147,17 @@ class User(AbstractUser):
         'self', null=True, blank=True, on_delete=models.SET_NULL, related_name='approved_accounts',
     )
     approved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = 'user'
+        verbose_name_plural = 'users'
+        abstract = False
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(year_level__isnull=True) | models.Q(year_level__gte=1, year_level__lte=4),
+                name='user_year_level_1_to_4',
+            ),
+        ]
 
     def __str__(self):
         return f'{self.display_name} ({self.role})'

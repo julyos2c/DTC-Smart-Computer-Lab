@@ -222,6 +222,26 @@ class SystemStatusSecretSummaryTests(TestCase):
         self.assertContains(response, 'M-01')
         self.assertNotContains(response, pc.agent_secret)
 
+    def test_status_page_shows_shared_pending_and_migrated_without_leaking_keys(self):
+        """Summary reflects the actual per-PC transition and hides credentials."""
+        lab = Lab.objects.create(name='Mixed Auth Lab', opening_time=datetime.time(0), closing_time=datetime.time(23, 59))
+        shared = PC.objects.create(lab=lab, pc_id='M-SHARED', ip_address='10.60.0.1')
+        pending = PC.objects.create(lab=lab, pc_id='M-PENDING', ip_address='10.60.0.2')
+        migrated = PC.objects.create(lab=lab, pc_id='M-MIGRATED', ip_address='10.60.0.3')
+        pending_secret = agent_auth.ensure_secret(pending)
+        own_secret = agent_auth.ensure_secret(migrated)
+        agent_auth.authenticate(migrated, own_secret)
+        admin = make_user('admin', 'admin.mixed.status@gmail.com')
+        self.client.force_login(admin)
+        response = self.client.get(reverse('system_status'))
+        self.assertContains(response, 'Agent secrets: 1 of 3 PCs use their own secret')
+        self.assertContains(response, 'Shared key')
+        self.assertContains(response, 'Setup pending')
+        self.assertContains(response, 'Individual key')
+        self.assertNotContains(response, pending_secret)
+        self.assertNotContains(response, own_secret)
+        self.assertNotContains(response, SHARED)
+
     def test_agent_summary_counts_pcs_with_an_ip(self):
         """Regression: .exclude(ip_address='') became "NOT ip_address = NULL"
         and hid every PC from System status and /healthz/ready."""

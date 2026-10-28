@@ -58,3 +58,9 @@ class AppliedChange(models.Model):
 
     def __str__(self):
         return f'{self.edge_id} -> {self.record}'
+
+from .command_models import RemoteCommand, CommandReceipt  # noqa: F401
+
+from .reservation_models import ReservationChange, ReservationReceipt  # noqa: F401
+
+from .inventory_models import InventoryChange, InventoryReceipt  # noqa: F401,E402

@@ -47,7 +47,7 @@
 
   {% if object %}
   <form method="post" action="{% url 'pc_delete' object.pk %}" id="pc-delete-form"
-        onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Delete this PC?', text: 'This action cannot be undone.<br>{{ object.pc_id|escapejs }} will be <span class=&quot;cl-danger-highlight&quot;>permanently removed</span>.<br>Any issue reports linked to it<br>will be kept in history.', confirmButtonText: 'Yes, delete PC', itemName: '{{ object.pc_id|escapejs }}', itemSub: '{{ object.lab.name|escapejs }}'}); return false;">
+        onsubmit="event.preventDefault(); compulabConfirmSubmit(this, {title: 'Delete this PC?', text: '{{ object.pc_id|escapejs }} will be permanently deleted. Linked issue reports will remain in history.', confirmButtonText: 'Yes, delete PC', itemName: '{{ object.pc_id|escapejs }}', itemSub: '{{ object.lab.name|escapejs }}'}); return false;">
     {% csrf_token %}
   </form>
   {% endif %}
@@ -55,6 +55,7 @@
   <div class="form-actions">
     <button type="submit" form="pc-form" class="action-btn primary">{% if object %}<svg class="btn-icon"><use href="#icon-save"/></svg> Save changes{% else %}<svg class="btn-icon"><use href="#icon-plus"/></svg> Add PC{% endif %}</button>
     {% if object %}
+    
     <button type="submit" form="pc-delete-form" class="action-btn danger"><svg class="btn-icon"><use href="#icon-trash"/></svg> Delete PC</button>
     {% endif %}
     <a href="{% url 'lab_list' %}" class="action-btn"

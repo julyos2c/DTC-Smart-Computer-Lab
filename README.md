@@ -1,3 +1,5 @@
+> **2026 Cloud monitoring + inventory:** [CLOUD_LIVE_STATUS_INVENTORY.md](CLOUD_LIVE_STATUS_INVENTORY.md) — Cloud PC live snapshots, stale status, and secure Edge-approved equipment/PC inventory edits.
+
 # CompuLab — DTC Smart Computer Laboratory
 
 CompuLab manages a school computer laboratory: staff accounts and roles, lab schedules and
@@ -65,3 +67,14 @@ stays switched off.
   lists or rotates them. The installer's first-Administrator step is `manage.py ensure_admin`.
 - Building the setups: `installer\build\build-installers.ps1` (needs a clean, committed working tree);
   checking a build: `installer\build\verify-dist.ps1`.
+
+Remote PC control setup: [docs/CLOUD_REMOTE_CONTROL.md](docs/CLOUD_REMOTE_CONTROL.md).
+
+One-laptop simulated cloud demo: [docs/LOCAL_REMOTE_DEMO.md](docs/LOCAL_REMOTE_DEMO.md).
+
+Cloud/edge reservation management: [docs/BIDIRECTIONAL_RESERVATIONS.md](docs/BIDIRECTIONAL_RESERVATIONS.md).
+
+
+## Reservation change — no capacity
+
+See `NO_AVAILABLE_PC_UPDATE.md`. If zero PCs remain, new local or Cloud reservations are rejected with **No available PCs** instead of being saved as Pending. Requests that become full before approval are marked Declined. Partial PC allocation remains enabled when at least one PC is free.

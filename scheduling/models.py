@@ -197,7 +197,7 @@ class ClassRoster(models.Model):
         """
         from datetime import timedelta
         from scheduling.models import Session
-        from scheduling.utils import generate_reservation_code, cap_student_count
+        from scheduling.utils import generate_reservation_code, allocate_pcs
         from scheduling.views import _slot_error
 
         created_sessions = []
@@ -234,7 +234,13 @@ class ClassRoster(models.Model):
                     if error:
                         skipped.append((current, error))
                     else:
-                        assigned_count, cap_note = cap_student_count(self.lab, student_count)
+                        assigned_count, cap_note, _ = allocate_pcs(
+                            self.lab, current, self.schedule_start_time, self.schedule_end_time,
+                            max(student_count, 1))
+                        if not assigned_count:
+                            skipped.append((current, cap_note))
+                            current += timedelta(days=1)
+                            continue
                         code = generate_reservation_code()
                         session = Session.objects.create(
                             lab=self.lab, instructor=self.instructor, roster=self,
@@ -242,7 +248,7 @@ class ClassRoster(models.Model):
                             requester_id_number=requester_id_number, reservation_code=code,
                             subject=subject, date=current,
                             start_time=self.schedule_start_time, end_time=self.schedule_end_time,
-                            student_count=assigned_count,
+                            student_count=assigned_count, pcs_allocated=assigned_count,
                         )
                         created_sessions.append(session)
                         if cap_note:
@@ -336,9 +342,13 @@ class Session(models.Model):
     pcs_requested = models.PositiveIntegerField(
         default=0,
         help_text=(
-            'Required for Walk-in and Override requests — how many PCs are needed. Ignored for '
-            'Instructor/Student/Group requests, which still reserve the whole lab.'
+            'PCs requested for Walk-in and Override reservations. For other types, '
+            'the requested student count determines PC demand.'
         ),
+    )
+    pcs_allocated = models.PositiveIntegerField(
+        default=0,
+        help_text='PCs actually granted at approval. Zero on pending requests.',
     )
     reminder_sent = models.BooleanField(
         default=False,
@@ -454,9 +464,13 @@ class SessionRequest(models.Model):
     pcs_requested = models.PositiveIntegerField(
         default=0,
         help_text=(
-            'Required for Walk-in and Override requests — how many PCs are needed. Ignored for '
-            'Instructor/Student/Group requests, which still reserve the whole lab.'
+            'PCs requested for Walk-in and Override reservations. For other types, '
+            'the requested student count determines PC demand.'
         ),
+    )
+    pcs_allocated = models.PositiveIntegerField(
+        default=0,
+        help_text='PCs actually granted at approval. Zero on pending requests.',
     )
     notes = models.TextField(blank=True)
     status = models.CharField(max_length=10, choices=STATUS, default='pending')

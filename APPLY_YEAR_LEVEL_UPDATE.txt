@@ -1,0 +1,20 @@
+STUDENT YEAR LEVEL UPDATE
+
+Year Level is limited to 1st, 2nd, 3rd or 4th Year in all departments.
+The create/edit dropdown, server validation, CSV/Excel import and database constraint enforce this range.
+Existing requirements for entering a student year level are unchanged.
+
+1. Back up the project and database, then stop the web server and worker.
+2. Copy the files in this ZIP into the project folder containing manage.py.
+3. Using your project's Python environment run:
+
+   python manage.py migrate
+   python manage.py check
+
+4. Restart the web server/worker and refresh the browser (Ctrl+F5).
+
+Apply on both installations if using cloud and edge. No .env changes or new dependencies are needed.
+If existing accounts contain years outside 1-4, the migration lists their IDs and stops before changing their grades. Correct those records to the actual year level, then run migrate again. Values are never silently changed to Year 4.
+The local demo launcher applies migrations automatically when restarted.
+
+Verification: 42 account tests passed, including 10 new year-level checks for tampered POSTs, edit, imports, dropdown choices, ORM bypass and migration preflight. Migration consistency check passed.

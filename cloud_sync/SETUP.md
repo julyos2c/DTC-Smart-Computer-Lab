@@ -2,7 +2,7 @@
 
 Cloud sync is **optional** and **off by default**. CompuLab works fully on the campus network
 without it. Turn it on only when the college runs a cloud receiver that implements
-[PROTOCOL.md](PROTOCOL.md); this repository does not contain one.
+[PROTOCOL.md](PROTOCOL.md); this repository includes `cloud_receiver`, which can be deployed separately.
 
 The app is already installed (`INSTALLED_APPS`) and queues changes automatically through model
 signals (`signals.py`), so no code has to be changed or hooked in.
@@ -40,3 +40,5 @@ Rows already queued stay in the table; `manage.py prune_sync_queue --yes` delete
 
 Opening CompuLab from home goes through Tailscale to the campus server itself, not through cloud
 sync: see [installer/REMOTE_ACCESS.md](../installer/REMOTE_ACCESS.md).
+
+For PC monitoring and Cloud-PC/equipment management, see [CLOUD_LIVE_STATUS_INVENTORY.md](../CLOUD_LIVE_STATUS_INVENTORY.md).
