@@ -49,3 +49,5 @@ installer/server/wheels/
 
 # Local simulated-cloud demo databases and logs
 .local_remote_demo/
+
+/.venv_python312_backup/
