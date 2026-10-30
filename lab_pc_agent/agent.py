@@ -71,6 +71,7 @@ import subprocess
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import messagebox
 import urllib.request
 import urllib.error
@@ -80,7 +81,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hardening
 
 try:
-    from PIL import Image, ImageTk, ImageEnhance, ImageDraw, ImageChops
+    from PIL import Image, ImageTk, ImageEnhance, ImageDraw, ImageChops, ImageFilter, ImageOps
     _PIL_AVAILABLE = True
 except Exception:
     _PIL_AVAILABLE = False
@@ -103,7 +104,7 @@ REJECTED_SECRETS = {'', 'SET-IN-agent_config.local.json', 'danao_technological_c
 
 # Reported to the server on every call, so the PC status page shows which
 # agent version each lab PC runs (useful after an update roll-out).
-AGENT_VERSION = '2.2.0'
+AGENT_VERSION = '2.2.0-ui1'
 
 # Session-end callbacks that could not reach the server (network down,
 # server restarting) are kept here and re-sent until the server confirms
@@ -1126,6 +1127,101 @@ class WarningBanner:
         self.win.geometry(f'{w}x{real_h}+{(screen_w - w) // 2}+{(screen_h - real_h) // 2 - 160}')
 
 
+class RichLabel(tk.Frame):
+    """Centered, word-wrapped text block that can colour chosen phrases.
+
+    tk.Label can only use a single colour, so this wraps a read-only tk.Text
+    instead. It understands .config(text=..., fg=...) just like a Label, so
+    the rest of the agent doesn't need to know the difference. Phrases in
+    `highlights` are coloured with `highlight_fg` — but only while the label
+    is in its normal colour (an error message in red stays fully red)."""
+
+    def __init__(self, parent, text, font, fg, bg, width, height, highlights=(), highlight_fg=None):
+        super().__init__(parent, bg=bg, width=width, height=height)
+        self.pack_propagate(False)
+        self._default_fg = fg
+        self._fg = fg
+        self._highlights = tuple(highlights)
+        self._current = ''
+        self._text = tk.Text(
+            self, font=font, bg=bg, fg=fg, relief='flat', bd=0, highlightthickness=0,
+            wrap='word', cursor='arrow', padx=0, pady=0, takefocus=0, height=3,
+            insertwidth=0, spacing1=0, spacing3=2,
+        )
+        self._text.pack(fill='both', expand=True)
+        self._text.tag_configure('center', justify='center')
+        self._text.tag_configure('hl', foreground=highlight_fg or fg)
+        self._text.bind('<Button-1>', lambda e: 'break')
+        self._text.bind('<B1-Motion>', lambda e: 'break')
+        self._set_text(text)
+
+    def _set_text(self, text):
+        self._current = text
+        t = self._text
+        t.configure(state='normal')
+        t.delete('1.0', 'end')
+        t.insert('1.0', text, ('center',))
+        if self._fg == self._default_fg:
+            for phrase in self._highlights:
+                start = '1.0'
+                while True:
+                    pos = t.search(phrase, start, stopindex='end')
+                    if not pos:
+                        break
+                    end = f'{pos}+{len(phrase)}c'
+                    t.tag_add('hl', pos, end)
+                    start = end
+        t.configure(state='disabled')
+
+    def configure(self, cnf=None, **kw):
+        text = kw.pop('text', None)
+        fg = kw.pop('fg', None)
+        if fg is not None:
+            self._fg = fg
+            self._text.configure(fg=fg)
+        if text is not None or fg is not None:
+            self._set_text(self._current if text is None else text)
+        if cnf or kw:
+            super().configure(cnf, **kw)
+
+    config = configure
+
+
+class DotLabel(tk.Label):
+    """tk.Label that always starts with a '●' in its own colour — used for
+    the green/red values in the STATUS / NETWORK / LABORATORY row, so the
+    dot follows whatever colour the agent sets (green = ok, red = offline)."""
+
+    def __init__(self, parent, text='', **kw):
+        super().__init__(parent, **kw)
+        self.configure(text=text)
+
+    def configure(self, cnf=None, **kw):
+        if 'text' in kw:
+            kw['text'] = '\u25cf ' + kw['text']
+        return super().configure(cnf, **kw)
+
+    config = configure
+
+
+class CanvasLabel:
+    """Duck-types the small part of tk.Label the agent uses (.config(text=,
+    fg=)) for a text item living on a Canvas, so things drawn straight onto
+    the lock screen's canvas can still be updated like normal labels."""
+
+    def __init__(self, canvas, item_id):
+        self.canvas = canvas
+        self.item_id = item_id
+
+    def config(self, **kw):
+        if 'text' in kw:
+            self.canvas.itemconfig(self.item_id, text=kw['text'])
+        if 'fg' in kw:
+            self.canvas.itemconfig(self.item_id, fill=kw['fg'])
+
+    configure = config
+
+
 class LockScreen:
     """Fullscreen overlay window that blocks the desktop until unlocked.
 
@@ -1143,38 +1239,45 @@ class LockScreen:
     shows a small MiniPanel with a "Lock Now" button for ending early.
     """
 
-    BG = '#050b14'
-    GRID = '#0a1826'
+    BG = '#030a18'
+    GRID = '#08182c'
     CIRCUIT = '#0f2436'
     CIRCUIT_NODE = '#1c4d5e'
-    CARD_BG = '#0a1522'
-    FIELD_BG = '#0d1e2e'
-    FIELD_BORDER = '#173049'
-    ACCENT = '#22d3f5'
-    ACCENT_BRIGHT = '#7fe8ff'
-    ACCENT_DIM = '#0e5a72'
-    # Gold/amber accent — used for the PC-name line, the unlock button, and
-    # other "call to action" HUD accents, matching the approved lock-screen
-    # design (screenshot). Cyan (ACCENT above) is kept for the padlock glow.
+    CARD_BG = '#061529'
+    FIELD_BG = '#0a2038'
+    FIELD_BORDER = '#1d4b7c'
+    STATUS_BG = '#071b33'
+    ACCENT = '#27c6ff'
+    ACCENT_BRIGHT = '#8aeaff'
+    ACCENT_DIM = '#14608a'
+    BLUE_GLOW = '#2f8cff'
+    # Gold/amber accent — PC-name line highlights, the unlock button and the
+    # small "call to action" HUD accents (see the approved login design).
     GOLD = '#f5a623'
     GOLD_BRIGHT = '#ffc960'
     GOLD_DIM = '#8a5a10'
-    STATUS_GREEN = '#3ddc84'
-    TEXT = '#eaf6ff'
-    MUTED = '#5b7a94'
+    # Unlock button gradient (left -> right) and its hover state.
+    BTN_L = '#f1a208'
+    BTN_R = '#ffcb33'
+    BTN_HOVER_L = '#ffb524'
+    BTN_HOVER_R = '#ffdc66'
+    STATUS_GREEN = '#2fe27c'
+    TEXT = '#f2f8ff'
+    MUTED = '#8aa6c1'
     ERROR = '#ff5470'
     SUCCESS = '#39ff8f'
     FONT_MONO = 'Consolas'
+    FONT_UI = 'Segoe UI'
 
-    CARD_W = 400
-    # Tall enough to fit every element stacked inside the card (padlock
-    # badge, heading, form, status row, power buttons, footer) without the
-    # inner content overflowing its frame. It previously overflowed by a
-    # small amount, and since the content is vertically centered inside a
-    # fixed-height frame, that overflow was clipped equally off the TOP and
-    # bottom — cutting a few pixels off the padlock badge above "ACCESS
-    # REQUIRED" being the most visible symptom. Comfortable headroom now.
-    CARD_H = 620
+    CARD_W = 410
+    # Tall enough for: college seal + name, padlock badge with circuit
+    # lines, heading, 2-line subtitle, both input fields, the unlock button,
+    # status row, restart/power buttons and the footer — with a little
+    # headroom, because the content is vertically centred and any overflow
+    # would be clipped equally off the top and bottom.
+    CARD_H = 626
+    BTN_H = 42
+    HEADER_H = 78
     WARNING_LEAD_SECONDS = 150  # show the "ending soon" warning 2.5 min before end_time
 
     def __init__(self, root, config):
@@ -1222,126 +1325,129 @@ class LockScreen:
         root.protocol('WM_DELETE_WINDOW', lambda: None)
         root.bind('<Alt-F4>', lambda e: 'break')
 
+        config = self.config
+        self.pc_name = (config.get('pc_name') or 'PC').strip()
+        # True until proven otherwise by the server (see apply_pc_info /
+        # _apply_lab_open_state) — assume open so the form is usable
+        # immediately, rather than flashing a "closed" state on every
+        # startup before the first pc-agent-info reply comes back.
+        self.lab_open = True
+        self._net_ok = True
+
+        # Scale fixed pixel sizes with the display's DPI scaling (fonts
+        # already scale by themselves; pixel sizes don't), so the card is
+        # never too narrow for its text on a 125%/150% Windows display.
+        s = self._s = min(2.0, max(1.0, root.winfo_fpixels('1i') / 96.0))
+        self.CARD_W = int(self.CARD_W * s)
+        self.BTN_H = int(round(self.BTN_H * s))
+        self.FIELD_BOX_H = int(round(self.FIELD_BOX_H * s))
+        self.FIELD_ICON_HOLDER_W = int(round(self.FIELD_ICON_HOLDER_W * s))
+
         self._load_icons()
 
         self.canvas = tk.Canvas(root, bg=self.BG, highlightthickness=0, width=self.screen_w, height=self.screen_h)
         self.canvas.place(x=0, y=0)
-        self._draw_background()
-        self._draw_card_border()
 
-        cx, cy = self.screen_w // 2, self.screen_h // 2
-
-        # --- Logo + college name (top-left) + live clock/date with icons
-        # and a divider (top-right) — drawn directly on the canvas (no
-        # background bar/box) so they float over the photo, matching the
-        # approved design. ---
-        logo_small = self._icons.get('college_logo_small')
-        logo_w = 0
-        header_cy = 34  # vertical center of the header row — logo + both text lines align to this
-        if logo_small is not None:
-            self.canvas.create_image(28, header_cy, anchor='w', image=logo_small)
-            logo_w = logo_small.width()
-
-        college_name = config.get('college_name', 'Danao Technological College')
-        college_subtitle = config.get('college_subtitle', 'Computer Laboratory System')
-        text_x = 28 + logo_w + 14
-        self.canvas.create_text(
-            text_x, header_cy - 11, anchor='w', text=college_name.upper(),
-            font=('Segoe UI', 15, 'bold'), fill=self.TEXT,
-        )
-        self.canvas.create_text(
-            text_x, header_cy + 11, anchor='w', text=college_subtitle,
-            font=('Segoe UI', 10), fill=self.MUTED,
-        )
-
-        self._header_right_y = header_cy - 6
-        self._draw_header_right('', '', '')
-        self._tick_clock()
+        # The card is built FIRST and measured, then the background/border
+        # are drawn around it (see "Fit the card to its content" below).
+        # Fixed pixel sizes broke on real Windows PCs: Segoe UI and the
+        # display's DPI scaling make the text taller than in a fixed-height
+        # card, which clipped the seal at the top and the footer at the bottom.
+        cx, cy = self.screen_w // 2, self.screen_h // 2 + 4
+        inner_w = self.CARD_W - int(60 * s)
+        lh9 = tkfont.Font(family=self.FONT_UI, size=9).metrics('linespace')
+        lh8 = tkfont.Font(family=self.FONT_UI, size=8, weight='bold').metrics('linespace')
 
         frame = tk.Frame(root, bg=self.CARD_BG)
-        frame.place(x=cx, y=cy, anchor='center', width=self.CARD_W - 44, height=self.CARD_H - 44)
+        frame.place(x=cx, y=cy, anchor='center', width=self.CARD_W - 36, height=self.CARD_H - 36)
 
         inner = tk.Frame(frame, bg=self.CARD_BG)
         inner.place(relx=0.5, rely=0.5, anchor='center')
 
-        # --- Header: glowing padlock badge -------------------------------
-        badge_canvas = tk.Canvas(inner, width=80, height=80, bg=self.CARD_BG, highlightthickness=0)
-        badge_canvas.pack(pady=(0, 3))
-        self._draw_glow_rings(badge_canvas, 40, 40, max_r=34)
-        badge_canvas.create_image(40, 40, image=self._icons['lock_badge'])
+        # --- College seal + name -----------------------------------------
+        seal = tk.Canvas(inner, width=70, height=70, bg=self.CARD_BG, highlightthickness=0)
+        seal.pack(pady=(0, 3))
+        seal.create_oval(3, 3, 67, 67, outline=self.GOLD, width=2)
+        card_logo = self._icons.get('card_logo')
+        if card_logo is not None:
+            seal.create_image(35, 35, image=card_logo)
 
-        # "• COMPUTER LABORATORY •" — static eyebrow label.
-        self.status_label_hud = tk.Label(
-            inner, text='•   C O M P U T E R   L A B O R A T O R Y   •', font=(self.FONT_MONO, 9, 'bold'),
-            fg=self.MUTED, bg=self.CARD_BG,
-        )
-        self.status_label_hud.pack(pady=(0, 3))
+        college_name = config.get('college_name', 'Danao Technological College')
+        tk.Label(
+            inner, text=college_name.upper(), font=(self.FONT_UI, 11, 'bold'),
+            fg=self.TEXT, bg=self.CARD_BG,
+        ).pack()
+        tk.Label(
+            inner, text=config.get('card_subtitle', 'COMPUTER LABORATORY MANAGEMENT SYSTEM'),
+            font=(self.FONT_UI, 7), fg=self.MUTED, bg=self.CARD_BG,
+        ).pack(pady=(1, 4))
+
+        # --- Padlock badge flanked by circuit traces ------------------------
+        badge_h = 70
+        badge = tk.Canvas(inner, width=inner_w, height=badge_h, bg=self.CARD_BG, highlightthickness=0)
+        badge.pack(pady=(0, 2))
+        self._draw_badge_circuit(badge, inner_w, badge_h)
+        self._glow_ring_ids = self._draw_glow_rings(badge, inner_w // 2, badge_h // 2, max_r=33)
+        if self._icons.get('lock_badge') is not None:
+            badge.create_image(inner_w // 2, badge_h // 2, image=self._icons['lock_badge'])
         self._pulse_dot()
-
-        # Registered PC name. Starts out from agent_config.json ("pc_name")
-        # purely as a fallback for the brief moment before the server
-        # answers (or if it can't be reached at all) — as soon as
-        # fetch_pc_info_in_background() gets a reply, apply_pc_info() below
-        # overwrites this with the real pc_id assigned to this machine in
-        # the CompuLab admin panel (Manage PCs -> Add/Edit), so the two can
-        # never drift out of sync.
-        self.pc_name = (config.get('pc_name') or 'PC').strip()
-        self.pc_name_label = tk.Label(
-            inner, text=f'—  {self.pc_name}  —', font=(self.FONT_MONO, 10, 'bold'),
-            fg=self.GOLD, bg=self.CARD_BG,
-        )
-        self.pc_name_label.pack(pady=(0, 6))
 
         # Big heading: an explicit lock_title always wins; otherwise this is
         # the fixed "ACCESS REQUIRED" heading from the approved design.
-        title_text = config.get('lock_title') or 'ACCESS REQUIRED'
-        tk.Label(
-            inner, text=title_text, font=('Segoe UI', 19, 'bold'),
+        # Kept on self.* because _apply_lab_open_state() swaps it to
+        # "LABORATORY CLOSED" outside operating hours, then restores it.
+        self._default_title_text = config.get('lock_title') or 'ACCESS REQUIRED'
+        self._default_subtitle_text = config.get(
+            'lock_subtitle', 'Enter your Student ID and Reservation Code to use this PC.',
+        )
+        self.title_label = tk.Label(
+            inner, text=self._default_title_text, font=(self.FONT_UI, 18, 'bold'),
             fg=self.TEXT, bg=self.CARD_BG, wraplength=self.CARD_W - 60, justify='center',
-        ).pack(pady=(0, 6))
+        )
+        self.title_label.pack(pady=(0, 4))
 
-        tk.Label(
-            inner, text=config.get('lock_subtitle', 'Enter your Student ID and Reservation Code to use this PC.'),
-            font=('Segoe UI', 9), fg=self.MUTED, bg=self.CARD_BG, wraplength=self.CARD_W - 80, justify='center',
-        ).pack(pady=(0, 12))
+        self.subtitle_label = RichLabel(
+            inner, self._default_subtitle_text, font=(self.FONT_UI, 9), fg=self.MUTED, bg=self.CARD_BG,
+            width=inner_w - 10, height=lh9 * 2 + 8,
+            highlights=('Student ID and Reservation Code',), highlight_fg=self.ACCENT,
+        )
+        self.subtitle_label.pack(pady=(0, 8))
 
-        form = tk.Frame(inner, bg=self.CARD_BG)
+        self.form = form = tk.Frame(inner, bg=self.CARD_BG)
         form.pack()
 
-        field_w = self.CARD_W - 44 - 70
-        id_box, self.id_entry = self._build_field(form, 'user', 'Student / Instructor ID')
-        id_box.grid(row=0, column=0, sticky='we', pady=(0, 7))
+        field_w = inner_w
+        self.id_box, self.id_entry = self._build_field(
+            form, 'user', 'Student / Instructor ID', width=field_w)
+        self.id_box.grid(row=0, column=0, sticky='we', pady=(0, 9))
 
-        code_box, self.code_entry = self._build_field(form, 'lock', 'Reservation Code')
-        code_box.grid(row=1, column=0, sticky='we', pady=(0, 10))
+        self.code_box, self.code_entry = self._build_field(
+            form, 'lock', 'Reservation Code', show='\u2022', toggle=True, width=field_w)
+        self.code_box.grid(row=1, column=0, sticky='we', pady=(0, 11))
 
         form.grid_columnconfigure(0, weight=1)
 
-        self.submit_canvas, self._submit_text_id = self._build_unlock_button(form, width=field_w, height=38)
+        self._unlock_button_w = field_w
+        self.submit_canvas, self._submit_text_id = self._build_unlock_button(form, width=field_w, height=self.BTN_H)
         self.submit_canvas.grid(row=2, column=0, sticky='we')
 
         self.status_label = tk.Label(
-            inner, text='', font=(self.FONT_MONO, 9), fg=self.ERROR, bg=self.CARD_BG, wraplength=field_w, justify='center',
+            inner, text='', font=(self.FONT_UI, 9), fg=self.ERROR, bg=self.CARD_BG,
+            wraplength=field_w, justify='center',
         )
-        self.status_label.pack(pady=(8, 0))
+        self.status_label.pack(pady=(6, 4))
 
-        # --- Status row: STATUS / NETWORK / LABORATORY ------------------
-        # Wider than field_w (which is narrowed for the input-field icon
-        # gutter) — the status row has no icon gutter, so it can use most
-        # of the card's inner width. This plus the shorter "STATUS" label
-        # (was "COMPUTER STATUS", which overflowed its column at the
-        # larger, more-readable font size) keeps all three columns from
-        # clipping against the card edge.
-        status_w = self.CARD_W - 60
-        status_sep = tk.Canvas(inner, width=status_w, height=1, bg=self.CARD_BG, highlightthickness=0)
-        status_sep.pack(pady=(10, 10))
-        status_sep.create_line(0, 0, status_w, 0, fill=self.FIELD_BORDER)
-
-        status_row = tk.Frame(inner, bg=self.CARD_BG, width=status_w, height=50)
-        status_row.pack()
+        # --- Status row: STATUS / NETWORK / LABORATORY ---------------------
+        status_w = self.CARD_W - int(52 * s)
+        status_row = tk.Frame(
+            inner, bg=self.STATUS_BG, width=status_w, height=lh8 * 3 + 16,
+            highlightthickness=1, highlightbackground=self.FIELD_BORDER,
+        )
+        status_row.pack(pady=(0, 10))
         status_row.grid_propagate(False)
         for i in range(3):
             status_row.grid_columnconfigure(i, weight=1, uniform='status_col')
+        status_row.grid_rowconfigure(0, weight=1)
         self.computer_status_value = self._build_status_col(
             status_row, 'computer_status', 'STATUS', 'Ready for Login', 0,
         )
@@ -1351,38 +1457,53 @@ class LockScreen:
         self.lab_status_value = self._build_status_col(
             status_row, 'lab_status', 'LABORATORY', config.get('lab_name', 'Computer Lab 1'), 2,
         )
+        for rel in (1 / 3, 2 / 3):
+            tk.Frame(status_row, bg=self.FIELD_BORDER, width=1).place(relx=rel, rely=0.2, relheight=0.6)
 
-        # --- Restart / Power off, centered under the status row ---------
+        # --- Restart / Power off ----------------------------------------------
         power_row = tk.Frame(inner, bg=self.CARD_BG)
-        power_row.pack(pady=(12, 0))
+        power_row.pack(pady=(0, 10))
 
-        def _power_btn(parent, icon, text, command):
+        def _power_btn(icon_key, text, command):
+            holder = tk.Frame(power_row, bg=self.CARD_BG, width=int(136 * s), height=int(34 * s))
+            holder.pack_propagate(False)
             btn = tk.Button(
-                parent, text=f'{icon}  {text}', font=(self.FONT_MONO, 9, 'bold'),
-                bg=self.FIELD_BG, fg=self.TEXT, activebackground='#16283b', activeforeground=self.TEXT,
-                relief='flat', bd=0, cursor='hand2', padx=13, pady=7, command=command,
-                highlightthickness=1, highlightbackground=self.FIELD_BORDER,
+                holder, text=f'  {text}', image=self._icons.get(icon_key), compound='left',
+                font=(self.FONT_UI, 9, 'bold'), bg=self.STATUS_BG, fg=self.ACCENT_BRIGHT,
+                activebackground='#0d2a4a', activeforeground=self.TEXT,
+                relief='flat', bd=0, cursor='hand2', command=command,
+                highlightthickness=1, highlightbackground=self.ACCENT_DIM, highlightcolor=self.ACCENT,
             )
-            return btn
+            btn.pack(fill='both', expand=True)
+            return holder
 
-        _power_btn(power_row, '⟳', 'RESTART', self.restart_clicked).pack(side='left', padx=(0, 8))
-        _power_btn(power_row, '⏻', 'POWER OFF', self.power_off_clicked).pack(side='left')
+        _power_btn('restart', 'RESTART', self.restart_clicked).pack(side='left', padx=(0, 12))
+        _power_btn('power', 'POWER OFF', self.power_off_clicked).pack(side='left')
 
-        # --- Footer: authorized-use disclaimer --------------------------
-        footer_sep = tk.Canvas(inner, width=field_w, height=1, bg=self.CARD_BG, highlightthickness=0)
-        footer_sep.pack(pady=(12, 8))
-        footer_sep.create_line(0, 0, field_w, 0, fill=self.FIELD_BORDER)
-
+        # --- Footer: authorized-use disclaimer ------------------------------
         footer = tk.Frame(inner, bg=self.CARD_BG)
         footer.pack()
-        tk.Label(footer, image=self._icons['shield'], bg=self.CARD_BG).pack(side='left', padx=(0, 6))
+        if self._icons.get('shield') is not None:
+            tk.Label(footer, image=self._icons['shield'], bg=self.CARD_BG).pack(side='left', padx=(0, 6))
         tk.Label(
-            footer, justify='center', bg=self.CARD_BG, fg=self.MUTED, font=('Segoe UI', 7),
+            footer, justify='center', bg=self.CARD_BG, fg=self.MUTED, font=(self.FONT_UI, 7),
             text='Authorized users only. Unauthorized access is prohibited.',
         ).pack(side='left')
 
         self.id_entry.bind('<Return>', lambda e: self.code_entry.focus_set())
         self.code_entry.bind('<Return>', lambda e: self.on_submit())
+
+        # --- Fit the card to its content ------------------------------------
+        root.update_idletasks()
+        self.CARD_H = max(540, inner.winfo_reqheight() + 52)
+        self._layout_geometry()
+        self._draw_background()
+        self._draw_chrome_accents()
+        self._draw_header()
+        self._draw_card_border()
+        self._tick_clock()
+        frame.place(x=cx, y=cy, anchor='center', width=self.CARD_W - 36, height=self.CARD_H - 36)
+        frame.lift()  # widgets must sit above everything just drawn on the canvas
 
         self._frame = frame
         self.show()
@@ -1436,6 +1557,93 @@ class LockScreen:
         except Exception:
             return None
 
+    def _make_icon(self, kind, size, color):
+        """Draws a crisp line icon with Pillow (6x supersampled, then
+        downsampled) and returns it as a PhotoImage, or None if Pillow isn't
+        available — callers fall back to no icon / the old PNG in that case.
+        All icons are drawn on a 24x24 grid."""
+        if not _PIL_AVAILABLE:
+            return None
+        try:
+            S = 6
+            n = size * S
+            u = n / 24.0
+            w = max(int(S * 1.4), int(round(size * 0.1 * S)))
+            img = Image.new('RGBA', (n, n), (0, 0, 0, 0))
+            d = ImageDraw.Draw(img)
+
+            def P(x, y):
+                return (x * u, y * u)
+
+            def box(x0, y0, x1, y1):
+                return [x0 * u, y0 * u, x1 * u, y1 * u]
+
+            def line(*pts):
+                d.line([P(x, y) for x, y in pts], fill=color, width=w, joint='curve')
+                for x, y in (pts[0], pts[-1]):  # round caps
+                    px, py = P(x, y)
+                    d.ellipse([px - w / 2, py - w / 2, px + w / 2, py + w / 2], fill=color)
+
+            def dot(x, y, r):
+                d.ellipse(box(x - r, y - r, x + r, y + r), fill=color)
+
+            if kind == 'user':
+                d.ellipse(box(8, 3.5, 16, 11.5), outline=color, width=w)
+                d.arc(box(4, 14, 20, 30), 180, 360, fill=color, width=w)
+            elif kind == 'lock':
+                d.rounded_rectangle(box(5, 11, 19, 22), radius=2.2 * u, outline=color, width=w)
+                d.arc(box(8, 4, 16, 12), 180, 360, fill=color, width=w)
+                line((8, 8), (8, 11))
+                line((16, 8), (16, 11))
+                dot(12, 16.5, 1.5)
+            elif kind in ('eye', 'eye_off'):
+                d.ellipse(box(2, 7, 22, 17), outline=color, width=w)
+                dot(12, 12, 2.6)
+                if kind == 'eye_off':
+                    line((4.5, 19.5), (19.5, 4.5))
+            elif kind == 'monitor':
+                d.rounded_rectangle(box(3, 4, 21, 16), radius=1.6 * u, outline=color, width=w)
+                line((12, 16), (12, 20))
+                line((8, 20.5), (16, 20.5))
+            elif kind == 'wifi':
+                for r in (4, 8, 12):
+                    d.arc(box(12 - r, 19 - r, 12 + r, 19 + r), 225, 315, fill=color, width=w)
+                dot(12, 19, 1.6)
+            elif kind == 'calendar':
+                d.rounded_rectangle(box(3, 5, 21, 21), radius=2 * u, outline=color, width=w)
+                line((3, 10), (21, 10))
+                line((8, 2.5), (8, 7))
+                line((16, 2.5), (16, 7))
+                for x, y in ((8, 14), (12, 14), (16, 14), (8, 18), (12, 18)):
+                    dot(x, y, 1.0)
+            elif kind == 'clock':
+                d.ellipse(box(3, 3, 21, 21), outline=color, width=w)
+                line((12, 7), (12, 12), (16, 14.5))
+            elif kind == 'restart':
+                bb = box(4.5, 4.5, 19.5, 19.5)
+                d.arc(bb, 330, 360, fill=color, width=w)
+                d.arc(bb, 0, 270, fill=color, width=w)
+                d.polygon([P(11, 0.8), P(11, 8.2), P(16.5, 4.5)], fill=color)
+            elif kind == 'power':
+                bb = box(4, 5, 20, 21)
+                d.arc(bb, 300, 360, fill=color, width=w)
+                d.arc(bb, 0, 240, fill=color, width=w)
+                line((12, 2.5), (12, 12))
+            elif kind == 'shield':
+                d.line([P(12, 2.5), P(20, 5.5), P(20, 12), P(12, 21.5), P(4, 12), P(4, 5.5), P(12, 2.5)],
+                       fill=color, width=w, joint='curve')
+                line((8.5, 12), (11, 14.5), (15.5, 9.5))
+            elif kind == 'chevron':
+                line((9, 5), (16, 12), (9, 19))
+            else:
+                return None
+
+            img = img.resize((size, size), Image.LANCZOS)
+            return ImageTk.PhotoImage(img)
+        except Exception as e:
+            print(f'[agent] Could not draw icon {kind}: {e}')
+            return None
+
     def _load_icons(self):
         assets_dir = os.path.join(APP_DIR, 'assets')
         names = {
@@ -1453,19 +1661,9 @@ class LockScreen:
             except Exception:
                 self._icons[key] = None  # missing/corrupt asset shouldn't crash the lock screen
 
-        # Field icons ('user' / 'lock'): resize both to the same fixed,
-        # small size so they fit cleanly inside the compact input fields
-        # regardless of their differing native sizes. Falls back to the
-        # native-size icon already loaded above if Pillow isn't installed.
-        for key, filename in (('user', 'icon_user.png'), ('lock', 'icon_lock.png')):
-            resized = self._resize_icon(os.path.join(assets_dir, filename), self.FIELD_ICON_SIZE)
-            if resized is not None:
-                self._icons[key] = resized
-
-        # Header logo: bigger + round. Built from the full-res
-        # icon_college_logo.png (not the small square one) so it stays
-        # sharp at the larger size; falls back to the old square small
-        # icon if Pillow isn't installed.
+        # Header logo + the bigger seal on the card: round, built from the
+        # full-res icon_college_logo.png so they stay sharp. Falls back to
+        # the old square small icon if Pillow isn't installed.
         big_logo_path = os.path.join(assets_dir, 'icon_college_logo.png')
         circular = self._make_circular_logo(big_logo_path, self.HEADER_LOGO_SIZE)
         if circular is not None:
@@ -1476,61 +1674,405 @@ class LockScreen:
                     file=os.path.join(assets_dir, 'icon_college_logo_small.png'))
             except Exception:
                 self._icons['college_logo_small'] = None
+        self._icons['card_logo'] = (
+            self._make_circular_logo(big_logo_path, 62) or self._icons.get('college_logo_small'))
+
+        # Line icons drawn in code (so no extra asset files are needed).
+        # Each one replaces the matching PNG when Pillow is available.
+        dark = '#2a1a00'
+        drawn = {
+            'user': ('user', 18, self.ACCENT),
+            'lock': ('lock', 18, self.ACCENT),
+            'eye': ('eye', 18, self.MUTED),
+            'eye_off': ('eye_off', 18, self.MUTED),
+            'hdr_clock': ('clock', 26, self.ACCENT),
+            'hdr_cal': ('calendar', 24, self.ACCENT),
+            'hdr_wifi': ('wifi', 26, self.ACCENT),
+            'hdr_wifi_off': ('wifi', 26, self.ERROR),
+            'btn_monitor': ('monitor', 20, dark),
+            'btn_chevron': ('chevron', 16, dark),
+            'st_user': ('user', 14, self.ACCENT),
+            'st_wifi': ('wifi', 14, self.ACCENT),
+            'st_monitor': ('monitor', 14, self.ACCENT),
+            'restart': ('restart', 16, self.ACCENT),
+            'power': ('power', 16, self.ACCENT),
+            'shield': ('shield', 15, self.ACCENT),
+            'panel_monitor': ('monitor', 28, self.ACCENT),
+        }
+        for key, (kind, size, color) in drawn.items():
+            img = self._make_icon(kind, size, color)
+            if img is not None:
+                self._icons[key] = img
+
+    def _layout_geometry(self):
+        """Decides where the baked-in HUD panels go (top-right clock/network
+        panel, bottom-left college panel, bottom-right motto panel) and
+        where the login card sits. Both _draw_background (which bakes the
+        panels into the photo) and the canvas text/icons drawn over them
+        read these numbers, so they always line up."""
+        sw, sh = self.screen_w, self.screen_h
+        self._card_cy = sh // 2 + 4
+        k = self._s
+        hr_w, hr_h = int(372 * k), int(52 * k)
+        self._hr_box = (sw - 24 - hr_w, 12, sw - 24, 12 + hr_h)
+        self._hr_cy = 12 + hr_h // 2
+        pw, ph = int(300 * k), int(46 * k)
+        self._bl_box = (24, sh - 18 - ph, 24 + pw, sh - 18)
+        self._br_box = (sw - 24 - pw, sh - 18 - ph, sw - 24, sh - 18)
+        self._panel_boxes = [self._hr_box, self._bl_box, self._br_box]
+
+    def _card_points(self, inset=0, c=22):
+        cx = self.screen_w // 2
+        left, right = cx - self.CARD_W // 2 + inset, cx + self.CARD_W // 2 - inset
+        top, bottom = self._card_cy - self.CARD_H // 2 + inset, self._card_cy + self.CARD_H // 2 - inset
+        return [
+            left + c, top,       right - c, top,
+            right, top + c,      right, bottom - c,
+            right - c, bottom,   left + c, bottom,
+            left, bottom - c,    left, top + c,
+        ]
 
     def _draw_glow_rings(self, canvas, cx, cy, max_r=50):
         """Soft concentric rings behind the padlock badge — Tkinter has no
-        real blur, so this fakes a glow by fading the ring color toward the
-        card background as the radius grows."""
-        radii = [max_r, max_r * 0.84, max_r * 0.68]
-        for r in radii:
-            t = (max_r - r) / max_r  # 0 at outer ring, 1 near the badge
-            color = self._lerp_color(self.ACCENT_DIM, self.CARD_BG, 1 - (t * 0.4 + 0.15))
-            canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=1)
+        real blur, so this fakes a glow by fading the ring colour toward the
+        card background as the radius grows. Returns the ring item ids so
+        _pulse_dot() can make them breathe."""
+        ids = []
+        for r in (max_r, max_r * 0.84, max_r * 0.68):
+            ids.append(canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=self.ACCENT_DIM, width=1))
+        self._badge_canvas = canvas
+        return ids
 
-    # Fixed width for the icon area inside each input field — icon_user.png
-    # (28x28) and icon_lock.png (24x24) are different sizes, so without a
-    # fixed-width holder the entry text starts a few px later in one field
-    # than the other. Pinning both holders to the same width keeps the two
-    # fields' text aligned to the same left edge.
-    FIELD_ICON_HOLDER_W = 30
+    def _draw_badge_circuit(self, canvas, bw, bh):
+        """Thin circuit-board traces running out to the left and right of
+        the padlock, like the approved design."""
+        cy = bh // 2
+        traces = [
+            [(10, cy), (96, cy)],
+            [(34, cy - 12), (70, cy - 12), (82, cy)],
+            [(34, cy + 12), (70, cy + 12), (82, cy)],
+        ]
+        for pts in traces:
+            for mirror in (False, True):
+                flat = []
+                for x, y in pts:
+                    flat += [(bw - x) if mirror else x, y]
+                canvas.create_line(*flat, fill=self.ACCENT_DIM, width=1)
+                ex, ey = flat[0], flat[1]
+                canvas.create_oval(ex - 2, ey - 2, ex + 2, ey + 2, fill=self.ACCENT, outline='')
 
-    # Fixed overall height for each input field box. Deliberately locked
-    # (via box.pack_propagate(False) below) instead of letting the box
-    # auto-size to its children — that auto-sizing is what let the field
-    # shrink smaller than the icon at one point, clipping it. This value
-    # comfortably fits FIELD_ICON_SIZE (16px) plus the entry's text with
-    # margin on all sides.
-    FIELD_BOX_H = 34
+    def _pulse_dot(self):
+        """Gentle breathing glow on the padlock's rings (replaces the old
+        blinking 'COMPUTER LABORATORY' eyebrow text)."""
+        self._pulse_on = not self._pulse_on
+        base = 0.45 if self._pulse_on else 0.7
+        try:
+            for i, item in enumerate(getattr(self, '_glow_ring_ids', [])):
+                color = self._lerp_color(self.ACCENT, self.CARD_BG, min(0.95, base + 0.14 * i))
+                self._badge_canvas.itemconfig(item, outline=color)
+        except tk.TclError:
+            pass
+        self.root.after(900, self._pulse_dot)
 
-    def _build_field(self, parent, icon_key, placeholder, show=None):
+    # -- background photo + baked HUD chrome ---------------------------------
+
+    def _compose_scene(self, base):
+        """Bakes the translucent HUD chrome onto the (already brightness-
+        adjusted) photo: a navy fade under the header and along the bottom,
+        the three glass panels (clock/network, college, motto) with thin
+        blue outlines, and the soft blue glow around the login card. Done
+        once with Pillow at startup, because Tk canvases can't do alpha."""
+        sw, sh = base.size
+        img = base.convert('RGBA')
+
+        def band(height, from_top, strength):
+            grad = Image.linear_gradient('L').resize((sw, height))
+            if from_top:
+                grad = ImageChops.invert(grad)
+            layer = Image.new('RGBA', (sw, height), (2, 8, 20, 255))
+            layer.putalpha(grad.point(lambda v: int(v * strength)))
+            return layer
+
+        img.alpha_composite(band(130, True, 0.92), (0, 0))
+        img.alpha_composite(band(150, False, 0.88), (0, sh - 150))
+
+        def chamfer(box, c):
+            x0, y0, x1, y1 = box
+            return [x0 + c, y0, x1 - c, y0, x1, y0 + c, x1, y1 - c,
+                    x1 - c, y1, x0 + c, y1, x0, y1 - c, x0, y0 + c]
+
+        glow = Image.new('RGBA', (sw, sh), (0, 0, 0, 0))
+        fill = Image.new('RGBA', (sw, sh), (0, 0, 0, 0))
+        edge = Image.new('RGBA', (sw, sh), (0, 0, 0, 0))
+        gd, fd, ed = ImageDraw.Draw(glow), ImageDraw.Draw(fill), ImageDraw.Draw(edge)
+
+        for box in self._panel_boxes:
+            pts = chamfer(box, 10)
+            fd.polygon(pts, fill=(6, 22, 46, 208))
+            gd.line(pts + pts[:2], fill=(40, 150, 255, 200), width=4)
+            ed.line(pts + pts[:2], fill=(64, 168, 255, 255), width=1)
+
+        card = self._card_points()
+        gd.line(card + card[:2], fill=(47, 140, 255, 255), width=12)
+
+        img = Image.alpha_composite(img, glow.filter(ImageFilter.GaussianBlur(13)))
+        img = Image.alpha_composite(img, fill)
+        img = Image.alpha_composite(img, edge)
+        return img.convert('RGB')
+
+    def _draw_background(self):
+        """Full-screen backdrop: the school building photo
+        (assets/bg_building.jpg), cropped to fit (not stretched), lightly
+        darkened, with the HUD panels and card glow baked in by
+        _compose_scene(). Needs Pillow (`pip install Pillow`); without it the
+        screen falls back to a plain dark background so the agent still runs
+        on the standard library alone.
+
+        Also pre-renders a second, blurred + much darker copy that
+        _apply_lab_open_state() swaps in while the lab is closed, so the
+        "LABORATORY CLOSED" heading reads as the focal point.
+        self._bg_image_id is kept so that swap is a cheap itemconfig()."""
+        self._bg_photo = None
+        self._bg_photo_blurred = None
+        self._bg_image_id = None
+        bg_path = os.path.join(APP_DIR, 'assets', 'bg_building.jpg')
+        if _PIL_AVAILABLE and os.path.exists(bg_path):
+            try:
+                img = Image.open(bg_path).convert('RGB')
+                img = ImageOps.fit(img, (self.screen_w, self.screen_h), Image.LANCZOS)
+
+                normal_img = ImageEnhance.Brightness(img).enhance(0.7)
+                # cool blue grade so it matches the HUD colours
+                tint = Image.new('RGB', img.size, (8, 28, 70))
+                normal_img = Image.blend(normal_img, tint, 0.16)
+                self._bg_photo = ImageTk.PhotoImage(self._compose_scene(normal_img))  # keep a ref — Tk drops unreferenced images
+
+                closed_img = img.filter(ImageFilter.GaussianBlur(radius=14))
+                closed_img = ImageEnhance.Brightness(closed_img).enhance(0.25)
+                self._bg_photo_blurred = ImageTk.PhotoImage(self._compose_scene(closed_img))
+
+                self._bg_image_id = self.canvas.create_image(0, 0, anchor='nw', image=self._bg_photo)
+                return
+            except Exception as e:
+                print(f'[agent] Could not load background photo: {e}')
+
+    def _draw_chrome_accents(self):
+        """Thin blue rule + gold slashes: the little diagonal accents from
+        the design (under the college name, and in the bottom-right corner)."""
+        c, sw, sh = self.canvas, self.screen_w, self.screen_h
+        hy = self.HEADER_H + 10
+        c.create_line(0, hy + 6, 112, hy + 6, fill=self.BLUE_GLOW, width=1)
+        c.create_line(112, hy + 6, 124, hy, 178, hy, fill=self.GOLD, width=3)
+        # bottom-right corner slashes
+        c.create_line(sw - 46, sh - 86, sw - 18, sh - 118, fill=self.GOLD, width=3)
+        c.create_line(sw - 62, sh - 86, sw - 52, sh - 98, fill=self.GOLD, width=3)
+        c.create_line(sw - 18, sh - 118, sw - 18, sh - 124, fill=self.BLUE_GLOW, width=1)
+        # bottom-left tiny accent
+        c.create_line(24, sh - 70, 24 + 46, sh - 70, fill=self.BLUE_GLOW, width=1)
+
+    def _draw_header(self):
+        """Everything drawn straight onto the canvas around the card: the
+        college logo + name (top-left), the LEARN / GROW / SUCCEED tagline,
+        the clock / date / network panel (top-right), and the two bottom
+        panels. The panel backgrounds themselves are baked into the photo
+        (see _compose_scene); only text and icons are drawn here."""
+        c, cfg = self.canvas, self.config
+        sw, sh = self.screen_w, self.screen_h
+        S = lambda v: int(round(v * self._s))
+
+        # --- top-left: logo + college name ---------------------------------
+        lx, ly = 56, 40
+        text_x = 28
+        logo = self._icons.get('college_logo_small')
+        if logo is not None:
+            c.create_oval(lx - 29, ly - 29, lx + 29, ly + 29, outline=self.GOLD, width=2)
+            c.create_image(lx, ly, image=logo)
+            text_x = lx + 29 + 16
+        college_name = cfg.get('college_name', 'Danao Technological College')
+        college_subtitle = cfg.get('college_subtitle', 'A Smart Computer Laboratory Management System')
+        c.create_text(text_x, ly - 11, anchor='w', text=college_name.upper(),
+                      font=(self.FONT_UI, 15, 'bold'), fill=self.TEXT)
+        c.create_text(text_x, ly + 11, anchor='w', text=college_subtitle,
+                      font=(self.FONT_UI, 10), fill='#b9cde3')
+
+        # --- left tagline ----------------------------------------------------
+        ty = int(sh * 0.23)
+        c.create_line(68, ty - 10, 68, ty + 26, fill=self.GOLD, width=2)
+        c.create_text(82, ty, anchor='w', text=cfg.get('tagline', 'LEARN  /  GROW  /  SUCCEED'),
+                      font=(self.FONT_UI, 11), fill=self.ACCENT)
+        c.create_text(82, ty + S(22), anchor='w', text=cfg.get('tagline_sub', 'Through Technology and Innovation'),
+                      font=(self.FONT_UI, 9), fill='#d3e4f6')
+
+        # --- top-right panel: clock | date | calendar | network --------------
+        pl, cy = self._hr_box[0], self._hr_cy
+
+        def icon(key, x):
+            if self._icons.get(key) is not None:
+                return c.create_image(x, cy, image=self._icons[key])
+            return None
+
+        icon('hdr_clock', pl + S(28))
+        self._time_id = c.create_text(pl + S(50), cy - 9, anchor='w', text='',
+                                      font=(self.FONT_UI, 13, 'bold'), fill=self.TEXT)
+        self._date_id = c.create_text(pl + S(50), cy + 11, anchor='w', text='',
+                                      font=(self.FONT_UI, 8), fill='#a9c7e6')
+        icon('hdr_cal', pl + S(214))
+        c.create_line(pl + S(244), cy - 16, pl + S(244), cy + 16, fill=self.FIELD_BORDER, width=1)
+        self._net_icon_id = icon('hdr_wifi', pl + S(274))
+        c.create_text(pl + S(294), cy - 9, anchor='w', text='Network',
+                      font=(self.FONT_UI, 8), fill='#a9c7e6')
+        self._net_text_id = c.create_text(pl + S(294), cy + 9, anchor='w', text='Connected',
+                                          font=(self.FONT_UI, 9, 'bold'), fill=self.TEXT)
+
+        # --- bottom-left panel: college + PC name -----------------------------
+        bl = self._bl_box
+        bcy = (bl[1] + bl[3]) // 2
+        if self._icons.get('panel_monitor') is not None:
+            c.create_image(bl[0] + S(30), bcy, image=self._icons['panel_monitor'])
+        c.create_text(bl[0] + S(58), bcy - 9, anchor='w', text=college_name.upper(),
+                      font=(self.FONT_UI, 8, 'bold'), fill=self.TEXT)
+        pc_id = c.create_text(bl[0] + S(58), bcy + 9, anchor='w',
+                              text=f'Computer Laboratory  \u2022  {self.pc_name}',
+                              font=(self.FONT_UI, 8), fill=self.ACCENT)
+        # apply_pc_info() updates this like a normal label
+        self.pc_name_label = CanvasLabel(c, pc_id)
+
+        # --- bottom-right panel: motto -----------------------------------------
+        br = self._br_box
+        mcy = (br[1] + br[3]) // 2
+        motto = cfg.get('footer_motto', 'Technology Today, Better Tomorrow')
+        if ',' in motto:
+            first, second = [p.strip() for p in motto.split(',', 1)]
+            first += ','
+        else:
+            first, second = motto, ''
+        rx = br[2] - S(26)
+        c.create_text(rx, mcy - 9 if second else mcy, anchor='e', text=first,
+                      font=(self.FONT_UI, 10, 'italic'), fill=self.TEXT)
+        if second:
+            sid = c.create_text(rx, mcy + 9, anchor='e', text=second,
+                                font=(self.FONT_UI, 10, 'italic'), fill=self.TEXT)
+            bx = c.bbox(sid)
+            c.create_line(bx[0], bx[3] + 2, bx[2], bx[3] + 2, fill=self.GOLD, width=2)
+
+    def _draw_header_right(self, time_str, date_str, day_str):
+        """Updates the clock/date text in the top-right panel (called once
+        a second by _tick_clock). The panel's icons and static text are
+        created once in _draw_header."""
+        if getattr(self, '_time_id', None) is None:
+            return
+        self.canvas.itemconfig(self._time_id, text=time_str)
+        self.canvas.itemconfig(self._date_id, text=date_str)
+
+    def _set_header_network(self, is_connected):
+        """Mirrors the NETWORK status into the top-right panel."""
+        self._net_ok = bool(is_connected)
+        if getattr(self, '_net_text_id', None) is None:
+            return
+        self.canvas.itemconfig(
+            self._net_text_id,
+            text='Connected' if is_connected else 'Offline',
+            fill=self.TEXT if is_connected else self.ERROR,
+        )
+        key = 'hdr_wifi' if is_connected else 'hdr_wifi_off'
+        if getattr(self, '_net_icon_id', None) is not None and self._icons.get(key) is not None:
+            self.canvas.itemconfig(self._net_icon_id, image=self._icons[key])
+
+    def _tick_clock(self):
+        now = datetime.datetime.now()
+        time_str = now.strftime('%I:%M %p').lstrip('0')
+        date_str = now.strftime('%B %d, %Y')
+        day_str = now.strftime('%A')
+        self._draw_header_right(time_str, date_str, day_str)
+        self.root.after(1000, self._tick_clock)
+
+    def _draw_card_border(self):
+        """Glowing blue chamfered (cut-corner) border around the login card.
+        The soft outer glow is baked into the photo (_compose_scene); this
+        draws the crisp card body and outlines on top of it."""
+        c = self.canvas
+        outer = self._card_points()
+        c.create_polygon(outer, outline=self.BLUE_GLOW, fill=self.CARD_BG, width=2, joinstyle='miter')
+        c.create_polygon(self._card_points(inset=6, c=18), outline=self.FIELD_BORDER, fill='', width=1)
+
+        # bright accents: top-centre notch + a short tick off each chamfer
+        cx = self.screen_w // 2
+        top = outer[1]
+        c.create_line(cx - 46, top, cx + 46, top, fill=self.ACCENT, width=3)
+        tick = 14
+        for x, y, dx, dy in (
+            (outer[0], outer[1], -1, -1), (outer[2], outer[3], 1, -1),
+            (outer[8], outer[9], 1, 1), (outer[10], outer[11], -1, 1),
+        ):
+            c.create_line(x, y, x + tick * dx, y + tick * dy, fill=self.ACCENT_DIM, width=1)
+
+    # Fixed width for the icon area inside each input field, and a fixed
+    # overall height for the field box (locked with pack_propagate(False) so
+    # the box can never auto-size smaller than its icon and clip it).
+    FIELD_ICON_HOLDER_W = 36
+    FIELD_BOX_H = 40
+
+    def _build_field(self, parent, icon_key, placeholder, show=None, toggle=False, width=None):
         """One icon-prefixed input box with simulated placeholder text
-        (Tkinter Entry has no native placeholder support)."""
+        (Tkinter Entry has no native placeholder support). With
+        toggle=True an eye icon on the right shows/hides the typed text
+        (used for the Reservation Code, which starts hidden)."""
         box = tk.Frame(parent, bg=self.FIELD_BG, highlightthickness=1,
-                        highlightbackground=self.FIELD_BORDER, highlightcolor=self.ACCENT,
-                        height=self.FIELD_BOX_H)
+                       highlightbackground=self.FIELD_BORDER, highlightcolor=self.ACCENT,
+                       height=self.FIELD_BOX_H, width=width or 300)
         box.pack_propagate(False)
         icon_holder = tk.Frame(box, bg=self.FIELD_BG, width=self.FIELD_ICON_HOLDER_W)
-        icon_holder.pack(side='left', fill='y', padx=(8, 0))
+        icon_holder.pack(side='left', fill='y', padx=(6, 0))
         icon_holder.pack_propagate(False)
         icon_img = self._icons.get(icon_key)
         if icon_img is not None:
             tk.Label(icon_holder, image=icon_img, bg=self.FIELD_BG).place(relx=0.5, rely=0.5, anchor='center')
+
         entry = tk.Entry(
-            box, font=(self.FONT_MONO, 11), bg=self.FIELD_BG, fg=self.MUTED,
-            insertbackground=self.ACCENT, relief='flat', bd=0, show=show,
+            box, font=(self.FONT_UI, 10), bg=self.FIELD_BG, fg=self.MUTED,
+            insertbackground=self.ACCENT, relief='flat', bd=0, show='', highlightthickness=0,
+            disabledbackground=self.FIELD_BG, disabledforeground=self.MUTED,
         )
-        entry.pack(side='left', fill='both', expand=True, padx=(0, 12), pady=5)
+        if toggle:
+            eye = tk.Label(box, bg=self.FIELD_BG, cursor='hand2', fg=self.MUTED, font=(self.FONT_UI, 11))
+            if self._icons.get('eye') is not None:
+                eye.config(image=self._icons['eye'])
+            else:
+                eye.config(text='\u25c9')
+            eye.pack(side='right', padx=(0, 10))
+        entry.pack(side='left', fill='both', expand=True, padx=(0, 8), pady=5)
         entry.insert(0, placeholder)
         entry._placeholder = placeholder
         entry._is_placeholder = True
         entry._real_show = show
 
-        def on_focus_in(_e):
+        def clear_placeholder():
             if entry._is_placeholder:
                 entry.delete(0, 'end')
                 entry.config(fg=self.TEXT, show=entry._real_show or '')
                 entry._is_placeholder = False
+
+        def on_focus_in(_e):
+            if entry._is_placeholder:
+                entry.icursor(0)  # cursor sits in front of the hint text
             box.config(highlightbackground=self.ACCENT, highlightthickness=2)
+
+        def on_key(e):
+            if not entry._is_placeholder:
+                return None
+            if e.keysym in ('BackSpace', 'Delete', 'Left', 'Right', 'Home', 'End'):
+                return 'break'  # nothing real to delete/move over yet
+            if e.char and e.char.isprintable() and not (e.state & 0x4):  # printable, no Ctrl
+                clear_placeholder()
+            return None
+
+        def on_paste(_e):
+            clear_placeholder()
+            return None
+
+        def on_click(_e):
+            if entry._is_placeholder:
+                entry.after_idle(lambda: entry.icursor(0))
 
         def on_focus_out(_e):
             if not entry.get():
@@ -1541,30 +2083,59 @@ class LockScreen:
             box.config(highlightbackground=self.FIELD_BORDER, highlightthickness=1)
 
         entry.bind('<FocusIn>', on_focus_in)
+        entry.bind('<Key>', on_key)
+        entry.bind('<<Paste>>', on_paste)
+        entry.bind('<Button-1>', on_click, add='+')
         entry.bind('<FocusOut>', on_focus_out)
+
+        if toggle:
+            def flip(_e=None):
+                entry._real_show = '' if entry._real_show else '\u2022'
+                if not entry._is_placeholder:
+                    entry.config(show=entry._real_show)
+                key = 'eye' if entry._real_show else 'eye_off'
+                if self._icons.get(key) is not None:
+                    eye.config(image=self._icons[key])
+                else:
+                    eye.config(text='\u25c9' if entry._real_show else '\u25cb')
+            eye.bind('<Button-1>', flip)
         return box, entry
 
+    def _reset_entry(self, entry):
+        """Clears an input field AND puts its placeholder text back (a bare
+        entry.delete() leaves the field blank with no hint until it's
+        focused and un-focused once)."""
+        prev_state = str(entry.cget('state'))
+        entry.config(state='normal')
+        entry.delete(0, 'end')
+        entry.insert(0, entry._placeholder)
+        entry.config(fg=self.MUTED, show='')
+        entry._is_placeholder = True
+        if prev_state == 'disabled':
+            entry.config(state='disabled')
+
     def _build_status_col(self, parent, key, label, value, col_index):
-        """One column of the status row: a small dot + label on top, the
-        current value (green when healthy) underneath, gridded into
-        column `col_index` of an equal-width 3-column row. Returns the
-        value Label so callers can update it later (e.g. COMPUTER STATUS
+        """One column of the status row: a small icon + label on top, the
+        current value (green when healthy, with a leading dot) underneath,
+        gridded into column `col_index` of an equal-width 3-column row.
+        Returns the value label so callers can update it later (e.g. STATUS
         flipping between 'Ready for Login' and 'Verifying...')."""
-        col = tk.Frame(parent, bg=self.CARD_BG)
+        icon_key = {'computer_status': 'st_user', 'network_status': 'st_wifi', 'lab_status': 'st_monitor'}.get(key)
+        col = tk.Frame(parent, bg=self.STATUS_BG)
         col.grid(row=0, column=col_index, sticky='nsew')
 
-        label_row = tk.Frame(col, bg=self.CARD_BG)
-        label_row.pack(anchor='center', pady=(0, 4))
-        dot = tk.Canvas(label_row, width=8, height=8, bg=self.CARD_BG, highlightthickness=0)
-        dot.pack(side='left', padx=(0, 4))
-        dot.create_oval(1, 1, 7, 7, fill=self.STATUS_GREEN, outline='')
+        label_row = tk.Frame(col, bg=self.STATUS_BG)
+        label_row.pack(anchor='center', pady=(8, 2))
+        icon_img = self._icons.get(icon_key)
+        if icon_img is not None:
+            tk.Label(label_row, image=icon_img, bg=self.STATUS_BG).pack(side='left', padx=(0, 5))
         tk.Label(
-            label_row, text=label, font=('Segoe UI', 8, 'bold'), fg=self.TEXT, bg=self.CARD_BG,
+            label_row, text=label, font=(self.FONT_UI, 8, 'bold'), fg=self.TEXT, bg=self.STATUS_BG,
         ).pack(side='left')
 
-        value_label = tk.Label(
-            col, text=value, font=('Segoe UI', 9, 'bold'), fg=self.STATUS_GREEN, bg=self.CARD_BG,
-            wraplength=110, justify='center',
+        value_label = DotLabel(
+            col, text=value, font=(self.FONT_UI, 8, 'bold'), fg=self.STATUS_GREEN, bg=self.STATUS_BG,
+            wraplength=int(116 * self._s), justify='center',
         )
         value_label.pack(anchor='center')
         return value_label
@@ -1584,153 +2155,51 @@ class LockScreen:
         b = int(b1 + (b2 - b1) * t)
         return f'#{r:02x}{g:02x}{b:02x}'
 
-    def _build_unlock_button(self, parent, width, height=52):
+    def _build_unlock_button(self, parent, width, height=42):
         canvas = tk.Canvas(parent, width=width, height=height, bg=self.CARD_BG, highlightthickness=0, cursor='hand2')
-        text_id = self._paint_button(canvas, width, height, self.GOLD_DIM, self.GOLD, 'UNLOCK COMPUTER')
-        canvas.bind('<Enter>', lambda e: None if self.submitting else self._paint_button(canvas, width, height, self.GOLD, self.GOLD_BRIGHT, 'UNLOCK COMPUTER'))
-        canvas.bind('<Leave>', lambda e: None if self.submitting else self._paint_button(canvas, width, height, self.GOLD_DIM, self.GOLD, 'UNLOCK COMPUTER'))
+        text_id = self._paint_button(canvas, width, height, self.BTN_L, self.BTN_R, 'UNLOCK COMPUTER')
+        canvas.bind('<Enter>', lambda e: None if (self.submitting or not self.lab_open) else self._paint_button(canvas, width, height, self.BTN_HOVER_L, self.BTN_HOVER_R, 'UNLOCK COMPUTER'))
+        canvas.bind('<Leave>', lambda e: None if (self.submitting or not self.lab_open) else self._paint_button(canvas, width, height, self.BTN_L, self.BTN_R, 'UNLOCK COMPUTER'))
         canvas.bind('<Button-1>', lambda e: self.on_submit())
         return canvas, text_id
 
     def _paint_button(self, canvas, width, height, left_color, right_color, label):
+        """Paints the big gold gradient button: monitor icon + label in the
+        middle, a chevron at the right edge. When called with the
+        FIELD_BORDER colours (the 'VERIFYING...' / 'LAB CLOSED' states) it
+        draws a flat, muted, disabled-looking button instead."""
         canvas.delete('all')
-        step = 3
+        disabled = (left_color == self.FIELD_BORDER)
+        step = 2
         for x in range(0, width, step):
-            t = x / width
-            canvas.create_rectangle(x, 0, x + step, height, fill=self._lerp_color(left_color, right_color, t), outline='')
-        icon_img = self._icons.get('lock_dark')
-        font = ('Segoe UI', 10, 'bold')
+            t = x / max(1, width)
+            canvas.create_rectangle(x, 0, x + step, height,
+                                    fill=self._lerp_color(left_color, right_color, t), outline='')
+        if not disabled:
+            canvas.create_line(0, 1, width, 1, fill=self._lerp_color(right_color, '#ffffff', 0.4))
+            canvas.create_line(0, height - 1, width, height - 1, fill=self._lerp_color(left_color, '#000000', 0.25))
+        fg = self.MUTED if disabled else '#2a1a00'
+        font = (self.FONT_UI, 10, 'bold')
+        is_unlock = (label == 'UNLOCK COMPUTER')
+        icon_img = self._icons.get('btn_monitor') if (is_unlock and not disabled) else None
+
         # Measure the label's real rendered width instead of guessing from
-        # its character count (len(label) * 2.9) — that guess didn't match
-        # actual font metrics on some machines, which made the icon and
-        # text overlap. Lay both out as one centered group: icon, a fixed
-        # gap, then text, using the real widths so they never collide.
-        text_id = canvas.create_text(0, height / 2, anchor='w', text=label, font=font, fill='#241703')
-        text_w = canvas.bbox(text_id)[2] - canvas.bbox(text_id)[0]
+        # its character count, then lay out icon + gap + text as one
+        # centred group so they can never collide.
+        text_id = canvas.create_text(0, height / 2, anchor='w', text=label, font=font, fill=fg)
+        bb = canvas.bbox(text_id)
+        text_w = bb[2] - bb[0]
         icon_w = icon_img.width() if icon_img is not None else 0
-        gap = 8 if icon_img is not None else 0
+        gap = 10 if icon_img is not None else 0
         group_w = icon_w + gap + text_w
         start_x = (width - group_w) / 2
         if icon_img is not None:
             canvas.create_image(start_x + icon_w / 2, height / 2, image=icon_img)
         canvas.coords(text_id, start_x + icon_w + gap, height / 2)
+        chevron = self._icons.get('btn_chevron')
+        if chevron is not None and is_unlock and not disabled:
+            canvas.create_image(width - 22, height / 2, image=chevron)
         return text_id
-
-    def _draw_card_border(self):
-        """Chamfered (cut-corner) HUD border around the login card, drawn
-        as a polygon rather than a plain rectangle."""
-        cx, cy = self.screen_w // 2, self.screen_h // 2
-        left, right = cx - self.CARD_W // 2, cx + self.CARD_W // 2
-        top, bottom = cy - self.CARD_H // 2, cy + self.CARD_H // 2
-        c = 20  # chamfer size
-
-        points = [
-            left + c, top,       right - c, top,
-            right, top + c,      right, bottom - c,
-            right - c, bottom,   left + c, bottom,
-            left, bottom - c,    left, top + c,
-        ]
-        self.canvas.create_polygon(points, outline=self.ACCENT, fill=self.CARD_BG, width=2, joinstyle='miter')
-
-        # Small circuit-style tick marks jutting out from each chamfer —
-        # echoes the traces in the background, like the card is "plugged in".
-        tick = 14
-        ticks = [
-            (left + c, top, -1, -1), (right - c, top, 1, -1),
-            (right, top + c, 1, -1), (right, bottom - c, 1, 1),
-            (right - c, bottom, 1, 1), (left + c, bottom, -1, 1),
-            (left, bottom - c, -1, 1), (left, top + c, -1, -1),
-        ]
-        for x, y, dx, dy in ticks:
-            self.canvas.create_line(x, y, x + tick * dx, y + tick * dy, fill=self.ACCENT_DIM, width=1)
-
-    def _draw_background(self):
-        """Full-screen backdrop: the school building photo
-        (assets/bg_building.jpg), darkened so the gold/cyan HUD text and
-        the card stay readable over a bright daytime shot. Needs Pillow
-        (`pip install Pillow`) to resize/darken the photo — falls back to
-        the old procedural circuit-board backdrop if Pillow isn't
-        installed or the photo file is missing, so the agent still runs
-        with just the standard library if that extra step is skipped."""
-        bg_path = os.path.join(APP_DIR, 'assets', 'bg_building.jpg')
-        if _PIL_AVAILABLE and os.path.exists(bg_path):
-            try:
-                img = Image.open(bg_path).convert('RGB')
-                img = img.resize((self.screen_w, self.screen_h), Image.LANCZOS)
-                img = ImageEnhance.Brightness(img).enhance(0.35)  # darken for legibility
-                self._bg_photo = ImageTk.PhotoImage(img)  # keep a ref — Tk drops unreferenced images
-                self.canvas.create_image(0, 0, anchor='nw', image=self._bg_photo)
-                return
-            except Exception as e:
-                print(f'[agent] Could not load background photo: {e}')
-        # No circuit backdrop fallback anymore — canvas is already filled
-        # with self.BG, so this is just a plain dark background.
-
-    def _draw_clock_icon(self, cx, cy, r=7, color=None):
-        color = color or self.GOLD
-        ids = [self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=1.4, tags='hdr_right')]
-        ids.append(self.canvas.create_line(cx, cy, cx, cy - r * 0.55, fill=color, width=1.4, tags='hdr_right'))
-        ids.append(self.canvas.create_line(cx, cy, cx + r * 0.45, cy + r * 0.15, fill=color, width=1.4, tags='hdr_right'))
-        return ids
-
-    def _draw_calendar_icon(self, cx, cy, w=14, h=13, color=None):
-        color = color or self.GOLD
-        left, top = cx - w / 2, cy - h / 2
-        right, bottom = cx + w / 2, cy + h / 2
-        ids = [self.canvas.create_rectangle(left, top + 2, right, bottom, outline=color, width=1.2, tags='hdr_right')]
-        ids.append(self.canvas.create_line(left, top + 5, right, top + 5, fill=color, width=1.2, tags='hdr_right'))
-        ids.append(self.canvas.create_line(left + 3, top, left + 3, top + 4, fill=color, width=1.2, tags='hdr_right'))
-        ids.append(self.canvas.create_line(right - 3, top, right - 3, top + 4, fill=color, width=1.2, tags='hdr_right'))
-        return ids
-
-    def _draw_header_right(self, time_str, date_str, day_str):
-        """(Re)draws the top-right clock/date block: a small clock icon +
-        bold time, a vertical divider, then a small calendar icon + the
-        date (bold) with the weekday underneath (muted) — matching the
-        approved lock-screen design. Cheap enough to fully redraw once a
-        second in _tick_clock rather than trying to reposition items as
-        the text width changes."""
-        self.canvas.delete('hdr_right')
-        right_edge = self.screen_w - 24
-        y = self._header_right_y
-
-        # Date block (rightmost): bold date on top, muted weekday under it.
-        date_id = self.canvas.create_text(
-            right_edge, y - 8, anchor='e', text=date_str,
-            font=('Segoe UI', 10, 'bold'), fill=self.TEXT, tags='hdr_right',
-        )
-        self.canvas.create_text(
-            right_edge, y + 8, anchor='e', text=day_str,
-            font=('Segoe UI', 8), fill=self.MUTED, tags='hdr_right',
-        )
-        date_left = self.canvas.bbox(date_id)[0]
-
-        cal_cx = date_left - 8 - 7
-        self._draw_calendar_icon(cal_cx, y, color=self.GOLD)
-
-        sep_x = cal_cx - 7 - 12
-        self.canvas.create_line(sep_x, y - 14, sep_x, y + 14, fill=self.FIELD_BORDER, width=1, tags='hdr_right')
-
-        time_id = self.canvas.create_text(
-            sep_x - 12, y, anchor='e', text=time_str,
-            font=(self.FONT_MONO, 15, 'bold'), fill=self.TEXT, tags='hdr_right',
-        )
-        time_left = self.canvas.bbox(time_id)[0]
-        self._draw_clock_icon(time_left - 8 - 7, y, color=self.GOLD)
-
-    def _tick_clock(self):
-        now = datetime.datetime.now()
-        time_str = now.strftime('%I:%M %p').lstrip('0')
-        date_str = now.strftime('%B %d, %Y')
-        day_str = now.strftime('%A')
-        self._draw_header_right(time_str, date_str, day_str)
-        self.root.after(1000, self._tick_clock)
-
-    def _pulse_dot(self):
-        self._pulse_on = not self._pulse_on
-        color = self.ACCENT if self._pulse_on else self.MUTED
-        self.status_label_hud.config(fg=color)
-        self.root.after(650, self._pulse_dot)
 
     def restart_clicked(self):
         if not messagebox.askyesno(
@@ -1761,6 +2230,12 @@ class LockScreen:
     def on_submit(self):
         if self.submitting:
             return
+        if not self.lab_open:
+            # Belt-and-suspenders: the button already looks disabled and
+            # the fields are grayed out (see _apply_lab_open_state), but
+            # the canvas's <Button-1> binding itself is unconditional, so
+            # this stops a click from firing off a doomed login attempt.
+            return
         id_number = self.field_value(self.id_entry)
         code = self.field_value(self.code_entry)
 
@@ -1768,8 +2243,9 @@ class LockScreen:
             self.status_label.config(fg=self.ERROR, text='Please fill in both ID and Reservation Code.')
             return
 
+        self._pending_id = id_number  # remembered for the heartbeat: who is on this PC
         self.submitting = True
-        self._paint_button(self.submit_canvas, self.submit_canvas.winfo_width(), 38, self.FIELD_BORDER, self.FIELD_BORDER, 'VERIFYING...')
+        self._paint_button(self.submit_canvas, self.submit_canvas.winfo_width(), self.BTN_H, self.FIELD_BORDER, self.FIELD_BORDER, 'VERIFYING...')
         self.status_label.config(fg=self.MUTED, text='Confirming your reservation...')
         if getattr(self, 'computer_status_value', None) is not None:
             self.computer_status_value.config(text='Verifying...', fg=self.GOLD)
@@ -1783,17 +2259,18 @@ class LockScreen:
 
     def handle_login_result(self, result):
         self.submitting = False
-        self._paint_button(self.submit_canvas, self.submit_canvas.winfo_width(), 38, self.GOLD_DIM, self.GOLD, 'UNLOCK COMPUTER')
+        self._paint_button(self.submit_canvas, self.submit_canvas.winfo_width(), self.BTN_H, self.BTN_L, self.BTN_R, 'UNLOCK COMPUTER')
 
         if result.get('ok'):
             self.status_label.config(fg=self.SUCCESS, text=f"Welcome, {result.get('student_name', '')}!")
-            self.id_entry.delete(0, 'end')
-            self.code_entry.delete(0, 'end')
+            self._reset_entry(self.id_entry)
+            self._reset_entry(self.code_entry)
             # Unlock either way — if unlock_success is False that only means
             # this agent's own local unlock step reported a problem, which
             # in practice can't really happen since hiding the screen IS
             # that step; still, don't leave the student stuck on a verified
             # login.
+            self._session_user = (getattr(self, '_pending_id', None), result.get('student_name'))
             self.unlock_for_session(result.get('session_end_time'), result.get('server_time'))
         else:
             self.status_label.config(fg=self.ERROR, text=result.get('error', 'Something went wrong, please try again.'))
@@ -2072,6 +2549,7 @@ class LockScreen:
         first login of the day (locked overlay, desktop untouched
         underneath). If a clean desktop is needed for the next student,
         use the Restart button on this screen."""
+        self._session_user = None
         self.stop_activity_reporting()
         self._cancel_timers()
         self._session_end_dt = None
@@ -2086,8 +2564,8 @@ class LockScreen:
         self.status_label.config(text='')
         if getattr(self, 'computer_status_value', None) is not None:
             self.computer_status_value.config(text='Ready for Login', fg=self.STATUS_GREEN)
-        self.id_entry.delete(0, 'end')
-        self.code_entry.delete(0, 'end')
+        self._reset_entry(self.id_entry)
+        self._reset_entry(self.code_entry)
         self.root.focus_force()
         self.id_entry.focus_set()
         self.visible = True
@@ -2137,11 +2615,69 @@ class LockScreen:
         pc_id = (result.get('pc_id') or '').strip()
         if pc_id:
             self.pc_name = pc_id
-            self.pc_name_label.config(text=f'—  {self.pc_name}  —')
+            self.pc_name_label.config(text=f'Computer Laboratory  •  {self.pc_name}')
 
         lab_name = (result.get('lab_name') or '').strip()
         if lab_name and getattr(self, 'lab_status_value', None) is not None:
             self.lab_status_value.config(text=lab_name)
+
+        # 'lab_is_open' only appears once the server actually resolves this
+        # PC to a registered Lab (see labs/views.py:pc_agent_info_api) — a
+        # missing key (older server, or PC not registered yet) leaves
+        # whatever open/closed state is already on screen alone rather than
+        # guessing.
+        if 'lab_is_open' in result:
+            self._apply_lab_open_state(bool(result.get('lab_is_open')), result.get('lab_hours') or '')
+
+    def _apply_lab_open_state(self, is_open, hours_text):
+        """Switches the whole lock screen between its normal "ACCESS
+        REQUIRED" login state and a prominent "LABORATORY CLOSED" state —
+        called whenever a fresh pc-agent-info reply comes in (on every lock
+        screen show, and again every 60s via poll_pc_info_in_background)
+        with a different lab_is_open value than what's currently on screen.
+
+        Previously, "outside lab hours" only ever showed up as a small red
+        line under the Unlock button (result['error'] from an actual login
+        attempt, in on_submit -> handle_login_result) — easy to miss, and
+        only appeared after someone tried to log in. This makes the closed
+        state impossible to miss the moment it's true: the background photo
+        blurs and darkens further (see _draw_background's pre-rendered
+        self._bg_photo_blurred), the "ACCESS REQUIRED" heading itself
+        becomes a bold red "LABORATORY CLOSED", and the ID/Reservation
+        fields plus the Unlock button are disabled and grayed out — since
+        self-service login can't succeed outside operating hours anyway
+        (see verify_reservation_and_check_in on the server), there's
+        nothing honest for them to do while closed except show the Lab
+        In-Charge if access is really needed.
+        """
+        self.lab_open = is_open
+        self._lab_hours_text = hours_text
+
+        if is_open:
+            if self._bg_photo is not None and self._bg_image_id is not None:
+                self.canvas.itemconfig(self._bg_image_id, image=self._bg_photo)
+            self.title_label.config(text=self._default_title_text, fg=self.TEXT)
+            self.subtitle_label.config(text=self._default_subtitle_text, fg=self.MUTED)
+            for entry, box in ((self.id_entry, self.id_box), (self.code_entry, self.code_box)):
+                entry.config(state='normal')
+                box.config(highlightbackground=self.FIELD_BORDER)
+            self._paint_button(self.submit_canvas, self._unlock_button_w, self.BTN_H, self.BTN_L, self.BTN_R, 'UNLOCK COMPUTER')
+            self.submit_canvas.config(cursor='hand2')
+        else:
+            if self._bg_photo_blurred is not None and self._bg_image_id is not None:
+                self.canvas.itemconfig(self._bg_image_id, image=self._bg_photo_blurred)
+            self.title_label.config(text='LABORATORY CLOSED', fg=self.ERROR)
+            hours_note = f' Open {hours_text}.' if hours_text else ''
+            self.subtitle_label.config(
+                text=f'This lab is closed right now.{hours_note} See the Lab In-Charge if you need access.',
+                fg=self.ERROR,
+            )
+            for entry, box in ((self.id_entry, self.id_box), (self.code_entry, self.code_box)):
+                entry.config(state='disabled')
+                box.config(highlightbackground=self.FIELD_BORDER)
+            self._paint_button(self.submit_canvas, self._unlock_button_w, self.BTN_H, self.FIELD_BORDER, self.FIELD_BORDER, 'LAB CLOSED')
+            self.submit_canvas.config(cursor='arrow')
+            self.status_label.config(text='')
 
     def apply_network_status(self, is_connected):
         """Updates the NETWORK status pill with the result of the latest
@@ -2149,6 +2685,7 @@ class LockScreen:
         all — the pill's text was set once at build time to a hardcoded
         'Connected' and simply never touched again, so it kept showing
         'Connected' even with no network path to the server."""
+        self._set_header_network(is_connected)
         if getattr(self, 'network_status_value', None) is None:
             return
         queued = pending_count()
@@ -2242,7 +2779,22 @@ def poll_queue(root, lock_screen):
     except queue.Empty:
         pass
     finally:
-        root.after(200, poll_queue, root, lock_screen)
+        _schedule_lab_hours_refresh(root, config)
+    root.after(200, poll_queue, root, lock_screen)
+
+
+
+def _schedule_lab_hours_refresh(root, config):
+    """Keep lab OPEN/CLOSED state accurate even when a PC stays locked for hours."""
+    def update():
+        try:
+            fetch_pc_info_in_background(
+                config.get('server_url', 'http://127.0.0.1:8000'),
+                config.get('secret', ''),
+            )
+        finally:
+            root.after(60_000, update)
+    root.after(60_000, update)
 
 
 def print_status():
