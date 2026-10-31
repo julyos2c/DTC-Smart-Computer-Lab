@@ -52,13 +52,18 @@ def env_list(name, default=''):
 DEBUG = env_bool('DJANGO_DEBUG', False)
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', '')
+# Configure DJANGO_SECRET_KEY in the project-root .env or environment.
+# Never fall back to a hardcoded development key, even when DEBUG=True.
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', '').strip()
 if not SECRET_KEY:
-    if not DEBUG:
-        raise ImproperlyConfigured('DJANGO_SECRET_KEY must be set when DJANGO_DEBUG is off (see .env.example).')
-    SECRET_KEY = 'django-insecure-z$q0s-rr3%osqk_q^tm=*xm$z(k7so(m&e5@li_znp6v-)2(9g'
+    raise ImproperlyConfigured(
+        'DJANGO_SECRET_KEY must be set in the environment or project-root .env (see .env.example).'
+    )
 
-ALLOWED_HOSTS = env_list('DJANGO_ALLOWED_HOSTS', '127.0.0.1,localhost,192.168.1.96,192.168.100.51')
+ALLOWED_HOSTS = env_list(
+    'DJANGO_ALLOWED_HOSTS',
+    '127.0.0.1,localhost,192.168.1.96,192.168.100.128'
+)
 APP_VERSION = '1.0'
 
 # Django 4+ requires the exact scheme+host of any origin that will submit
@@ -70,7 +75,7 @@ APP_VERSION = '1.0'
 # Referer header won't match unless it's explicitly trusted.
 CSRF_TRUSTED_ORIGINS = env_list(
     'DJANGO_CSRF_TRUSTED_ORIGINS',
-    'http://127.0.0.1:8000,http://localhost:8000,http://192.168.1.96:8000,http://192.168.100.51:8000',
+    'http://127.0.0.1:8000,http://localhost:8000,http://192.168.100.128:8000',
 )
 
 # HTTPS hardening. Only turn DJANGO_SECURE_SSL on once the site is actually

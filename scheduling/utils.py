@@ -74,6 +74,20 @@ def generate_reservation_code(length=6):
             return code
 
 
+# COMPULAB_POWERED_OFF_BOOKING_V1
+from django.utils import timezone
+
+
+def schedulable_pcs(lab):
+    """Registered PCs eligible for scheduled allocation regardless of power.
+
+    'offline' can mean powered off or Agent disconnected. Those PCs can be
+    reserved in advance. 'maintenance'/'issue' remain excluded until repaired.
+    Actual use of a PC still requires a working Agent and authorized login.
+    """
+    return lab.pcs.exclude(status__in=('maintenance', 'issue'))
+
+
 def lab_pc_capacity(lab, date, start_time, end_time, exclude_pk=None):
     """(total usable PCs, used PCs, free PCs) for an entire time interval.
 
@@ -85,14 +99,34 @@ def lab_pc_capacity(lab, date, start_time, end_time, exclude_pk=None):
     """
     from scheduling.models import Session
 
-    total_pcs = lab.pcs.exclude(status__in=('maintenance', 'issue')).count()
+    # COMPULAB_POWERED_OFF_BOOKING_V1: Agent/power state never reduces the
+    # inventory offered for future reservations. Only maintenance and issue
+    # conditions remove a registered PC from schedulable capacity.
+    total_pcs = schedulable_pcs(lab).count()
     qs = Session.objects.filter(
         lab=lab, date=date, start_time__lt=end_time, end_time__gt=start_time,
     )
     if exclude_pk:
         qs = qs.exclude(pk=exclude_pk)
-    used = sum(allocated_pc_count(s) for s in qs)
-    used = min(used, total_pcs)
+
+    # An approved reservation consumes its GRANTED capacity (not requested).
+    booked = sum(allocated_pc_count(s) for s in qs)
+
+    # For a time slot active RIGHT NOW, also protect PCs that are currently
+    # being used through a manual unlock/override without an overlapping
+    # approved reservation. A PC already covered by an overlapping Session is
+    # not counted again. This does not affect future bookings.
+    additional_busy = 0
+    now = timezone.localtime()
+    if date == now.date() and start_time <= now.time() < end_time:
+        overlapping_session_ids = set(qs.values_list('pk', flat=True))
+        for current_session_id in schedulable_pcs(lab).filter(
+            status='in_use'
+        ).values_list('current_session_id', flat=True):
+            if current_session_id not in overlapping_session_ids:
+                additional_busy += 1
+
+    used = min(booked + additional_busy, total_pcs)
     return total_pcs, used, max(total_pcs - used, 0)
 
 
@@ -101,7 +135,7 @@ def cap_student_count(lab, student_count):
 
     New reservation paths MUST use allocate_pcs() with the requested slot.
     """
-    total_pcs = lab.pcs.exclude(status__in=('maintenance', 'issue')).count()
+    total_pcs = schedulable_pcs(lab).count()
     assigned = min(max(0, student_count), total_pcs)
     return assigned, (f'Only {assigned} of {student_count} students can fit in {lab.name}.'
                       if assigned < student_count else None)

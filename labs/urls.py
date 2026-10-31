@@ -1,12 +1,16 @@
 from django.urls import path
 from . import views
 from . import reports
+from .agent_events_api import pc_agent_events_api
+from .agent_heartbeat_api import pc_agent_heartbeat_api
 
 urlpatterns = [
+    path('api/pc-agent-events/', pc_agent_events_api, name='pc_agent_events_api'),
     path('pc-login/', views.ReservationPCLoginView.as_view(), name='pc_login'),
     path('api/pc-agent-login/', views.pc_agent_login_api, name='pc_agent_login_api'),
     path('api/pc-agent-info/', views.pc_agent_info_api, name='pc_agent_info_api'),
     path('api/pc-agent-activity/', views.pc_agent_activity_api, name='pc_agent_activity_api'),
+    path('api/pc-agent-heartbeat/', pc_agent_heartbeat_api, name='pc_agent_heartbeat_api'),
     # These two views already existed in views.py but were never routed here —
     # every call the agent made to them (notify_end_session_sync /
     # submit_logout_in_background, both in lab_pc_agent/agent.py) was

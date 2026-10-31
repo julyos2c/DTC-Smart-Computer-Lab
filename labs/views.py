@@ -568,6 +568,21 @@ class ReservationPCLoginView(FormView):
         return redirect('pc_login')
 
 
+# COMPULAB_AGENT_OFFLINE_UI_V1
+
+def _pc_agent_disconnected(pc, now=None):
+    """An old heartbeat means the Agent stopped, not that the PC lost power.
+
+    No prior heartbeat means not yet confirmed rather than falsely offline.
+    Never changes the saved session or PC status.
+    """
+    last = pc.agent_last_contact_at
+    if last is None:
+        return False
+    timeout = max(30, int(getattr(settings, 'PC_AGENT_HEARTBEAT_TIMEOUT_SECONDS', 60)))
+    return ((now or timezone.now()) - last).total_seconds() > timeout
+
+
 def _pc_connection_note(pc):
     """Plain-language note on how current a PC's status is, for the PC
     status page: (level, text) with level 'ok', 'warn' or 'bad'."""
@@ -578,6 +593,12 @@ def _pc_connection_note(pc):
         return ('warn', 'No IP address on file — this PC can\'t be checked or controlled. Edit the PC to add it.')
     # A few missed status checks in a row means what we show may be out of date.
     stale_after = timedelta(seconds=max(60, 3 * getattr(settings, 'PC_STATUS_CHECK_INTERVAL_SECONDS', 20)))
+    # COMPULAB_AUTO_CLEAR_OFFLINE_USER_V1: Agent state precedes ping state.
+    if _pc_agent_disconnected(pc, now):
+        msg = ('Agent disconnected; previous user assignment cleared on server. '
+               'PC unavailable until Agent reconnects.' if pc.status != 'in_use' else
+               'Agent disconnected; server will clear stale user assignment after grace period.')
+        return ('bad', msg)
     if pc.status == 'offline':
         since = f' since {timezone.localtime(pc.status_changed_at):%b %d, %H:%M}' if pc.status_changed_at else ''
         return ('bad', f'Not answering on the network{since}. Check that it is switched on and plugged in; '
@@ -1160,6 +1181,7 @@ class PCStatusView(RoleRequiredMixin, TemplateView):
                 pc.reservation_type_label = pc.current_session.get_requester_type_display()
             else:
                 pc.reservation_type_label = None
+            pc.agent_disconnected = _pc_agent_disconnected(pc)
             pc.connection_note = _pc_connection_note(pc)
 
         # ---- live lab usage bars (in-use / total per lab) ----
@@ -2056,7 +2078,22 @@ def pc_status_api(request):
         'agent_last_contact_at', 'agent_pending_events', 'current_user__id_number', 'current_user__first_name', 'current_user__last_name',
         'current_guest_name',
     )
-    return JsonResponse({'pcs': list(pcs)})
+    data = list(pcs)
+    now = timezone.now()
+    timeout = max(30, int(getattr(settings, 'PC_AGENT_HEARTBEAT_TIMEOUT_SECONDS', 60)))
+    for item in data:
+        last = item['agent_last_contact_at']
+        age = (now - last).total_seconds() if last else None
+        item['agent_connected'] = age is not None and 0 <= age <= timeout
+        item['agent_disconnected'] = age is not None and age > timeout
+        if item['agent_disconnected']:
+            item['display_status'] = (
+                'Agent Offline - Session Preserved'
+                if item['status'] == 'in_use' else 'Agent Offline'
+            )
+        else:
+            item['display_status'] = dict(PC.STATUS).get(item['status'], item['status'])
+    return JsonResponse({'pcs': data})
 
 
 # update a single PC's status (admin/incharge action)

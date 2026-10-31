@@ -221,6 +221,16 @@ def refresh_pc_statuses(pcs):
             # don't clobber a manually-flagged "in_use" or "issue" status with
             # "online" — only step in when the machine looks plain online/offline
             if pc.status in ('online', 'offline') or pc.status is None:
+                # COMPULAB_AUTO_CLEAR_OFFLINE_USER_V1: ping != authenticated Agent.
+                stale_agent = (pc.agent_last_contact_at is not None and
+                    (now - pc.agent_last_contact_at).total_seconds() >
+                    max(30, int(getattr(settings, 'PC_AGENT_HEARTBEAT_TIMEOUT_SECONDS', 60))))
+                if stale_agent:
+                    pc.status = 'offline'
+                    # last_active must not be refreshed by ping for an offline Agent.
+                    pc.save(update_fields=update_fields)
+                    summary['online'] += 1  # network is reachable, Agent is not
+                    continue
                 pc.status = new_status
                 # Only bump last_active here for idle/plain machines. A
                 # successful ping only proves the machine is powered on and
@@ -271,6 +281,64 @@ def refresh_pc_statuses(pcs):
                 notify_service.notify_pc_online(pc)
 
     return summary
+
+
+# COMPULAB_AUTO_CLEAR_OFFLINE_USER_V1
+
+def release_disconnected_agent_users():
+    """Remove stale user assignments after a stopped Agent, never auto-book the PC.
+
+    A missing Agent heartbeat proves only that monitoring stopped, not that
+    Windows was locked. This is a DB cleanup; the PC remains unavailable.
+    Uses row locks so an Agent login racing the sweep cannot be cleared.
+    """
+    from django.db import transaction
+    from labs.models import PC
+    from accounts.models import ActivityLog
+
+    seconds = max(90, int(getattr(settings, 'PC_AGENT_AUTO_CLEAR_SECONDS', 120)))
+    now = timezone.now()
+    cutoff = now - timedelta(seconds=seconds)
+    candidates = PC.objects.filter(
+        status='in_use',
+        agent_last_contact_at__isnull=False,
+        agent_last_contact_at__lt=cutoff,
+    ).values_list('pk', flat=True)
+    count = 0
+    for pk in candidates.iterator():
+        with transaction.atomic():
+            pc = PC.objects.select_for_update().get(pk=pk)
+            # Recheck AFTER acquiring the lock: the agent might have returned.
+            if (pc.status != 'in_use' or pc.agent_last_contact_at is None
+                    or pc.agent_last_contact_at >= cutoff):
+                continue
+            user_id = pc.current_user_id
+            username = pc.current_user.display_name if user_id else (pc.current_guest_name or 'unknown')
+            id_number = pc.current_user.id_number if user_id else ''
+            lab_name = pc.lab.name
+            pc.current_user = None
+            pc.current_session = None
+            pc.current_guest_name = ''
+            pc.current_login_via_override = False
+            pc.status = 'offline'
+            pc.save(update_fields=[
+                'status', 'current_user', 'current_session',
+                'current_guest_name', 'current_login_via_override',
+            ])
+            ActivityLog.objects.create(
+                actor=None,
+                action='pc_lock',
+                target_identifier=id_number,
+                pc=pc,
+                details=(
+                    f'{pc.pc_id} ({lab_name}): SERVER-ONLY user assignment cleared '
+                    f'after {seconds}s without Agent heartbeat; previous user: {username}. '
+                    'Agent disconnected: actual Windows lock / user logout NOT confirmed. '
+                    'PC marked OFFLINE and MUST NOT be assigned until the Agent reconnects.'
+                ),
+            )
+            count += 1
+    return count
 
 
 def release_expired_pc_sessions():
@@ -387,7 +455,11 @@ def release_expired_pc_sessions():
             ),
         )
 
-        pc.status = 'online'
+        # COMPULAB_AUTO_CLEAR_OFFLINE_USER_V1
+        agent_stale = (pc.agent_last_contact_at is not None and
+            (timezone.now() - pc.agent_last_contact_at).total_seconds() >
+            max(30, int(getattr(settings, 'PC_AGENT_HEARTBEAT_TIMEOUT_SECONDS', 60))))
+        pc.status = 'offline' if agent_stale else 'online'
         pc.current_user = None
         pc.current_session = None
         pc.current_guest_name = ''
@@ -499,6 +571,7 @@ def start_background_status_checker():
             try:
                 pcs = PC.objects.exclude(ip_address__isnull=True)
                 refresh_pc_statuses(pcs)
+                release_disconnected_agent_users()
                 release_expired_pc_sessions()
                 auto_lock_after_hours()
             except Exception:

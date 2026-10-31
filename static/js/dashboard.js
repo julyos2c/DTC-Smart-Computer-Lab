@@ -39,10 +39,27 @@ async function refreshPcStatuses() {
     const row = document.querySelector(`tr[data-pc="${pc.pc_id}"]`);
     if (!row) return;
 
+    // COMPULAB_AGENT_STATUS_SINGLE_POLL_V2
+    // Display connectivity separately from the stored usage/session status.
     const pill = row.querySelector('[data-role="status-pill"]');
+    const note = row.querySelector('[data-role="agent-connection-note"]');
+    const disconnected = pc.agent_disconnected === true; // COMPULAB_AUTO_CLEAR_OFFLINE_USER_V1
     if (pill) {
-      pill.className = `ld-pill ${pc.status}`;
-      pill.textContent = STATUS_LABELS[pc.status] || pc.status;
+      pill.className = disconnected ? 'ld-pill offline' : `ld-pill ${pc.status}`;
+      pill.textContent = disconnected
+        ? (pc.status === 'in_use' ? 'Agent Offline - Session Preserved' : 'Agent Offline')
+        : (pc.display_status || STATUS_LABELS[pc.status] || pc.status || 'Unknown');
+    }
+    if (note) {
+      if (disconnected) {
+        note.textContent = 'Agent disconnected (heartbeat expired). PC unavailable.';
+      } else if (pc.status === 'offline') {
+        note.textContent = 'PC offline / unreachable';
+      } else if (pc.agent_connected === true) {
+        note.textContent = 'Agent connected';
+      } else {
+        note.textContent = 'Agent connection not yet verified';
+      }
     }
 
     const userCell = row.querySelector('[data-role="current-user"]');
@@ -63,6 +80,6 @@ function updateLastUpdatedStamp() {
 // Only start polling on pages that actually have status pills to update
 // (i.e. the PC Status page in its normal, non "day lookup" view).
 if (document.querySelector('[data-role="status-pill"]')) {
-  updateLastUpdatedStamp();
+  refreshPcStatuses();
   setInterval(refreshPcStatuses, 10000);
 }
