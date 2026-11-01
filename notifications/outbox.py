@@ -95,7 +95,10 @@ def queue(to_email, subject, text_body, html_body='', category='notification', u
     if not to_email:
         return None
     try:
-        existing = _active_duplicate(dedupe_key)
+        if dedupe_key.startswith('reservation:event:'):
+            existing = EmailOutbox.objects.filter(dedupe_key=dedupe_key).first()
+        else:
+            existing = _active_duplicate(dedupe_key)
         if existing:
             return existing
         now = timezone.now()

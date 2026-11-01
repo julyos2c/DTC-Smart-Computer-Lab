@@ -351,9 +351,10 @@ def _cancel_session(session, actor):
                 setattr(req, name, getattr(session, name))
             req.status = 'cancelled'
             req.save()
+    cancelled_session_pk = session.pk
     session.delete()
     _log_cancellation(actor, subject, lab, date, start_time, end_time, code or '')
-    notify_service.notify_reservation_cancelled(lab, subject, date, start_time, end_time, actor, instructor=instructor)
+    notify_service.notify_reservation_cancelled(lab, subject, date, start_time, end_time, actor, instructor=instructor, event_id=f'session:{cancelled_session_pk}')
 
 
 def _session_started(date, start_time):
@@ -376,6 +377,7 @@ def cancel_my_request(request, pk):
             _log_cancellation(request.user, req.subject, req.lab, req.date, req.start_time, req.end_time)
             notify_service.notify_reservation_cancelled(
                 req.lab, req.subject, req.date, req.start_time, req.end_time, request.user,
+                event_id=f'request:{req.pk}',
             )
             messages.success(request, f'Your request for {req.subject} on {req.date} was withdrawn.')
     return modal_redirect(request, 'inst_schedule')

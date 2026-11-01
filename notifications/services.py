@@ -13,6 +13,7 @@ calling Notification.objects.create() directly, so that:
      own reservations/sessions)
 """
 import datetime
+from hashlib import sha256
 
 from django.contrib.auth import get_user_model
 from notifications.models import Notification, AlertSettings
@@ -65,10 +66,11 @@ def incharge_for_lab(lab):
     return User.objects.filter(is_active=True, role='incharge', assigned_lab=lab)
 
 
-def notify(users, title, message, notification_type, lab=None, send_plain_email=True):
+def notify(users, title, message, notification_type, lab=None, send_plain_email=True, email_event_key=None):
     if not _event_enabled(notification_type):
         return []
     seen = set()
+    seen_email_addresses = set()
     created = []
     for user in users:
         if user is None or user.pk in seen:
@@ -88,11 +90,25 @@ def notify(users, title, message, notification_type, lab=None, send_plain_email=
         # queued here; the worker sends it, so a page never waits on SMTP and
         # nothing is lost while the internet is down.
         if send_plain_email and outbox.email_allowed_for(user):
-            outbox.queue(
-                user.email, title, message,
-                category='security_alert' if notification_type == 'login_security_alert' else 'notification',
-                user=user,
-            )
+            email_key = (user.email or '').strip().casefold()
+
+            if email_key and email_key not in seen_email_addresses:
+                dedupe_key = ''
+                if email_event_key:
+                    dedupe_key = 'reservation:event:' + sha256(
+                        f'{email_event_key}|{email_key}'.encode('utf-8')
+                    ).hexdigest()
+                    from notifications.models import EmailOutbox
+                    if EmailOutbox.objects.filter(dedupe_key=dedupe_key).exists():
+                        seen_email_addresses.add(email_key)
+                        continue
+                queued = outbox.queue(
+                    user.email, title, message,
+                    category='security_alert' if notification_type == 'login_security_alert' else 'notification',
+                    user=user, dedupe_key=dedupe_key,
+                )
+                if queued is not None:
+                    seen_email_addresses.add(email_key)
 
     return created
 
@@ -142,7 +158,7 @@ def notify_reservation_submitted(session_request):
         'New reservation request',
         f'{req.requester_name or "A requester"} submitted a request for {req.subject} '
         f'in {req.lab.name} on {req.date} ({req.start_time.strftime("%H:%M")}–{req.end_time.strftime("%H:%M")}).',
-        'reservation_submitted', lab=req.lab,
+        'reservation_submitted', lab=req.lab, email_event_key=f'submitted:{req.pk}',
     )
 
 
@@ -169,7 +185,8 @@ def notify_reservation_allocation(req, allocated, *, provisional=False):
     # Staff must also see declined requests entered on behalf of students
     # without dashboard accounts.
     recipients += _lab_recipients(req.lab)
-    return notify(recipients, title, message, 'reservation_allocation', lab=req.lab)
+    return notify(recipients, title, message, 'reservation_allocation', lab=req.lab,
+                  email_event_key=f'allocation:{req.pk}:{int(provisional)}:{message}')
 
 
 def notify_reservation_approved(session_request, code):
@@ -205,27 +222,28 @@ def notify_reservation_declined(session_request):
         recipients,
         'Lab request declined',
         f'Your request for {req.subject} on {req.date} was declined.',
-        'reservation_declined', lab=req.lab,
+        'reservation_declined', lab=req.lab, email_event_key=f'declined:{req.pk}',
     )
 
 
-def notify_reservation_cancelled(lab, subject, date, start_time, end_time, cancelled_by, instructor=None):
+def notify_reservation_cancelled(lab, subject, date, start_time, end_time, cancelled_by, instructor=None, event_id=None):
     """A reservation was withdrawn. Lab In-Charge + Admins always hear about
     it (the slot is free again); the instructor too when someone else
     (e.g. the lab removing a scheduled session) did the cancelling."""
     when = f'{date} ({start_time.strftime("%H:%M")}–{end_time.strftime("%H:%M")})'
     who = cancelled_by.display_name if cancelled_by else 'Someone'
+    event_key = f'cancelled:{event_id}' if event_id else None
     recipients = [u for u in _lab_recipients(lab) if not cancelled_by or u.pk != cancelled_by.pk]
     notify(
         recipients, 'Reservation cancelled',
         f'{who} cancelled the reservation for {subject} in {lab.name} on {when}. The slot is free again.',
-        'reservation_cancelled', lab=lab,
+        'reservation_cancelled', lab=lab, email_event_key=event_key,
     )
     if instructor and (not cancelled_by or instructor.pk != cancelled_by.pk):
         notify(
             [instructor], 'Your reservation was cancelled',
             f'Your reservation for {subject} in {lab.name} on {when} was cancelled by {who}.',
-            'reservation_cancelled', lab=lab,
+            'reservation_cancelled', lab=lab, email_event_key=event_key,
         )
 
 
